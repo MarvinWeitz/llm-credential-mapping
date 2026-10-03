@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-credential-mapping"
+version = "0.1.0"
+description = "Project-scoped CLI credentials and agent launching, initially for LiteLLM"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "filelock==4.0.9",
+    "keyring==25.7.0",
+]
+
+[project.scripts]
+llm-credentials = "llm_credential_mapping.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
