@@ -1,8 +1,8 @@
 # LLM Credential Mapping
 
-Python CLI and companion VS Code extension for manually selecting a project,
-signing in through LiteLLM's native SSO flow, and using coding tools without
-copying API keys. The CLI command is **`llm-credentials`**.
+First-draft Python CLI for manually selecting a project, signing in through
+LiteLLM's native SSO flow, and launching CLI agents without copying API keys.
+The command is **`llm-credentials`**.
 
 LiteLLM is the first and currently only gateway. The project/credential layer is
 separate from the agent launchers so other gateway adapters can be added later.
@@ -34,11 +34,8 @@ Manually selected CLI project -> gateway + expected team ID
   inherit employee/team controls; existing key-specific budgets are not reused.
 - No new credential is created per inference request. Credentials are reused
   until they need renewal.
-- The [VS Code companion](vscode-extension/README.md) binds a manually selected
-  project to a workspace, supplies custom models to Copilot Chat/Agent, and
-  configures Claude Code's supported credential helper.
-- There is no automatic repository detection, local proxy, new central broker,
-  or administrator credential in this draft.
+- There is no repository detection, VS Code extension, local proxy, new central
+  broker, or administrator credential in this draft.
 
 ## Gateway prerequisites
 
@@ -104,11 +101,6 @@ llm-credentials project use project-a
 The first configured project becomes the default. `project use` changes the
 default for future commands only; it never changes already-running agents.
 Use `--project` for deterministic parallel sessions.
-
-Integrations can use `llm-credentials project list --json`. Its version-1 output
-contains `version`, `active`, and a sorted `projects` array with `name`,
-`gateway`, `team_id`, and `allow_http`. It contains no credentials and does not
-require an accessible vault. The default list output remains human-readable.
 
 Project metadata is stored in `projects.json` in:
 
@@ -228,21 +220,7 @@ Refresh responses must retain the same employee/team binding.
 - Manual browser team consent remains required. The profile name is not sent
   as an undocumented automatic team override.
 - There is no raw `sk-...` key import, automated repository switching, VS Code
-  Tab-completion integration, or interception of GitHub-hosted Copilot models.
-  The companion handles only models explicitly selected from its chat provider.
-
-## VS Code integrations
-
-See the [companion installation and usage guide](vscode-extension/README.md).
-Both integrations use this CLI's existing SSO, project validation, vault and
-renewal behavior. No separate authentication service is introduced.
-
-Budgets remain server-side: configure employee/team membership budgets
-(`max_budget_in_team` and `budget_duration`) for independent employee/project
-allowances. CLI tools and extensions using the same employee/team share that
-allowance; they do not get independent per-session budgets or inherit existing
-virtual-key-specific limits. Validate enforcement using a normal employee,
-not a proxy administrator.
+  integration, or claim that GitHub-hosted Copilot traffic is intercepted.
 
 ## Development and validation
 
@@ -254,16 +232,11 @@ not a proxy administrator.
 Tests use the standard-library unittest runner, mocked keyrings, and a local
 HTTP OAuth fixture; they need no company secrets or external LLM calls.
 GitHub Actions runs the suite and builds the wheel on Windows, macOS and Linux.
-The companion has its own TypeScript build, Node unit tests, official VS Code
-extension-host smoke tests and VSIX packaging; see its development section.
 
 Before production use, test against your actual gateway: SSO sign-in, wrong-team
 rejection, simultaneous projects, renewal, failed-renewal recovery, logout,
-streaming and tool calls. Company SSO and secure storage have been exercised on
-Windows and in a Linux container. Extension-host inference tests use synthetic
-local fixtures, not company prompts or credentials; live Copilot/Claude
-conversations still require an acceptance test. This project is private and
-has no open-source license assigned yet.
+streaming and tool calls. No live company SSO integration is claimed by this
+draft. It is private and has no open-source license assigned yet.
 
 ### Protocol references
 

@@ -1,4 +1,4 @@
-name: CLI and VS Code checks
+name: CLI checks
 
 on:
   push:
@@ -24,25 +24,3 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: python -m pip wheel --no-cache-dir --no-deps --wheel-dir dist .
       - run: llm-credentials --help
-
-  extension:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: vscode-extension
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: vscode-extension/package-lock.json
-      - run: npm ci --ignore-scripts
-      - run: npm test
-      - run: xvfb-run -a npm run test:host
-      - run: npm run package
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: llm-credential-mapping-vsix
-          path: vscode-extension/*.vsix
-          if-no-files-found: error

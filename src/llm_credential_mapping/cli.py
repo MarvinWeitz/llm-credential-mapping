@@ -26,8 +26,7 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--gateway", required=True, help="Trusted LiteLLM public origin, not /v1.")
     add.add_argument("--team-id", required=True, help="Exact LiteLLM team ID, not its display name.")
     add.add_argument("--allow-insecure-localhost", action="store_true", help="Development only.")
-    listing = actions.add_parser("list")
-    listing.add_argument("--json", action="store_true", help="Versioned, nonsecret project metadata.")
+    actions.add_parser("list")
     use = actions.add_parser("use")
     use.add_argument("name")
     for name in ("login", "token", "status", "logout", "run"):
@@ -57,24 +56,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Selected project '{args.name}'. Running agents are unchanged.")
             else:
                 active, profiles = store.list()
-                if args.json:
-                    print(json.dumps({
-                        "version": 1,
-                        "active": active,
-                        "projects": [
-                            {
-                                "name": profile.name,
-                                "gateway": profile.gateway,
-                                "team_id": profile.team_id,
-                                "allow_http": profile.allow_http,
-                            }
-                            for profile in profiles
-                        ],
-                    }, indent=2))
-                else:
-                    for profile in profiles:
-                        marker = "*" if profile.name == active else " "
-                        print(f"{marker} {profile.name}\t{profile.gateway}\t{profile.team_id}")
+                for profile in profiles:
+                    marker = "*" if profile.name == active else " "
+                    print(f"{marker} {profile.name}\t{profile.gateway}\t{profile.team_id}")
             return 0
         profile = store.get(args.project)
         manager = SessionManager(store, NativeKeyring())
