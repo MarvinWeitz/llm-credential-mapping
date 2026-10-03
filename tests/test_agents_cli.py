@@ -193,6 +193,31 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.stdout.getvalue(), "access-secret\n")
         self.assertEqual(self.stderr.getvalue(), "")
 
+    def test_project_json_is_versioned_nonsecret_and_needs_no_keyring(self):
+        store = ProfileStore(self.home)
+        store.add(Profile("b", "https://example.com", "team-b"))
+        store.add(Profile("a", "https://other.example.com", "team-a"))
+        with patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+            self.assertEqual(self.call("project", "list", "--json"), 0)
+        self.assertEqual(json.loads(self.stdout.getvalue()), {
+            "version": 1,
+            "active": "b",
+            "projects": [
+                {"name": "a", "gateway": "https://other.example.com", "team_id": "team-a", "allow_http": False},
+                {"name": "b", "gateway": "https://example.com", "team_id": "team-b", "allow_http": False},
+            ],
+        })
+        self.assertEqual(self.stderr.getvalue(), "")
+
+    def test_project_json_empty_store(self):
+        self.assertEqual(self.call("project", "list", "--json"), 0)
+        self.assertEqual(json.loads(self.stdout.getvalue()), {"version": 1, "active": None, "projects": []})
+
+    def test_project_list_keeps_human_format(self):
+        ProfileStore(self.home).add(Profile("a", "https://example.com", "team-a"))
+        self.assertEqual(self.call("project", "list"), 0)
+        self.assertEqual(self.stdout.getvalue(), "* a\thttps://example.com\tteam-a\n")
+
     def test_missing_login_reports_stderr_not_stdout(self):
         ProfileStore(self.home).add(Profile("a", "https://example.com", "a"))
         with patch("llm_credential_mapping.cli.NativeKeyring", return_value=MemoryStore()):

@@ -8,3 +8,8 @@ dist/
 .env.*
 .coverage
 htmlcov/
+node_modules/
+out/
+.vscode-test/
+*.vsix
+.claude/settings.local.json

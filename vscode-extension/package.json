@@ -1,0 +1,83 @@
+{
+  "name": "llm-credential-mapping",
+  "displayName": "LLM Credential Mapping",
+  "description": "Workspace-bound LiteLLM models for Copilot Chat and credential-helper setup for Claude Code.",
+  "version": "0.1.0",
+  "publisher": "cbs-consulting",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.140.0" },
+  "categories": ["AI", "Other"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cbs-consulting/llm-credential-mapping.git",
+    "directory": "vscode-extension"
+  },
+  "extensionKind": ["workspace"],
+  "capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "llmCredentials.selectProject", "title": "LLM: Select Project" },
+      { "command": "llmCredentials.login", "title": "LLM: Login" },
+      { "command": "llmCredentials.status", "title": "LLM: Show Status" },
+      { "command": "llmCredentials.configureClaude", "title": "LLM: Configure Claude Code" },
+      { "command": "llmCredentials.configureCli", "title": "LLM: Configure CLI Runtime" },
+      { "command": "llmCredentials.configureModels", "title": "LLM: Configure Copilot Models" }
+    ],
+    "languageModelChatProviders": [
+      { "vendor": "cbs-litellm", "displayName": "CBS LiteLLM", "managementCommand": "llmCredentials.selectProject" }
+    ],
+    "configuration": {
+      "title": "LLM Credential Mapping",
+      "properties": {
+        "llmCredentials.cliExecutable": {
+          "type": "string", "default": "llm-credentials", "scope": "machine",
+          "description": "CLI executable on the workspace host. Use an absolute Python executable with cliArguments for module execution."
+        },
+        "llmCredentials.cliArguments": {
+          "type": "array", "items": { "type": "string" }, "default": [], "scope": "machine",
+          "description": "Fixed executable arguments, e.g. [\"-m\", \"llm_credential_mapping\"]. Never include credentials."
+        },
+        "llmCredentials.homeDirectory": {
+          "type": "string", "default": "", "scope": "machine",
+          "description": "Optional nonsecret CLI configuration directory on the workspace host."
+        },
+        "llmCredentials.dbusSessionBusAddress": {
+          "type": "string", "default": "", "scope": "machine",
+          "description": "Linux only: address of the running, unlocked Secret Service session. Integrated-terminal sessions are not inherited by the extension host."
+        },
+        "llmCredentials.modelOverrides": {
+          "type": "array", "default": [], "scope": "window",
+          "description": "Explicit metadata for aliases absent from /model/info. Prefer gateway-provided metadata. Configure via LLM: Configure Copilot Models.",
+          "items": {
+            "type": "object",
+            "required": ["project", "id", "maxInputTokens", "maxOutputTokens", "toolCalling", "imageInput"],
+            "additionalProperties": false,
+            "properties": {
+              "project": { "type": "string" }, "id": { "type": "string" },
+              "maxInputTokens": { "type": "integer", "minimum": 1 },
+              "maxOutputTokens": { "type": "integer", "minimum": 1 },
+              "toolCalling": { "type": "boolean" }, "imageInput": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node --test out/test/cli.test.js out/test/protocol.test.js out/test/config.test.js",
+    "test:host": "npm run compile && node out/test/runHost.js",
+    "package": "npm run compile && vsce package --skip-license"
+  },
+  "dependencies": { "jsonc-parser": "3.3.1" },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.140.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "typescript": "6.0.3"
+  }
+}
