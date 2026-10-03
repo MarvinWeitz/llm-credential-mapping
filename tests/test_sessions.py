@@ -82,6 +82,14 @@ class SessionTests(unittest.TestCase):
             self.manager.token(self.profile)
         self.client.login.assert_not_called()
 
+    def test_expected_employee_is_checked_before_returning_or_refreshing_credentials(self):
+        for expiry in (time.time() + 3600, 0):
+            self.secrets.put(self.profile.account, replace(self.session, expires_at=expiry).to_dict())
+            with self.subTest(expiry=expiry), self.assertRaises(CredentialError):
+                self.manager.token(self.profile, expected_user="other-employee")
+            self.assertFalse(self.secrets.get(self.profile.account)["refresh_pending"])
+        self.client.refresh.assert_not_called()
+
     def test_refresh_saves_rotated_tokens(self):
         old = replace(self.session, expires_at=time.time() + 10)
         self.secrets.put(self.profile.account, old.to_dict())

@@ -34,8 +34,9 @@ Git origin -> repository customer default -> isolated agent process
   until they need renewal.
 - The customer tag is pinned at launch. Two agents can share the credential
   while sending different tags; the CLI never updates tags on a shared key.
-- There is no VS Code extension, local proxy, new central broker, or
-  administrator credential. Running-agent credential renewal is not added.
+- There is no custom VS Code extension, local proxy, new central broker, or
+  administrator credential. The optional official-Claude adapter adds a
+  rotating credential helper without changing the existing CLI launchers.
 
 ## Gateway prerequisites
 
@@ -233,7 +234,7 @@ be invoked directly with `opencode`, outside this credential launcher.
 The selected model is supplied through inline configuration instead of a root
 `--model` flag, which OpenCode v2 does not accept.
 
-The CLI does not edit the agents' configuration files or your parent shell.
+The `run` command does not edit agent configuration files or your parent shell.
 Tokens are not placed in command arguments. The child receives the token at
 startup; **a running agent is not automatically reauthenticated** if it outlives
 that token. Restart through the launcher or configure the tool's supported
@@ -286,6 +287,125 @@ is sent, the vault is marked pending. If renewal fails, is interrupted, or
 cannot be saved, the old refresh token is **not replayed**: sign in again.
 Refresh responses must retain the same employee/team binding.
 
+## Official Claude Code VS Code extension
+
+This integration uses the official extension's `claudeProcessWrapper` and
+Claude's `apiKeyHelper`. No companion extension is required. Configure it on the
+host where the official extension runs: in the container for Remote Containers,
+or locally for a local workspace. The CLI, Git, repository configuration and OS
+vault must be available on that same host.
+Use official Claude Code extension 2.1.246 or newer.
+
+### Try it
+
+Reinstall the updated CLI to create its second executable entry point:
+
+```bash
+python -m pip install -e .
+```
+
+Use your active virtual environment, and run inside a bound repository:
+
+```bash
+llm-credentials claude setup --profile demo --model YOUR_LITELLM_ALIAS
+```
+
+Setup checks the installed wrapper executable, repository binding and signed-in
+employee before saving nonsecret `claude.json` beside `projects.json`. It prints
+a VS Code JSON settings snippet; it does not modify any editor/project files.
+If needed, run `repo bind --profile demo` and `login --profile demo` first.
+
+In VS Code, open **Preferences: Open User Settings (JSON)** and merge the
+printed snippet. For a container/SSH workspace, use the **Remote** tab's User
+Settings instead. The snippet has these fields:
+
+```json
+{
+  "claudeCode.claudeProcessWrapper": "/absolute/path/to/venv/bin/llm-credentials-claude",
+  "claudeCode.disableLoginPrompt": true,
+  "claudeCode.environmentVariables": [
+    {
+      "name": "LLM_CREDENTIAL_MAPPING_HOME",
+      "value": "/absolute/path/to/credential/configuration"
+    }
+  ]
+}
+```
+
+Use the actual paths from setup, not these placeholders. On Windows, setup
+prints the installed `.exe` path. Keep unrelated `environmentVariables` entries
+when merging, but remove old gateway credential/routing overrides. Neither the
+snippet nor `claude.json` contains a token. The wrapper setting is
+machine-scoped, so putting it only in Workspace Settings does not work.
+
+Reload the VS Code window. Start a **new** conversation in the official Claude
+Code panel and send a small prompt. Check **View -> Output -> Claude Code** for
+the adapter's profile/customer/repository line, and confirm the customer tag in
+LiteLLM spend logs. Model requests go directly from Claude to LiteLLM.
+
+### Session behavior
+
+- At startup the wrapper resolves the extension process's working directory to
+  the Git `origin`, then uses the existing gateway/repository binding. There is
+  no browser or interactive customer picker in a background process; an unbound
+  repository fails with a `repo bind` instruction.
+- `claude setup` selects one authentication profile and model for future
+  extension sessions. It does not change the default profile used by other CLI
+  commands. Rerun setup to choose another profile/model.
+- The profile, employee, customer and model are pinned in a nonsecret child
+  context. Different repository windows keep independent customer tags.
+  Later profile selections, repository rebindings and setup changes do not
+  retag an existing child or change its credential helper's profile. If someone
+  signs in as a different employee, the old helper fails instead of switching
+  identity. Start a new session after an intentional context change.
+- Credentials are fetched by `apiKeyHelper`, not embedded in settings, command
+  arguments or a static `ANTHROPIC_AUTH_TOKEN`. The helper uses the installation's
+  absolute Python interpreter and the session's pinned configuration directory.
+  It checks the vault on Claude's one-minute helper cache interval; refreshes
+  reuse the existing cross-process locks and single-use rotation safeguards.
+  Claude 2.1.246+ also refreshes expired cached JWTs before a later request.
+  This does not extend an already in-flight request or remove SSO re-login needs.
+- Inline settings preserve extension-provided hooks, permissions and unrelated
+  environment values. The adapter overrides gateway/customer/auth settings,
+  model/fallback aliases and small-model aliases for this process. The model
+  configured by setup takes precedence over the panel's model picker; rerun
+  setup and start a new session to change it.
+- Nonessential Claude traffic is disabled in wrapped sessions; this also
+  disables Claude's own auto-update checks in those processes. Update the
+  official extension through VS Code.
+- This is local inference through the official extension, not Claude cloud
+  sessions or GitHub Copilot integration. The official wrapper hook can change
+  permission-mode defaults and session-resume checks; see the vendor reference.
+
+### Diagnostics and removal
+
+```bash
+llm-credentials claude check
+```
+
+This prints only nonsecret metadata and verifies/renews the credential. It does
+not send a model prompt. For extension-host diagnostics, the wrapper executable
+also accepts `--llm-check`; never invoke `claude token` to diagnose a problem,
+since that internal command prints a secret.
+
+If the terminal works but the extension fails, inspect the adapter error in the
+Claude output channel. A Linux vault accessed through a terminal-started D-Bus
+session may not be reachable from VS Code's extension host. This adapter does
+not redesign container vault storage: keep a secure vault available to that
+host, or stop before sending requests. A terminal-only `claude check` is not
+proof of extension-host vault access.
+
+If setup says it cannot execute the installed wrapper, check the executable
+permissions/application policy. Some Windows hosts block pip-generated `.exe`
+launchers; calling the main CLI with `python -m ...` does not remove that
+restriction for the extension's executable hook. Do not weaken host policy to
+try this adapter.
+
+To disable integration, remove `claudeCode.claudeProcessWrapper` and the
+integration's `LLM_CREDENTIAL_MAPPING_HOME` environment entry from User/Remote
+Settings. Restore `disableLoginPrompt` if you want first-party login prompts,
+then reload. Existing vault credentials and repository bindings are untouched.
+
 ## Security boundaries and current limits
 
 - Only supported native OS keyrings are accepted. There is **no plaintext
@@ -310,8 +430,9 @@ Refresh responses must retain the same employee/team binding.
   `localhost`, `127.0.0.1` or `::1`; it never permits remote cleartext endpoints.
 - Manual browser team consent remains required. The profile name is not sent
   as an undocumented automatic team override.
-- There is no raw `sk-...` key import, VS Code
-  integration, or claim that GitHub-hosted Copilot traffic is intercepted.
+- There is no raw `sk-...` key import or claim that GitHub-hosted Copilot traffic
+  is intercepted. The official-Claude wrapper is optional and does not install
+  a custom VS Code extension.
 
 ## Development and validation
 
@@ -323,6 +444,14 @@ Refresh responses must retain the same employee/team binding.
 Tests use the standard-library unittest runner, mocked keyrings, and a local
 HTTP OAuth fixture; they need no company secrets or external LLM calls.
 GitHub Actions runs the suite and builds the wheel on Windows, macOS and Linux.
+
+The optional installed-Claude test uses only a localhost fixture and a temporary
+synthetic OS-vault credential. Set `LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY` to
+the official native binary's absolute path and run
+`python -m unittest discover -s tests -p test_claude_native.py -v` to exercise its
+stream-json protocol, customer headers, helper retry after 401 and refresh
+rotation. This test is skipped by default because it needs an installed Claude
+binary and an accessible native vault. It is not an extension-host UI test.
 
 Before production use, test against your actual gateway: SSO sign-in, wrong-team
 rejection, simultaneous customers, renewal, failed-renewal recovery, logout,
@@ -341,3 +470,5 @@ It is private and has no open-source license assigned yet.
 - [Claude Code custom headers](https://code.claude.com/docs/en/env-vars)
 - [Codex provider headers](https://developers.openai.com/codex/config-reference/)
 - [OpenCode provider headers](https://opencode.ai/docs/providers/)
+- [Official Claude extension wrapper](https://code.claude.com/docs/en/vs-code#extension-settings)
+- [Claude credential-helper rotation](https://code.claude.com/docs/en/llm-gateway-connect#rotate-credentials-with-apikeyhelper)

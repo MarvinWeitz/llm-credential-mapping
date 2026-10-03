@@ -50,11 +50,14 @@ class SessionManager:
                     notify("Warning: previous refresh grant could not be revoked; contact the gateway administrator.")
             return session
 
-    def token(self, profile: Profile) -> str:
+    def token(self, profile: Profile, *, expected_user: str | None = None) -> str:
+        """Get or renew a credential; an expected employee must match before any refresh or token release."""
         with self.profiles.locked(profile.account):
             session = self._load(profile)
             if session is None:
                 raise CredentialError(f"No login for '{profile.name}'; run login --project {profile.name}.")
+            if expected_user is not None and session.user_id != expected_user:
+                raise CredentialError("The signed-in employee changed; start a new Claude session. No credential returned.")
             if session.refresh_pending:
                 raise CredentialError("Previous renewal was interrupted or uncertain; log in again. No token replayed.")
             if session.expires_at > time.time() + 60:

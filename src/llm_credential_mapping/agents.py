@@ -30,6 +30,24 @@ def _claude_headers(existing: str, customer: str) -> str:
     return "\n".join(headers)
 
 
+def claude_environment(
+    profile: Profile, model: str | None = None, customer: str | None = None,
+    environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Copy the environment and configure Claude routing/tags; no credential is fetched or added."""
+    env = (os.environ if environment is None else environment).copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    for flag in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
+        env.pop(flag, None)
+    env["ANTHROPIC_BASE_URL"] = profile.gateway
+    if customer is not None:
+        env[CUSTOMER_VARIABLE] = validate_tag(customer)
+        env["ANTHROPIC_CUSTOM_HEADERS"] = _claude_headers(env.get("ANTHROPIC_CUSTOM_HEADERS", ""), customer)
+    if model:
+        env["ANTHROPIC_MODEL"] = model
+    return env
+
+
 def _opencode_command(args: list[str], major: int = 1) -> list[str]:
     if args and args[0] == "exec":
         raise CredentialError("OpenCode uses 'run', not Codex's 'exec': opencode -- run \"Your prompt\".")
@@ -82,15 +100,8 @@ def agent_command(
     if customer is not None:
         env[CUSTOMER_VARIABLE] = validate_tag(customer)
     if agent == "claude":
-        env.pop("ANTHROPIC_API_KEY", None)
-        for flag in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
-            env.pop(flag, None)
-        env["ANTHROPIC_BASE_URL"] = profile.gateway
+        env = claude_environment(profile, model, customer, env)
         env["ANTHROPIC_AUTH_TOKEN"] = token
-        if customer is not None:
-            env["ANTHROPIC_CUSTOM_HEADERS"] = _claude_headers(env.get("ANTHROPIC_CUSTOM_HEADERS", ""), customer)
-        if model:
-            env["ANTHROPIC_MODEL"] = model
         command = ["claude"]
     elif agent == "codex":
         env["OPENAI_API_KEY"] = token

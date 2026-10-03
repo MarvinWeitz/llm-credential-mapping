@@ -6,6 +6,7 @@ from typing import Callable
 
 from . import __version__
 from .agents import launch
+from .claude import check as claude_check, helper_token, setup as claude_setup
 from .errors import CredentialError
 from .profiles import Profile, ProfileStore, default_home
 from .repositories import RepositoryStore, current_repository
@@ -22,6 +23,13 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--version", action="version", version=__version__)
     root.add_argument("--home", type=Path, help="Nonsecret configuration directory.")
     commands = root.add_subparsers(dest="command", required=True)
+    claude = commands.add_parser("claude", help="Integrate the official Claude Code VS Code extension.")
+    claude_actions = claude.add_subparsers(dest="action", required=True)
+    setup = claude_actions.add_parser("setup", help="Validate this repository and print editor settings to merge.")
+    setup.add_argument("--project", "--profile", dest="project")
+    setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
+    claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
+    claude_actions.add_parser("token", help="Internal apiKeyHelper: return the pinned session credential only.")
     project = commands.add_parser("project", aliases=["profile"], help="Manage gateway/business-unit profiles.")
     actions = project.add_subparsers(dest="action", required=True)
     add = actions.add_parser("add")
@@ -91,6 +99,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         store = ProfileStore(args.home.expanduser().resolve() if args.home else default_home())
+        if args.command == "claude":
+            if args.action == "setup":
+                print(json.dumps(claude_setup(store, args.project, args.model), indent=2))
+                print(
+                    "Merge this snippet into VS Code User Settings (JSON), or Remote User Settings in a container. "
+                    "Keep unrelated environmentVariables entries, but remove old gateway credentials/routing overrides. "
+                    "Reload the window and start a new Claude conversation. No editor settings were edited.",
+                    file=sys.stderr,
+                )
+            elif args.action == "check":
+                print(json.dumps(claude_check(store), indent=2))
+            else:
+                print(helper_token())
+            return 0
         if args.command in ("project", "profile"):
             label = "project" if args.command == "project" else "profile"
             if args.action == "add":
