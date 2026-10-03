@@ -4,10 +4,11 @@ import json
 import os
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from llm_credential_mapping.agents import TOKEN_VARIABLE, agent_command, launch
+from llm_credential_mapping.agents import TOKEN_VARIABLE, _opencode_command, _opencode_major, agent_command, launch
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.profiles import Profile, ProfileStore
@@ -43,8 +44,103 @@ class AgentTests(unittest.TestCase):
         config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
         self.assertEqual(config["theme"], "dark")
         self.assertIn("existing", config["provider"])
-        self.assertEqual(args[-1], "llm-credential-mapping/alias")
+        self.assertEqual(config["model"], "llm-credential-mapping/alias")
+        self.assertEqual(args, ["opencode"])
         self.assertNotIn("secret", env["OPENCODE_CONFIG_CONTENT"])
+
+    def test_opencode_run_does_not_use_root_model_flag(self):
+        args, env = agent_command("opencode", self.profile, "secret", ["run", "Explain this repo"], "alias")
+        self.assertEqual(args, ["opencode", "run", "Explain this repo"])
+        self.assertEqual(json.loads(env["OPENCODE_CONFIG_CONTENT"])["model"], "llm-credential-mapping/alias")
+
+    def test_opencode_exec_has_corrective_error(self):
+        with self.assertRaises(CredentialError) as result:
+            agent_command("opencode", self.profile, "secret", ["exec", "Explain"], "alias")
+        self.assertIn("uses 'run'", str(result.exception))
+
+    def test_opencode_v2_private_server_argument_placement(self):
+        for args, expected in (
+            ([], ["opencode", "--standalone"]),
+            (["--continue"], ["opencode", "--standalone", "--continue"]),
+            (["run", "Explain this repo"], ["opencode", "run", "--standalone", "Explain this repo"]),
+            (["run", "--format", "json", "Explain"], ["opencode", "run", "--standalone", "--format", "json", "Explain"]),
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(_opencode_command(args, 2), expected)
+
+    def test_opencode_v2_interactive_directory_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(_opencode_command([directory], 2), ["opencode", "--standalone", directory])
+
+    def test_opencode_v1_does_not_get_v2_flags(self):
+        self.assertEqual(_opencode_command(["run", "Explain"], 1), ["opencode", "run", "Explain"])
+        self.assertEqual(_opencode_command([], 1), ["opencode"])
+
+    def test_opencode_v2_shared_server_and_other_subcommands_are_rejected(self):
+        for args in (
+            ["--server", "http://localhost:4096"],
+            ["run", "--server=http://localhost:4096", "Explain"],
+            ["run", "--standalone=false", "Explain"],
+            ["api"],
+        ):
+            with self.subTest(args=args), self.assertRaises(CredentialError):
+                _opencode_command(args, 2)
+
+    def test_opencode_v2_preserves_literal_arguments_after_separator(self):
+        self.assertEqual(
+            _opencode_command(["run", "--", "--server"], 2),
+            ["opencode", "run", "--standalone", "--", "--server"],
+        )
+
+    def test_opencode_version_formats(self):
+        for output, major in (("1.2.3\n", 1), ("opencode v2.0.22\n", 2), ("2.0.22-beta.1", 2)):
+            with patch("llm_credential_mapping.agents.subprocess.run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+                with self.subTest(output=output):
+                    self.assertEqual(_opencode_major("opencode"), major)
+
+    def test_opencode_version_failure_is_explicit_and_redacted(self):
+        for result in (
+            subprocess.CompletedProcess([], 1, "secret-error", "secret-error"),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            with patch("llm_credential_mapping.agents.subprocess.run", return_value=result):
+                with self.subTest(result=result), self.assertRaises(CredentialError) as error:
+                    _opencode_major("opencode")
+                self.assertNotIn("secret-error", str(error.exception))
+        with patch("llm_credential_mapping.agents.subprocess.run", side_effect=subprocess.TimeoutExpired("opencode", 10)):
+            with self.assertRaises(CredentialError):
+                _opencode_major("opencode")
+
+    def test_opencode_unknown_major_is_rejected(self):
+        with self.assertRaises(CredentialError):
+            _opencode_command([], 3)
+
+    def test_launch_opencode_v2_uses_child_only_private_configuration(self):
+        with patch("llm_credential_mapping.agents.shutil.which", return_value="opencode"), \
+                patch("llm_credential_mapping.agents.subprocess.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, "opencode v2.0.22\n", ""),
+                subprocess.CompletedProcess([], 7),
+            ]
+            self.assertEqual(launch("opencode", self.profile, "secret", ["run", "Explain"], "alias"), 7)
+            version_call, child_call = run.call_args_list
+            self.assertEqual(version_call.args[0], ["opencode", "--version"])
+            self.assertNotIn("env", version_call.kwargs)
+            self.assertEqual(child_call.args[0], ["opencode", "run", "--standalone", "Explain"])
+            env = child_call.kwargs["env"]
+            self.assertEqual(env[TOKEN_VARIABLE], "secret")
+            self.assertEqual(json.loads(env["OPENCODE_CONFIG_CONTENT"])["model"], "llm-credential-mapping/alias")
+            self.assertNotIn("secret", " ".join(child_call.args[0]))
+
+    def test_launch_opencode_v1_keeps_original_execution_mode(self):
+        with patch("llm_credential_mapping.agents.shutil.which", return_value="opencode"), \
+                patch("llm_credential_mapping.agents.subprocess.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, "1.2.3\n", ""),
+                subprocess.CompletedProcess([], 0),
+            ]
+            self.assertEqual(launch("opencode", self.profile, "secret", ["run", "Explain"], "alias"), 0)
+            self.assertEqual(run.call_args.args[0], ["opencode", "run", "Explain"])
 
     def test_invalid_opencode_settings_are_not_discarded(self):
         for existing in ("{", "[]", '{"provider":[]}'):
@@ -112,6 +208,17 @@ class CliTests(unittest.TestCase):
             manager.return_value.token.return_value = "secret"
             self.assertEqual(self.call("run", "--project", "a", "claude", "--", "--resume"), 9)
             self.assertEqual(launched.call_args.args[3], ["--resume"])
+
+    def test_opencode_run_forwards_subcommand_and_prompt(self):
+        ProfileStore(self.home).add(Profile("a", "https://example.com", "a"))
+        with patch("llm_credential_mapping.cli.NativeKeyring"), \
+                patch("llm_credential_mapping.cli.SessionManager") as manager, \
+                patch("llm_credential_mapping.cli.launch", return_value=0) as launched:
+            manager.return_value.token.return_value = "secret"
+            self.assertEqual(
+                self.call("run", "--project", "a", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
+            )
+            self.assertEqual(launched.call_args.args[3:], (["run", "Explain this repo"], "alias"))
 
     def test_keyring_refuses_plaintext_backend(self):
         with patch("llm_credential_mapping.storage.keyring.get_keyring", return_value=object()):

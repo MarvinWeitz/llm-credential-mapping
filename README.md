@@ -144,6 +144,7 @@ Use model aliases that your LiteLLM gateway actually exposes.
 llm-credentials run --project project-a --model YOUR_CLAUDE_ALIAS claude -- --resume
 llm-credentials run --project project-b --model YOUR_CODEX_ALIAS codex -- exec "Explain this repository"
 llm-credentials run --project project-a --model YOUR_CHAT_ALIAS opencode
+llm-credentials run --project project-a --model YOUR_CHAT_ALIAS opencode -- run "Explain this repository"
 ```
 
 Launcher options must come **before** the agent name; everything after it is
@@ -153,7 +154,16 @@ forwarded to the agent. The optional separator `--` is stripped.
 | --- | --- |
 | Claude Code | Gateway root in `ANTHROPIC_BASE_URL`; access token in `ANTHROPIC_AUTH_TOKEN`; clears `ANTHROPIC_API_KEY` |
 | Codex | Custom provider via `-c`, Responses over HTTP/SSE, credential read from a child environment variable |
-| OpenCode | OpenAI-compatible provider added through `OPENCODE_CONFIG_CONTENT`; requires `--model`; preserves other inline configuration |
+| OpenCode | OpenAI-compatible provider and default model set through `OPENCODE_CONFIG_CONTENT`; requires launcher `--model`; preserves unrelated inline configuration |
+
+OpenCode uses the `run` subcommand for a non-interactive prompt, not Codex's
+`exec`. The launcher supports OpenCode v1 and v2, detecting the installed version
+before launch. For v2, interactive and `run` sessions use `--standalone` so an
+existing background service cannot retain another project's endpoint/token.
+An explicit `--server` is rejected in v2 launch mode. Other v2 subcommands should
+be invoked directly with `opencode`, outside this credential launcher.
+The selected model is supplied through inline configuration instead of a root
+`--model` flag, which OpenCode v2 does not accept.
 
 The CLI does not edit the agents' configuration files or your parent shell.
 Tokens are not placed in command arguments. The child receives the token at

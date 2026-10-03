@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -7,6 +8,45 @@ from .errors import CredentialError
 from .profiles import Profile
 
 TOKEN_VARIABLE = "LLM_CREDENTIAL_MAPPING_TOKEN"
+
+
+def _opencode_command(args: list[str], major: int = 1) -> list[str]:
+    if args and args[0] == "exec":
+        raise CredentialError("OpenCode uses 'run', not Codex's 'exec': opencode -- run \"Your prompt\".")
+    if major == 1:
+        return ["opencode", *args]
+    if major != 2:
+        raise CredentialError("Supported OpenCode versions are v1 and v2; this version needs an updated adapter.")
+    flag_args = args[:args.index("--")] if "--" in args else args
+    if any(arg == "--server" or arg.startswith("--server=") for arg in flag_args):
+        raise CredentialError("The OpenCode v2 launcher uses a private server; --server would bypass project isolation.")
+    if any(arg.startswith("--standalone=") and arg != "--standalone=true" for arg in flag_args):
+        raise CredentialError("The OpenCode v2 launcher cannot disable its private server.")
+    if args and args[0] == "run":
+        return ["opencode", "run", "--standalone", *args[1:]]
+    if args and not args[0].startswith("-") and not os.path.isdir(args[0]):
+        raise CredentialError(
+            "OpenCode v2 launch mode supports interactive use or 'run'. "
+            "Use the unwrapped OpenCode command for other subcommands."
+        )
+    return ["opencode", "--standalone", *args]
+
+
+def _opencode_major(executable: str) -> int:
+    try:
+        result = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+        raise CredentialError("Cannot check OpenCode's version; verify 'opencode --version' works.") from None
+    match = re.fullmatch(
+        r"(?:opencode\s+)?v?(\d+)\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?",
+        result.stdout.strip(),
+        re.IGNORECASE,
+    )
+    if result.returncode != 0 or match is None:
+        raise CredentialError("Cannot identify OpenCode's version; verify 'opencode --version' works.")
+    return int(match[1])
 
 
 def agent_command(
@@ -60,8 +100,9 @@ def agent_command(
             },
             "models": {model: {"name": model}},
         }
+        config["model"] = provider + "/" + model
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config)
-        command = ["opencode", "--model", provider + "/" + model]
+        return _opencode_command(args), env
     else:
         raise CredentialError("Unsupported agent; choose claude, codex or opencode.")
     return command + args, env
@@ -72,6 +113,8 @@ def launch(agent: str, profile: Profile, token: str, args: list[str], model: str
     executable = shutil.which(command[0])
     if executable is None:
         raise CredentialError(f"Install '{agent}' and make it available on PATH.")
+    if agent == "opencode":
+        command = _opencode_command(args, _opencode_major(executable))
     command[0] = executable
     try:
         return subprocess.run(command, env=env, check=False).returncode
