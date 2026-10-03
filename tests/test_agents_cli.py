@@ -3,12 +3,13 @@ import io
 import json
 import os
 import tempfile
+import tomllib
 import unittest
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from llm_credential_mapping.agents import TOKEN_VARIABLE, _opencode_command, _opencode_major, agent_command, launch
+from llm_credential_mapping.agents import CUSTOMER_VARIABLE, TOKEN_VARIABLE, _opencode_command, _opencode_major, agent_command, launch
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.profiles import Profile, ProfileStore
@@ -37,6 +38,55 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("credential-secret", " ".join(args))
         self.assertEqual(env[TOKEN_VARIABLE], "credential-secret")
         self.assertEqual(args[-4:], ["--model", "alias", "exec", "hello"])
+
+    def test_customer_headers_are_isolated_for_every_adapter(self):
+        for agent in ("claude", "codex", "opencode"):
+            with self.subTest(agent=agent), patch.dict(os.environ, {CUSTOMER_VARIABLE: "parent"}, clear=True):
+                args_a, env_a = agent_command(agent, self.profile, "same-secret", [], "alias", "customer:A")
+                args_b, env_b = agent_command(agent, self.profile, "same-secret", [], "alias", "customer:B")
+                self.assertEqual(env_a[TOKEN_VARIABLE], env_b[TOKEN_VARIABLE])
+                self.assertEqual(env_a[CUSTOMER_VARIABLE], "customer:A")
+                self.assertEqual(env_b[CUSTOMER_VARIABLE], "customer:B")
+                self.assertEqual(os.environ[CUSTOMER_VARIABLE], "parent")
+                self.assertNotIn("same-secret", " ".join(args_a + args_b))
+                if agent == "claude":
+                    self.assertEqual(env_a["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:A")
+                    self.assertEqual(env_b["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:B")
+                elif agent == "codex":
+                    self.assertIn(
+                        'model_providers.llm-credential-mapping.env_http_headers.x-litellm-tags="' + CUSTOMER_VARIABLE + '"',
+                        args_a,
+                    )
+                else:
+                    for env, customer in ((env_a, "customer:A"), (env_b, "customer:B")):
+                        options = json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"]["llm-credential-mapping"]["options"]
+                        self.assertEqual(options["headers"], {"x-litellm-tags": customer})
+
+    def test_claude_replaces_inherited_tags_but_preserves_other_headers(self):
+        existing = "X-Trace: trace\nX-LiteLLM-Tags: old-customer\nx-litellm-tags: another"
+        with patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": existing}):
+            _, env = agent_command("claude", self.profile, "secret", [], customer="customer:A")
+            self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: trace\nx-litellm-tags: customer:A")
+            self.assertEqual(os.environ["ANTHROPIC_CUSTOM_HEADERS"], existing)
+
+    def test_codex_customer_header_overrides_are_valid_toml(self):
+        args, env = agent_command("codex", self.profile, "secret", [], customer="customer:A")
+        config = tomllib.loads("\n".join(args[index + 1] for index, value in enumerate(args) if value == "-c"))
+        provider = config["model_providers"]["llm-credential-mapping"]
+        self.assertEqual(env[provider["env_http_headers"]["x-litellm-tags"]], "customer:A")
+        self.assertEqual(env[provider["env_key"]], "secret")
+
+    def test_claude_invalid_or_auth_overriding_headers_fail_without_secrets(self):
+        for header in ("invalid-secret", "X-Trace: secret\x01", "Authorization: secret", "X-API-Key: secret", "Host: secret"):
+            with self.subTest(header=header), patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": header}):
+                with self.assertRaises(CredentialError) as error:
+                    agent_command("claude", self.profile, "secret", [], customer="customer:A")
+                self.assertNotIn("secret", str(error.exception))
+
+    def test_invalid_customer_cannot_reach_any_adapter(self):
+        for agent in ("claude", "codex", "opencode"):
+            with self.subTest(agent=agent), self.assertRaises(CredentialError):
+                agent_command(agent, self.profile, "secret", [], "alias", "customer:A,customer:B")
 
     def test_opencode_preserves_inline_configuration(self):
         with patch.dict(os.environ, {"OPENCODE_CONFIG_CONTENT": '{"theme":"dark","provider":{"existing":{}}}'}):
@@ -75,6 +125,12 @@ class AgentTests(unittest.TestCase):
     def test_opencode_v1_does_not_get_v2_flags(self):
         self.assertEqual(_opencode_command(["run", "Explain"], 1), ["opencode", "run", "Explain"])
         self.assertEqual(_opencode_command([], 1), ["opencode"])
+
+    def test_opencode_shared_server_attachment_is_rejected_in_both_versions(self):
+        for major in (1, 2):
+            for args in (["run", "--attach", "http://localhost:4096"], ["run", "--attach=http://localhost:4096"]):
+                with self.subTest(major=major, args=args), self.assertRaises(CredentialError):
+                    _opencode_command(args, major)
 
     def test_opencode_v2_shared_server_and_other_subcommands_are_rejected(self):
         for args in (
@@ -206,8 +262,9 @@ class CliTests(unittest.TestCase):
                 patch("llm_credential_mapping.cli.SessionManager") as manager, \
                 patch("llm_credential_mapping.cli.launch", return_value=9) as launched:
             manager.return_value.token.return_value = "secret"
-            self.assertEqual(self.call("run", "--project", "a", "claude", "--", "--resume"), 9)
+            self.assertEqual(self.call("run", "--project", "a", "--customer", "customer:A", "claude", "--", "--resume"), 9)
             self.assertEqual(launched.call_args.args[3], ["--resume"])
+            self.assertEqual(launched.call_args.args[5], "customer:A")
 
     def test_opencode_run_forwards_subcommand_and_prompt(self):
         ProfileStore(self.home).add(Profile("a", "https://example.com", "a"))
@@ -216,9 +273,9 @@ class CliTests(unittest.TestCase):
                 patch("llm_credential_mapping.cli.launch", return_value=0) as launched:
             manager.return_value.token.return_value = "secret"
             self.assertEqual(
-                self.call("run", "--project", "a", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
+                self.call("run", "--project", "a", "--customer", "customer:A", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
             )
-            self.assertEqual(launched.call_args.args[3:], (["run", "Explain this repo"], "alias"))
+            self.assertEqual(launched.call_args.args[3:], (["run", "Explain this repo"], "alias", "customer:A"))
 
     def test_keyring_refuses_plaintext_backend(self):
         with patch("llm_credential_mapping.storage.keyring.get_keyring", return_value=object()):

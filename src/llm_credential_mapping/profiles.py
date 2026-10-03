@@ -47,7 +47,7 @@ def gateway_origin(value: str, allow_http: bool = False) -> str:
 
 @dataclass(frozen=True)
 class Profile:
-    """A manually named project bound to one gateway and expected LiteLLM team ID."""
+    """A named authentication profile bound to a gateway and business-unit team ID."""
 
     name: str
     gateway: str
@@ -83,6 +83,24 @@ def default_home() -> Path:
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return root / "llm-credential-mapping"
+
+
+def atomic_write_json(path: Path, value: dict) -> None:
+    """Replace a JSON configuration atomically; the caller must hold its configuration lock."""
+    filename = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as output:
+            filename = output.name
+            json.dump(value, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(filename, path)
+    finally:
+        if filename and os.path.exists(filename):
+            os.unlink(filename)
 
 
 class ProfileStore:
@@ -137,20 +155,7 @@ class ProfileStore:
         return Profile(name, item["gateway"], item["team_id"], item["allow_http"])
 
     def _write(self, value: dict) -> None:
-        filename = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=self.home, delete=False
-            ) as output:
-                filename = output.name
-                json.dump(value, output, indent=2)
-                output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(filename, self.path)
-        finally:
-            if filename and os.path.exists(filename):
-                os.unlink(filename)
+        atomic_write_json(self.path, value)
 
     def add(self, profile: Profile) -> None:
         with self.locked():

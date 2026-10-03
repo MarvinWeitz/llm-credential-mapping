@@ -16,7 +16,23 @@ class JsonTransport:
     """Fetch JSON with verified TLS, bounded responses and no redirects or automatic retries."""
 
     def request(self, method: str, url: str, payload: dict | None = None, *, form=False) -> dict:
-        headers = {"Accept": "application/json"}
+        value = self._request(method, url, payload, form=form)
+        if not isinstance(value, dict):
+            raise CredentialError("Gateway returned an unexpected JSON structure.")
+        return value
+
+    def get_list(self, url: str, *, headers: dict[str, str]) -> list:
+        """Read an authenticated JSON array without redirects; reject other response shapes."""
+        value = self._request("GET", url, headers=headers)
+        if not isinstance(value, list):
+            raise CredentialError("Gateway returned an unexpected JSON list structure.")
+        return value
+
+    def _request(
+        self, method: str, url: str, payload: dict | None = None, *,
+        form=False, headers: dict[str, str] | None = None,
+    ) -> dict | list:
+        headers = {"Accept": "application/json", **(headers or {})}
         data = None
         if payload is not None:
             if form:
@@ -45,6 +61,6 @@ class JsonTransport:
             value = json.loads(raw)
         except (ValueError, UnicodeError):
             raise CredentialError("Gateway returned invalid JSON.") from None
-        if not isinstance(value, dict):
+        if not isinstance(value, (dict, list)):
             raise CredentialError("Gateway returned an unexpected JSON structure.")
         return value

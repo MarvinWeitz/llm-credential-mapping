@@ -1,7 +1,7 @@
 # LLM Credential Mapping
 
-First-draft Python CLI for manually selecting a project, signing in through
-LiteLLM's native SSO flow, and launching CLI agents without copying API keys.
+Python CLI for signing in through LiteLLM's native SSO flow and launching CLI
+agents with repository-selected, session-local customer tags.
 The command is **`llm-credentials`**.
 
 LiteLLM is the first and currently only gateway. The project/credential layer is
@@ -10,32 +10,32 @@ This is an independent project, not an official LiteLLM client.
 
 ## Scope and identity model
 
-A **project profile** maps a local name to a trusted LiteLLM gateway root and an
-exact LiteLLM **team ID**. Here a team represents a business project; it is not
-the separate LiteLLM `Project` entity.
+An **authentication profile** maps a local name to a trusted LiteLLM gateway
+root and an exact **business-unit team ID**. Customers are request tags, not
+teams. A profile is not the separate LiteLLM `Project` entity.
 
 ```text
-Manually selected CLI project -> gateway + expected team ID
-                                      |
-                          LiteLLM browser login / company SSO
-                                      |
-                       Employee + consent-selected team token
-                                      |
-                       OS credential vault, per project profile
-                                      |
-                       CLI agent -> LiteLLM -> model provider
+Authentication profile -> gateway + business-unit team -> company SSO
+                                                          |
+                                            employee/team credential in OS vault
+                                                          |
+Git origin -> repository customer default -> isolated agent process
+                                                          |
+                                      request-local customer tag -> LiteLLM
 ```
 
 - The employee is established by SSO, never a local username.
 - The user selects a team on LiteLLM's browser consent page. The CLI rejects a
-  credential if the returned team ID does not match the selected project.
+  credential if the returned team ID does not match the selected profile.
 - Login returns a short-lived access token and a rotating refresh token.
   These are **not** existing `sk-...` virtual keys. Native session credentials
   inherit employee/team controls; existing key-specific budgets are not reused.
 - No new credential is created per inference request. Credentials are reused
   until they need renewal.
-- There is no repository detection, VS Code extension, local proxy, new central
-  broker, or administrator credential in this draft.
+- The customer tag is pinned at launch. Two agents can share the credential
+  while sending different tags; the CLI never updates tags on a shared key.
+- There is no VS Code extension, local proxy, new central broker, or
+  administrator credential. Running-agent credential renewal is not added.
 
 ## Gateway prerequisites
 
@@ -87,20 +87,22 @@ If Windows denies execution of pip-generated `.exe` launchers, use the module
 entry point: `python -m llm_credential_mapping --help`. It accepts exactly the
 same arguments as `llm-credentials`; do not weaken your host's security policy.
 
-## Configure and choose projects
+## Configure and choose authentication profiles
 
 Copy the exact **team ID** from your gateway, not merely its display name:
 
 ```powershell
-llm-credentials project add project-a --gateway https://llm.company.example --team-id TEAM_ID_A
-llm-credentials project add project-b --gateway https://llm.company.example --team-id TEAM_ID_B
-llm-credentials project list
-llm-credentials project use project-a
+llm-credentials profile add consulting --gateway https://llm.company.example --team-id BUSINESS_UNIT_TEAM_ID
+llm-credentials profile list
+llm-credentials profile use consulting
 ```
 
-The first configured project becomes the default. `project use` changes the
-default for future commands only; it never changes already-running agents.
-Use `--project` for deterministic parallel sessions.
+The first profile becomes the default. `profile use` changes future commands
+only; already-running agents are unchanged. `--profile` selects authentication,
+not a customer. `project` and `--project` remain compatible aliases, and existing
+profiles, vault account identifiers and SSO sessions are preserved. If an old
+profile represents a customer-specific team, add a business-unit profile and
+sign in to it rather than rewriting that profile's credentials.
 
 Project metadata is stored in `projects.json` in:
 
@@ -115,16 +117,16 @@ Profiles cannot be silently overwritten with a different endpoint/team.
 ## Login, status and logout
 
 ```powershell
-llm-credentials login --project project-a
-llm-credentials status --project project-a
-llm-credentials login --project project-b
-llm-credentials logout --project project-a
+llm-credentials login --profile consulting
+llm-credentials status --profile consulting
+llm-credentials logout --profile consulting
 ```
 
 `login` opens the default browser and waits up to 180 seconds for a loopback
 callback. Use `--timeout 300` to wait longer, or `--no-browser` to print the
 authorization URL to stderr and open it yourself on the same machine.
-At consent, select the team corresponding to the CLI project.
+At consent, select the business-unit team corresponding to the profile. You
+do not switch teams when changing customers.
 
 Credentials are isolated by profile/gateway/team, with one signed-in employee
 per profile. Logging in again replaces that profile's grant and attempts to
@@ -135,32 +137,98 @@ gateway is unavailable, logout fails and keeps the credential so revocation can
 be retried. LiteLLM native access tokens are not immediately revocable: existing
 copies remain valid until expiry. Do not rely on logout for instant offboarding.
 
-## Launch agents
+## Discover tags and bind repositories
+
+```powershell
+llm-credentials tags list --profile consulting
+llm-credentials tags list --profile consulting --prefix customer- --json
+```
+
+Discovery uses authenticated `GET /tag/list` on the configured gateway, without
+redirects. Output contains tag names and descriptions only. The server defines
+visibility: a deployment may return all tags or just tags previously used by
+the employee. This API is **not an allowed-customer authorization catalogue**.
+It may include non-customer tags such as user-agent labels. `--prefix` filters
+locally; it does not create or prepend a prefix to the chosen tag.
+
+Inside a repository, select its customer once:
+
+```powershell
+llm-credentials repo bind --profile consulting
+llm-credentials repo list --profile consulting
+```
+
+The interactive picker displays visible tags; nothing is selected implicitly,
+even if only one tag is visible. For a known administrator-approved tag, or if
+tag discovery is forbidden/empty, bind it explicitly:
+
+```powershell
+llm-credentials repo bind --profile consulting --customer customer-acme
+llm-credentials repo unbind --profile consulting
+```
+
+Explicit binding/listing/unbinding requires no vault access. `repo bind` and
+`repo unbind` accept `--directory PATH` to configure another checkout. Bindings
+are stored atomically in nonsecret `repositories.json` beside `projects.json`.
+They are scoped by gateway and normalized Git `origin`: HTTPS and SSH URLs for
+the same repository match, and embedded remote credentials are never stored.
+Separate clones and worktrees share the default; the profile's team is not part
+of customer selection. Local/file remotes and missing origins require explicit
+`--customer` at launch instead. No Git remote is contacted for detection.
+
+Updating a binding changes only future launches. Use `repo bind --customer TAG`
+to replace a default deliberately; concurrent first-time selections cannot
+silently overwrite each other. Repository mappings are attribution preferences,
+not proof of authorization or of what a developer actually worked on.
+
+## Launch agents with customer context
 
 Install your chosen agent separately and ensure it is on `PATH`.
 Use model aliases that your LiteLLM gateway actually exposes.
 
 ```powershell
-llm-credentials run --project project-a --model YOUR_CLAUDE_ALIAS claude -- --resume
-llm-credentials run --project project-b --model YOUR_CODEX_ALIAS codex -- exec "Explain this repository"
-llm-credentials run --project project-a --model YOUR_CHAT_ALIAS opencode
-llm-credentials run --project project-a --model YOUR_CHAT_ALIAS opencode -- run "Explain this repository"
+llm-credentials run --profile consulting --model YOUR_CLAUDE_ALIAS claude
+llm-credentials run --profile consulting --model YOUR_CODEX_ALIAS codex -- exec "Explain this repository"
+llm-credentials run --profile consulting --model YOUR_CHAT_ALIAS opencode
+llm-credentials run --profile consulting --model YOUR_CHAT_ALIAS opencode -- run "Explain this repository"
 ```
+
+The CLI uses the repository binding. An unbound repository opens the tag picker
+in an interactive terminal and saves your choice; use `--tag-prefix customer-`
+to narrow that picker. Noninteractive launches fail without a binding or an
+explicit customer. There is no silent untagged fallback.
+
+Override the repository default for one process without changing the binding:
+
+```powershell
+llm-credentials run --profile consulting --customer customer-acme --model YOUR_CHAT_ALIAS opencode
+llm-credentials run --profile consulting --customer customer-other --model YOUR_CHAT_ALIAS opencode
+```
+
+Both processes may run simultaneously with the same employee credential. Their
+customer headers remain independent, including later requests in a long-running
+prompt. Explicit `--customer` also works outside a Git repository, without a
+tag-list request. Use an existing approved tag: arbitrary or misspelled labels
+can misattribute spend. Names must be 1-256 printable ASCII characters, without
+commas or surrounding whitespace, for the comma-separated HTTP header.
+Start a new conversation when changing customers; do not resume another
+customer's conversation under a different tag.
 
 Launcher options must come **before** the agent name; everything after it is
 forwarded to the agent. The optional separator `--` is stripped.
 
 | Agent | Child-only configuration |
 | --- | --- |
-| Claude Code | Gateway root in `ANTHROPIC_BASE_URL`; access token in `ANTHROPIC_AUTH_TOKEN`; clears `ANTHROPIC_API_KEY` |
-| Codex | Custom provider via `-c`, Responses over HTTP/SSE, credential read from a child environment variable |
-| OpenCode | OpenAI-compatible provider and default model set through `OPENCODE_CONFIG_CONTENT`; requires launcher `--model`; preserves unrelated inline configuration |
+| Claude Code | Gateway/auth environment; customer header in `ANTHROPIC_CUSTOM_HEADERS`; preserves unrelated custom headers, replaces inherited tags, rejects auth/Host overrides |
+| Codex | Custom Responses provider via `-c`; credential and customer header read from separate child environment variables |
+| OpenCode | Inline OpenAI-compatible provider with `options.headers`; requires `--model`; preserves unrelated inline configuration |
 
 OpenCode uses the `run` subcommand for a non-interactive prompt, not Codex's
 `exec`. The launcher supports OpenCode v1 and v2, detecting the installed version
 before launch. For v2, interactive and `run` sessions use `--standalone` so an
 existing background service cannot retain another project's endpoint/token.
-An explicit `--server` is rejected in v2 launch mode. Other v2 subcommands should
+Shared-server `--server`/`--attach` options are rejected in both versions to
+protect credential and customer isolation. Other v2 subcommands should
 be invoked directly with `opencode`, outside this credential launcher.
 The selected model is supplied through inline configuration instead of a root
 `--model` flag, which OpenCode v2 does not accept.
@@ -172,10 +240,33 @@ that token. Restart through the launcher or configure the tool's supported
 credential helper. Existing agent-managed settings or provider overrides can
 conflict with the launcher; verify the selected gateway in that agent.
 The Claude launcher also clears inherited Bedrock/Vertex/Foundry mode flags.
+Use a Claude Code version supporting `ANTHROPIC_CUSTOM_HEADERS`, a Codex version
+supporting provider `env_http_headers`, and an OpenCode provider supporting
+`options.headers`.
 
 Agent behavior and model capabilities depend on client/gateway versions.
 Claude, Codex and OpenCode must support the corresponding gateway protocol.
-Run-mode adapter tests verify generated configuration, not live agent behavior.
+Adapter tests verify generated configuration, and a local HTTP fixture verifies
+real parallel child-process isolation. They do not prove that installed vendor
+clients honor the headers. Confirm `request_tags` in LiteLLM spend logs for each
+client/protocol before relying on customer attribution.
+
+### Budgets and customer authorization
+
+Native SSO authentication is unchanged; this implementation does not import
+virtual keys or enable OIDC JWT-to-key mapping. User/team controls remain
+separate from customer attribution. LiteLLM supports tag budgets when configured
+on a compatible gateway; employee-by-customer budgets require compound tags or
+additional server policy.
+
+Client tags and repository mappings are not access controls. For enforced
+charging, the gateway must require one customer, reject conflicting header/body
+attribution, check the authenticated employee's customer permissions and apply
+the validated tag before customer-budget checks and spend logging. A future
+allowed-customer endpoint should use the same permission registry as that
+policy. Do not grant developers an administrator/master key just to list tags.
+Missing, deleted or no-longer-permitted tags in saved bindings are not
+revalidated by the CLI on each launch; the gateway must enforce those rules.
 
 ## Credential-helper output
 
@@ -219,7 +310,7 @@ Refresh responses must retain the same employee/team binding.
   `localhost`, `127.0.0.1` or `::1`; it never permits remote cleartext endpoints.
 - Manual browser team consent remains required. The profile name is not sent
   as an undocumented automatic team override.
-- There is no raw `sk-...` key import, automated repository switching, VS Code
+- There is no raw `sk-...` key import, VS Code
   integration, or claim that GitHub-hosted Copilot traffic is intercepted.
 
 ## Development and validation
@@ -234,9 +325,10 @@ HTTP OAuth fixture; they need no company secrets or external LLM calls.
 GitHub Actions runs the suite and builds the wheel on Windows, macOS and Linux.
 
 Before production use, test against your actual gateway: SSO sign-in, wrong-team
-rejection, simultaneous projects, renewal, failed-renewal recovery, logout,
-streaming and tool calls. No live company SSO integration is claimed by this
-draft. It is private and has no open-source license assigned yet.
+rejection, simultaneous customers, renewal, failed-renewal recovery, logout,
+streaming, tool calls, tag logging and configured budget enforcement. The new
+tagging behavior is tested locally, not yet against live model calls.
+It is private and has no open-source license assigned yet.
 
 ### Protocol references
 
@@ -244,3 +336,8 @@ draft. It is private and has no open-source license assigned yet.
 - [LiteLLM agent wrappers and session credential semantics](https://docs.litellm.ai/docs/proxy/management_cli)
 - [Claude Code gateway connection](https://code.claude.com/docs/en/llm-gateway-connect)
 - [Codex gateway connection](https://developers.openai.com/codex/enterprise/connect-to-a-gateway)
+- [LiteLLM request tags](https://docs.litellm.ai/docs/proxy/request_tags)
+- [LiteLLM tag budgets](https://docs.litellm.ai/docs/proxy/tag_budgets)
+- [Claude Code custom headers](https://code.claude.com/docs/en/env-vars)
+- [Codex provider headers](https://developers.openai.com/codex/config-reference/)
+- [OpenCode provider headers](https://opencode.ai/docs/providers/)
