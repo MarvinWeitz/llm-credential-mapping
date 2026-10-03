@@ -190,6 +190,12 @@ Refresh responses must retain the same employee/team binding.
 - Only supported native OS keyrings are accepted. There is **no plaintext
   credential fallback**. Headless containers need a secure keyring or another
   deliberately designed storage adapter before this CLI can be used there.
+- Sessions larger than Windows Credential Manager's 2,560-byte entry limit are
+  split into bounded vault fragments. A small manifest is published only after
+  the complete new generation is saved; the previous session remains readable
+  until that commit. Missing or corrupt fragments are rejected. Replaced fragments are
+  removed, with explicit warnings if cleanup fails. A process crash can leave
+  unreferenced fragments in the vault; they never become the active session.
 - The gateway is trusted user configuration; no repository-provided endpoint is
   loaded. Discovery endpoints must remain on the configured origin.
 - Registration/token/revocation requests do not follow redirects. HTTP error
