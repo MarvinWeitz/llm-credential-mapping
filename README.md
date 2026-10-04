@@ -345,8 +345,9 @@ LiteLLM spend logs. Model requests go directly from Claude to LiteLLM.
 
 ### Session behavior
 
-- At startup the wrapper resolves the extension process's working directory to
-  the Git `origin`, then uses the existing gateway/repository binding. There is
+- At startup the wrapper resolves Claude's explicit `--project-config-root`
+  directory when provided by the SDK, otherwise the process's working directory,
+  to the Git `origin`, then uses the existing gateway/repository binding. There is
   no browser or interactive customer picker in a background process; an unbound
   repository fails with a `repo bind` instruction.
 - `claude setup` selects one authentication profile and model for future
@@ -381,6 +382,7 @@ LiteLLM spend logs. Model requests go directly from Claude to LiteLLM.
 
 ```bash
 llm-credentials claude check
+llm-credentials claude check --directory REPOSITORY_PATH
 ```
 
 This prints only nonsecret metadata and verifies/renews the credential. It does
@@ -394,6 +396,15 @@ session may not be reachable from VS Code's extension host. This adapter does
 not redesign container vault storage: keep a secure vault available to that
 host, or stop before sending requests. A terminal-only `claude check` is not
 proof of extension-host vault access.
+
+For a Git lookup failure, the wrapper reports the actual process cwd, lookup
+directory and whether Claude launched a configuration probe. Run `claude check
+--directory PATH` with that lookup directory to compare it with your terminal.
+The opened VS Code folder can differ from the directory you entered in an
+integrated terminal. Open the bound repository directly, or ensure the host
+supplies its explicit project root. The adapter never guesses from child
+repositories or the only saved binding. Git trust/ownership failures are
+reported separately; it does not bypass Git's `safe.directory` protection.
 
 If setup says it cannot execute the installed wrapper, check the executable
 permissions/application policy. Some Windows hosts block pip-generated `.exe`

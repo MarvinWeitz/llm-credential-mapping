@@ -157,15 +157,16 @@ def setup(
     }
 
 
-def check(store: ProfileStore) -> dict:
+def check(store: ProfileStore, directory: Path | None = None) -> dict:
     """Resolve the current repo and verify/renew its credential, returning only nonsecret diagnostic metadata."""
     executable = verify_wrapper()
     helper_command()
-    context, profile = resolve_context(store, load_configuration(store))
+    directory = directory.expanduser().resolve() if directory is not None else Path.cwd()
+    context, profile = resolve_context(store, load_configuration(store), directory)
     return {
         "profile": context.profile, "gateway": profile.gateway, "team_id": profile.team_id,
         "user_id": context.user_id, "repository": context.repository, "customer": context.customer,
-        "model": context.model, "wrapper": str(executable), "state": "ready",
+        "model": context.model, "wrapper": str(executable), "lookup_directory": str(directory), "state": "ready",
     }
 
 
@@ -268,6 +269,32 @@ def _execute(command: list[str], env: dict[str, str]) -> int:
     return execute(command, env)
 
 
+def project_directory(arguments: list[str], cwd: Path) -> Path:
+    """Use the SDK's explicit project-config root, or cwd; never infer a repository from saved mappings or child directories."""
+    root = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            break
+        option, separator, value = argument.partition("=")
+        if option == "--project-config-root":
+            if not separator:
+                index += 1
+                if index >= len(arguments) or arguments[index].startswith("--"):
+                    raise CredentialError("Claude --project-config-root is missing its directory.")
+                value = arguments[index]
+            if root is not None:
+                raise CredentialError("Claude supplied multiple project roots; customer attribution is ambiguous.")
+            if not value or any(ord(char) < 32 for char in value):
+                raise CredentialError("Claude supplied an invalid project root directory.")
+            root = Path(value).expanduser()
+        index += 1
+    if root is None:
+        return cwd
+    return (root if root.is_absolute() else cwd / root).resolve()
+
+
 def wrapper_main(argv: list[str] | None = None) -> int:
     """Official extension executable hook: first argument is its bundled Claude binary; stdout belongs exclusively to Claude."""
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -281,7 +308,18 @@ def wrapper_main(argv: list[str] | None = None) -> int:
         if forwarded in (["--version"], ["-v"], ["--help"], ["-h"]):
             return _execute(arguments, os.environ.copy())
         store = ProfileStore(default_home())
-        context, profile = resolve_context(store, load_configuration(store))
+        cwd = Path.cwd()
+        directory = project_directory(forwarded, cwd)
+        configuration = load_configuration(store)
+        try:
+            context, profile = resolve_context(store, configuration, directory)
+        except CredentialError as error:
+            mode = "configuration-probe" if os.environ.get("CLAUDE_CODE_CONFIG_PROBE") == "1" else "session"
+            raise CredentialError(
+                f"{error} Claude process cwd={json.dumps(str(cwd))}; "
+                f"Git lookup directory={json.dumps(str(directory))}; mode={mode}. "
+                "No fallback repository or customer was selected."
+            ) from None
         command, env = wrapped_command(executable, forwarded, context, profile)
         print(
             f"LLM credentials: profile {json.dumps(context.profile)}, customer {json.dumps(context.customer)}, "

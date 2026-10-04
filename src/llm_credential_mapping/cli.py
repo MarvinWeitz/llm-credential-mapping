@@ -28,7 +28,8 @@ def parser() -> argparse.ArgumentParser:
     setup = claude_actions.add_parser("setup", help="Validate this repository and print editor settings to merge.")
     setup.add_argument("--project", "--profile", dest="project")
     setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
-    claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
+    check = claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
+    check.add_argument("--directory", type=Path, help="Git lookup directory to diagnose; otherwise current directory.")
     claude_actions.add_parser("token", help="Internal apiKeyHelper: return the pinned session credential only.")
     project = commands.add_parser("project", aliases=["profile"], help="Manage gateway/business-unit profiles.")
     actions = project.add_subparsers(dest="action", required=True)
@@ -109,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
             elif args.action == "check":
-                print(json.dumps(claude_check(store), indent=2))
+                print(json.dumps(claude_check(store, args.directory), indent=2))
             else:
                 print(helper_token())
             return 0

@@ -65,6 +65,23 @@ class RepositoryTests(unittest.TestCase):
         with self.assertRaises(CredentialError):
             current_repository(self.home)
 
+    def test_git_errors_identify_the_stage_without_exposing_raw_stderr(self):
+        cases = [
+            ([subprocess.CompletedProcess([], 1, "", "fatal: secret-not-a-repo")], "working tree"),
+            ([
+                subprocess.CompletedProcess([], 0, str(self.home), ""),
+                subprocess.CompletedProcess([], 1, "", "fatal: secret-no-remote"),
+            ], "origin remote"),
+            ([subprocess.CompletedProcess([], 128, "", "fatal: detected dubious ownership secret-path")], "dubious ownership"),
+        ]
+        for results, expected in cases:
+            with self.subTest(expected=expected), \
+                    patch("llm_credential_mapping.repositories.subprocess.run", side_effect=results):
+                with self.assertRaises(CredentialError) as error:
+                    current_repository(self.home)
+                self.assertIn(expected, str(error.exception))
+                self.assertNotIn("secret", str(error.exception))
+
     def test_binding_persists_per_gateway_and_explicit_changes_are_required(self):
         self.assertIsNone(self.store.get(self.gateway, self.repository))
         self.store.bind(self.gateway, self.repository, "customer:A")

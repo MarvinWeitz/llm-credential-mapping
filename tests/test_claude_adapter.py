@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from llm_credential_mapping.claude import (
     CONTEXT_VARIABLE, ClaudeConfiguration, ClaudeContext, check, helper_command, helper_token,
-    load_configuration, setup, verify_wrapper, wrapped_command, wrapper_main,
+    load_configuration, project_directory, setup, verify_wrapper, wrapped_command, wrapper_main,
 )
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.errors import CredentialError
@@ -229,6 +229,56 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(wrapper_main([sys.executable, "--version"]), 0)
         self.assertEqual(execute.call_args.args[0], [sys.executable, "--version"])
 
+    def test_explicit_sdk_project_root_is_used_even_when_process_cwd_is_not_a_repo(self):
+        root = self.home / "checkout"
+        root.mkdir()
+        subprocess.run(["git", "init", "--quiet", str(root)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(root), "remote", "add", "origin", "git@github.com:company/repo.git"],
+            check=True, capture_output=True,
+        )
+        self.save_configuration()
+        stderr = io.StringIO()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.Path.cwd", return_value=self.home), \
+                patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                patch("llm_credential_mapping.claude._execute", return_value=0) as execute, \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(wrapper_main([
+                sys.executable, "--project-config-root=" + str(root), "--input-format", "stream-json",
+            ]), 0)
+        self.assertIn("customer:A", stderr.getvalue())
+        self.assertIn("--project-config-root=" + str(root), execute.call_args.args[0])
+
+    def test_project_root_argument_forms_and_literal_separator(self):
+        self.assertEqual(project_directory([], self.home), self.home)
+        for arguments in (["--project-config-root", str(self.home)], ["--project-config-root=" + str(self.home)]):
+            self.assertEqual(project_directory(arguments, self.home), self.home.resolve())
+        self.assertEqual(project_directory(["--project-config-root=nested"], self.home), (self.home / "nested").resolve())
+        self.assertEqual(project_directory(["--", "--project-config-root=literal"], self.home), self.home)
+        for arguments in (
+            ["--project-config-root"], ["--project-config-root", "--input-format"],
+            ["--project-config-root="], ["--project-config-root=bad\npath"],
+            ["--project-config-root=a", "--project-config-root=b"],
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(CredentialError):
+                project_directory(arguments, self.home)
+
+    def test_failed_config_probe_reports_cwd_and_does_not_guess_the_only_saved_repo(self):
+        self.save_configuration()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.Path.cwd", return_value=self.home), \
+                patch.dict(os.environ, {"CLAUDE_CODE_CONFIG_PROBE": "1"}), \
+                patch("llm_credential_mapping.claude.NativeKeyring", side_effect=AssertionError), \
+                patch("llm_credential_mapping.claude._execute", side_effect=AssertionError), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(wrapper_main([sys.executable, "--input-format", "stream-json"]), 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("cwd=" + json.dumps(str(self.home)), stderr.getvalue())
+        self.assertIn("configuration-probe", stderr.getvalue())
+        self.assertIn("No fallback repository", stderr.getvalue())
+
     def test_wrapper_failure_is_stderr_only_and_has_host_diagnostic(self):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -260,11 +310,12 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(configured.call_args.args[1:], ("unit", "model-alias"))
         self.assertIn("Remote User Settings", stderr.getvalue())
         stdout, stderr = io.StringIO(), io.StringIO()
-        with patch("llm_credential_mapping.cli.claude_check", return_value={"state": "ready"}), \
+        with patch("llm_credential_mapping.cli.claude_check", return_value={"state": "ready"}) as checked, \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            self.assertEqual(main(["--home", str(self.home), "claude", "check"]), 0)
+            self.assertEqual(main(["--home", str(self.home), "claude", "check", "--directory", str(self.home)]), 0)
         self.assertEqual(json.loads(stdout.getvalue()), {"state": "ready"})
         self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(checked.call_args.args[1], self.home)
 
     def test_two_child_sessions_and_their_shell_helpers_keep_separate_contexts(self):
         child = (

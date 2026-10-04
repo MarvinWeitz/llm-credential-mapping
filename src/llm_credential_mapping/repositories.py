@@ -60,10 +60,23 @@ def current_repository(directory: Path | None = None) -> str:
             )
         except (OSError, subprocess.TimeoutExpired, UnicodeError):
             raise CredentialError("Cannot identify the repository; check Git and the directory, or use --customer.") from None
-        if result.returncode != 0 or len(result.stdout) > 8192:
+        if result.returncode != 0:
+            if "detected dubious ownership" in result.stderr:
+                raise CredentialError(
+                    "Git refused this repository because of dubious ownership. "
+                    "Verify its ownership/trust on the extension host; the CLI does not bypass Git's safety checks."
+                )
+            if args[0] == "rev-parse":
+                raise CredentialError(
+                    "Git cannot identify a working tree in the lookup directory. "
+                    "Check 'git rev-parse --show-toplevel' there, or use --customer for a CLI launch."
+                )
             raise CredentialError(
-                "Repository mapping requires a Git working tree with an origin remote; use --customer instead."
+                "Git cannot read this repository's origin remote. "
+                "Check 'git remote get-url origin' there, or use --customer for a CLI launch."
             )
+        if len(result.stdout) > 8192:
+            raise CredentialError("Git repository identity exceeded the size limit.")
         return result.stdout.strip()
 
     git("rev-parse", "--show-toplevel")
