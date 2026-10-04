@@ -614,30 +614,10 @@ screenshots.
    **Custom Endpoint**.
 2. Use the suggested repository/customer group name and enter the key from
    `copilot key` in the native API-key prompt. Choose **Chat Completions**.
-3. Save the provider configuration opened by VS Code, then rerun the same
-   setup command with `--apply` and the path of that profile's
-   `chatLanguageModels.json`:
-
-   ```powershell
-   llm-credentials copilot setup --profile demo --model gpt-5.6-luna --apply `
-     --models-file "C:\Users\YOUR_USER\AppData\Roaming\Code\User\chatLanguageModels.json"
-   ```
-
-   Named desktop profiles normally use
-   `Code\User\profiles\PROFILE_ID\chatLanguageModels.json` instead. Use the
-   actual file opened by VS Code, including for Insiders, portable installations
-   or profiles that inherit the default profile's models. Include the same
-   directory, port and capability options used for the initial setup.
-
-   The CLI updates only the group with the exact suggested name and
-   `vendor: "customendpoint"`. It updates or adds the pinned model by its exact
-   ID, retaining other models, provider groups, custom fields, comments and
-   formatting. **Its existing `name`, `vendor` and native `apiKey` reference
-   are preserved**. An existing model-level API-type override is set to Chat
-   Completions to match the bridge.
-
-   Alternatively, merge the printed `apiType` and `models` fields manually.
-   Never paste the literal key into JSON or replace the complete provider list.
+3. In the provider configuration opened by VS Code, merge the printed
+   `apiType` and `models` fields into this group. **Keep its existing `name`,
+   `vendor` and native-generated `apiKey` secret reference**. Do not paste the
+   literal key into JSON or replace the complete provider list.
 4. Start the bridge and keep its terminal open:
 
    ```bash
@@ -651,32 +631,11 @@ screenshots.
    llm-credentials copilot check
    ```
 
-`--apply` updates an **existing native registration**; it does not register a
-provider or insert a secret into VS Code. Missing groups, ambiguous groups/model
-IDs, duplicate target properties, malformed JSONC and missing/non-reference
-`apiKey` values fail explicitly without replacing the model file. The CLI checks
-reference syntax, not whether its secret exists in VS Code's storage. Enter or
-repair the key in the native UI and verify the connection in Copilot.
-
-`--models-file` requires `--apply`. Without it, automatic detection is limited to
-one standard desktop installation with no named profiles, or a portable
-installation with no named profiles. Multiple installations/profiles, custom
-user-data locations and remote-host terminals require an explicit desktop file
-path. Workspace and Remote Machine paths are rejected. Updates are locked and
-atomic; detected external content or permission changes abort the write. Save
-the file in VS Code before applying.
-
-Native registrations and their secret references belong to the active
-**desktop VS Code profile**, not Remote Machine settings. Run `--apply` where
-that desktop file is accessible and register in each editor profile that needs
-the connection. No employee tokens or local keys are written to the model file.
-If applying fails after setup saved the CLI connection, the error states that
-the connection was retained; fix the registration or file and rerun the same
-command. Identical setup reuses the vault key; a different employee, customer,
-model, checkout, port or capability setting creates a different connection and
-endpoint, requiring a new native registration. Applying settings neither starts
-the bridge nor selects the chat model; if the model does not appear, reload the
-VS Code window.
+There is deliberately no `--apply`: native registrations and their secret
+references belong to the active **desktop VS Code profile**, not Remote Machine
+settings. Register in each editor profile that needs this connection. Identical
+setup reuses the vault key; a different employee, customer, model, checkout,
+port or capability setting creates a different connection and endpoint.
 
 ### Containers, ports and model limits
 
@@ -778,9 +737,8 @@ JSON/SSE protocol, not the real Copilot UI.
 Tests use the standard-library unittest runner, mocked keyrings, and a local
 HTTP OAuth fixture; they need no company secrets or external LLM calls.
 Copilot tests exercise authenticated localhost forwarding, grant renewal,
-bounded payloads, SSE delivery, tool-call chunks and native model-file merging
-using temporary synthetic configurations. A Node.js fetch smoke test also runs
-when Node is installed; it needs no npm dependencies.
+bounded payloads, SSE delivery and tool-call chunks. A Node.js fetch smoke test
+also runs when Node is installed; it needs no npm dependencies.
 GitHub Actions runs the suite and builds the wheel on Windows, macOS and Linux.
 
 The optional installed-Claude test uses only a localhost fixture and a temporary

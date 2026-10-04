@@ -8,10 +8,9 @@ from . import __version__
 from .agents import launch
 from .claude import check as claude_check, helper_token, setup as claude_setup
 from .errors import CredentialError
-from .copilot import CopilotConnection, CopilotStore, connection_key, setup as copilot_setup, validate_connection
+from .copilot import CopilotStore, connection_key, setup as copilot_setup, validate_connection
 from .copilot_bridge import check as copilot_check, serve as copilot_serve
-from .copilot_models import ModelsDocument, models_file
-from .editor_settings import editing, editing_document, settings_file
+from .editor_settings import editing, settings_file
 from .profiles import Profile, ProfileStore, default_home
 from .repositories import RepositoryStore, current_repository
 from .sessions import SessionManager
@@ -50,7 +49,7 @@ def parser() -> argparse.ArgumentParser:
             cmd.add_argument("--repository", type=Path, required=True, help="Primary Git checkout's local directory.")
     copilot = commands.add_parser("copilot", help="Prototype: connect Copilot Chat through a pinned foreground bridge.")
     copilot_actions = copilot.add_subparsers(dest="action", required=True)
-    copilot_setup_parser = copilot_actions.add_parser("setup", help="Save a bound connection and print or apply native model settings.")
+    copilot_setup_parser = copilot_actions.add_parser("setup", help="Save a bound connection and print fields for native UI setup.")
     copilot_setup_parser.add_argument("--project", "--profile", dest="project")
     copilot_setup_parser.add_argument("--model", required=True, help="Exact LiteLLM model alias; agents require tool calling.")
     copilot_setup_parser.add_argument("--directory", type=Path, help="Git checkout to pin; otherwise current directory.")
@@ -58,10 +57,6 @@ def parser() -> argparse.ArgumentParser:
     copilot_setup_parser.add_argument("--max-input-tokens", type=int, default=32000, help="Conservative advertised input limit.")
     copilot_setup_parser.add_argument("--max-output-tokens", type=int, default=4096, help="Advertised and enforced output limit.")
     copilot_setup_parser.add_argument("--vision", action="store_true", help="Declare image support only if the model supports it.")
-    copilot_setup_parser.add_argument("--apply", action="store_true", help="Update an existing native Custom Endpoint group.")
-    copilot_setup_parser.add_argument(
-        "--models-file", type=Path, help="Desktop profile chatLanguageModels.json; requires --apply and native key registration.",
-    )
     copilot_actions.add_parser("list", help="List saved nonsecret connections.")
     for action in ("key", "serve", "disable", "check"):
         command = copilot_actions.add_parser(action, help={
@@ -136,51 +131,23 @@ def _pick_customer(profile: Profile, token: Callable[[], str], prefix: str | Non
     raise CredentialError("Invalid customer selection; choose a displayed tag or pass --customer explicitly.")
 
 
-def _setup_copilot(store: ProfileStore, args: argparse.Namespace) -> CopilotConnection:
-    return copilot_setup(
-        store, args.project, args.model, args.directory, port=args.port,
-        max_input_tokens=args.max_input_tokens, max_output_tokens=args.max_output_tokens, vision=args.vision,
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         store = ProfileStore(args.home.expanduser().resolve() if args.home else default_home())
         if args.command == "copilot":
             if args.action == "setup":
-                if args.models_file is not None and not args.apply:
-                    raise CredentialError("--models-file requires --apply; no model settings were edited.")
-                if args.apply:
-                    target = models_file(args.models_file)
-                    with editing_document(target, ModelsDocument) as editor:
-                        connection = _setup_copilot(store, args)
-                        try:
-                            changed = editor.write(editor.document.merge(connection))
-                        except CredentialError as error:
-                            raise CredentialError(
-                                f"Copilot connection {connection.id} was saved, but model settings were not applied: {error}"
-                            ) from None
-                    print(
-                        f"{'Applied' if changed else 'Already up to date:'} Copilot model settings in {json.dumps(str(target))}. "
-                        "Native apiKey reference, other provider groups/models and custom fields were preserved. "
-                        "If the model does not appear, reload the VS Code window.",
-                        file=sys.stderr,
-                    )
-                else:
-                    connection = _setup_copilot(store, args)
+                connection = copilot_setup(
+                    store, args.project, args.model, args.directory, port=args.port,
+                    max_input_tokens=args.max_input_tokens, max_output_tokens=args.max_output_tokens, vision=args.vision,
+                )
                 print(json.dumps(connection.model_settings(), indent=2))
-                if not args.apply:
-                    print(
-                        "In Chat: Manage Language Models, add Custom Endpoint and enter the LOCAL key from 'copilot key'. "
-                        "Choose Chat Completions. Merge only these apiType/models fields into the new group; "
-                        "KEEP its VS Code-generated apiKey secret reference, name and vendor. "
-                        "Or rerun setup with --apply --models-file PATH after native registration. No editor files were changed.",
-                        file=sys.stderr,
-                    )
                 print(
                     f"Saved connection {connection.id}. Group name: {json.dumps(connection.group_name)}. "
-                    "Run 'copilot serve' in this extension-host terminal, "
+                    "In Chat: Manage Language Models, add Custom Endpoint and enter the LOCAL key from 'copilot key'. "
+                    "Choose Chat Completions. Merge only these apiType/models fields into the new group; "
+                    "KEEP its VS Code-generated apiKey secret reference, name and vendor. "
+                    "No editor files were changed. Run 'copilot serve' in this extension-host terminal, "
                     "then select this repository/customer model explicitly. Token limits are conservative defaults; "
                     "configure them to match the gateway model. No automatic active-workspace selection.",
                     file=sys.stderr,
