@@ -118,15 +118,40 @@ class NativeClaudeTests(unittest.TestCase):
                         "--tools", "", "--setting-sources", "", "--no-session-persistence",
                     ], context, profile, primary)
                     env["CLAUDE_CONFIG_DIR"] = str(root / "isolated-claude")
+                    initialize = json.dumps({
+                        "type": "control_request", "request_id": "picker-fixture",
+                        "request": {"subtype": "initialize", "hooks": {}},
+                    }) + "\n"
+                    reset_model = json.dumps({
+                        "type": "control_request", "request_id": "picker-default-fixture",
+                        "request": {"subtype": "set_model"},
+                    }) + "\n"
                     message = json.dumps({
                         "type": "user", "message": {"role": "user", "content": "Reply with FIXTURE_OK."},
                         "parent_tool_use_id": None, "session_id": "",
                     }) + "\n"
                     result = subprocess.run(
-                        command, env=env, cwd=primary, input=message, capture_output=True, text=True, timeout=60,
+                        command, env=env, cwd=primary, input=initialize + reset_model + message,
+                        capture_output=True, text=True, timeout=60,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr[-2000:])
                     events = [json.loads(line) for line in result.stdout.splitlines()]
+                    picker = next(
+                        event["response"]["response"]["models"] for event in events
+                        if event["type"] == "control_response"
+                        and event["response"].get("request_id") == "picker-fixture"
+                    )
+                    self.assertEqual([model["value"] for model in picker], ["default", "fixture-model"])
+                    self.assertEqual(picker[1]["displayName"], "fixture-model")
+                    self.assertEqual(picker[1]["description"], "Configured LiteLLM model")
+                    self.assertIn("fixture-model", picker[0]["description"])
+                    self.assertNotIn("[1m]", picker[0]["description"])
+                    reset_response = next(
+                        event["response"] for event in events
+                        if event["type"] == "control_response"
+                        and event["response"].get("request_id") == "picker-default-fixture"
+                    )
+                    self.assertEqual(reset_response["subtype"], "success", reset_response)
                     initialization = next(
                         event for event in events if event["type"] == "system" and event.get("subtype") == "init"
                     )

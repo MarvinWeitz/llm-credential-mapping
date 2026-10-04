@@ -220,6 +220,35 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertNotIn("secret", " ".join(command))
         self.assertEqual(command[1:5], ["--input-format", "stream-json", "--output-format", "stream-json"])
 
+    def test_model_picker_offers_only_the_configured_alias_and_aligns_the_default(self):
+        existing = {
+            "modelPicker": {"options": [{"model": "other-model", "label": "Other"}]},
+            "availableModels": ["model-alias"],
+            "env": {
+                "ANTHROPIC_DEFAULT_MODEL": "other-default",
+                "ANTHROPIC_DEFAULT_FABLE_MODEL": "other-fable",
+            },
+        }
+        command, env = wrapped_command(
+            sys.executable, ["--settings", json.dumps(existing)], self.context, self.profile,
+        )
+        settings = json.loads(command[command.index("--settings") + 1])
+        self.assertEqual(settings["modelPicker"], {
+            "replaceBuiltInOptions": True,
+            "options": [{
+                "model": "model-alias", "label": "model-alias", "description": "Configured LiteLLM model",
+            }],
+        })
+        self.assertEqual(settings["availableModels"], existing["availableModels"])
+        for name in (
+            "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
+        ):
+            self.assertEqual(env[name], self.context.model)
+            self.assertEqual(settings["env"][name], self.context.model)
+        self.assertEqual(existing["modelPicker"]["options"][0]["model"], "other-model")
+
     def test_file_settings_and_literal_prompt_arguments_are_preserved(self):
         settings_file = self.home / "claude settings.json"
         settings_file.write_text(json.dumps({"permissions": {"allow": ["Read"]}}))

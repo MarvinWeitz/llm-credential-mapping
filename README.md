@@ -432,9 +432,16 @@ LiteLLM spend logs. Model requests go directly from Claude to LiteLLM.
   This does not extend an already in-flight request or remove SSO re-login needs.
 - Inline settings preserve extension-provided hooks, permissions and unrelated
   environment values. The adapter overrides gateway/customer/auth settings,
-  model/fallback aliases and small-model aliases for this process. The model
-  configured by setup takes precedence over the panel's model picker; rerun
-  setup and start a new session to change it.
+  model/fallback aliases and small-model aliases for this process.
+- The model picker uses Claude's supported `modelPicker` lineup: it offers only
+  the configured LiteLLM model, labelled with its exact alias, instead of
+  duplicate Opus/Sonnet/Haiku mappings or unrelated built-in presets. Claude
+  retains its **Default** entry; `ANTHROPIC_DEFAULT_MODEL` makes that resolve to
+  the same configured alias. Internal family aliases, including Fable on
+  versions that support it, still map to that model. Rerun setup and reload the
+  window to choose another model. This is a picker configuration, not gateway
+  model discovery or server-side model authorization; existing model allowlists
+  are preserved.
 - Nonessential Claude traffic is disabled in wrapped sessions; this also
   disables Claude's own auto-update checks in those processes. Update the
   official extension through VS Code.

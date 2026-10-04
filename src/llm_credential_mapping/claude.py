@@ -23,8 +23,9 @@ _CLEARED_VARIABLES = (
     "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
 )
 _MODEL_VARIABLES = (
-    "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
 )
 
 
@@ -289,6 +290,14 @@ def wrapped_command(
     settings["env"] = {**settings.get("env", {}), **overrides}
     settings["apiKeyHelper"] = helper_command()
     settings["model"] = context.model
+    settings["modelPicker"] = {
+        "replaceBuiltInOptions": True,
+        "options": [{
+            "model": context.model,
+            "label": context.model,
+            "description": "Configured LiteLLM model",
+        }],
+    }
     command = [
         executable, *forwarded, "--model", context.model,
         "--settings", json.dumps(settings), *literal,
