@@ -5,7 +5,7 @@ import stat
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Iterator
 
 from filelock import FileLock, Timeout
@@ -16,6 +16,7 @@ from .profiles import atomic_write_text
 _WRAPPER = "claudeCode.claudeProcessWrapper"
 _LOGIN = "claudeCode.disableLoginPrompt"
 _ENVIRONMENT = "claudeCode.environmentVariables"
+_HOME = "LLM_CREDENTIAL_MAPPING_HOME"
 _MAX_BYTES = 2_097_152
 _TOKENS = re.compile(r'"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*.*?\*/', re.DOTALL)
 _TRAILING_COMMAS = re.compile(r'"(?:\\.|[^"\\])*"|,(?=\s*[}\]])', re.DOTALL)
@@ -206,6 +207,58 @@ class _Document:
         edits.extend(self._append(
             self.root, [item.start for item in members], [item.value.end for item in members], additions,
         ))
+        return self._edited(edits)
+
+    def _remove(self, spans: list[tuple[int, int]], removed: set[int]) -> list[tuple[int, int, str]]:
+        edits = []
+        commas = set()
+        for index in removed:
+            start, end = spans[index]
+            edits.append((start, end, ""))
+            comma = self._skip(end, self.comments)
+            if self.comments[comma] == ",":
+                commas.add(comma)
+        remaining = [index for index in range(len(spans)) if index not in removed]
+        if remaining and len(spans) - 1 in removed:
+            trailing = self.comments[self._skip(spans[-1][1], self.comments)] == ","
+            if not trailing:
+                commas.add(self._skip(spans[remaining[-1]][1], self.comments))
+        edits.extend((comma, comma + 1, "") for comma in commas)
+        return edits
+
+    def disable(self) -> str | None:
+        members = self._members(self.root)
+        wrappers = [member.value.value for member in members if member.name == _WRAPPER]
+
+        def owned(value: object) -> bool:
+            return isinstance(value, str) and PureWindowsPath(value).name.casefold() in (
+                "llm-credentials-claude", "llm-credentials-claude.exe",
+            )
+
+        if any(value is not None and value != "" and not owned(value) for value in wrappers):
+            raise CredentialError("A different Claude process wrapper is configured; no settings were removed.")
+        environments = {
+            index: self._environment(member.value)
+            for index, member in enumerate(members) if member.name == _ENVIRONMENT
+        }
+        if not any(owned(value) for value in wrappers) and not any(
+            name == _HOME for elements in environments.values() for name, _ in elements
+        ):
+            return None
+        removed = {index for index, member in enumerate(members) if member.name in (_WRAPPER, _LOGIN)}
+        edits = []
+        for index, elements in environments.items():
+            home_entries = {position for position, (name, _) in enumerate(elements) if name == _HOME}
+            if len(home_entries) == len(elements):
+                removed.add(index)
+            elif home_entries:
+                edits.extend(self._remove(
+                    [(element.start, element.end) for _, element in elements], home_entries,
+                ))
+        edits.extend(self._remove([(member.start, member.value.end) for member in members], removed))
+        return self._edited(edits)
+
+    def _edited(self, edits: list[tuple[int, int, str]]) -> str:
         source = self.source
         insertions: dict[int, list[str]] = {}
         replacements = []
@@ -281,7 +334,7 @@ def settings_file(explicit: Path | None = None) -> Path:
 
 @dataclass
 class SettingsEdit:
-    """A locked editor-settings snapshot; apply only generated bootstrap fields, preserving unrelated JSONC and environment entries."""
+    """A locked editor snapshot for bootstrap changes; preserve unrelated JSONC and environment entries."""
 
     path: Path
     original: bytes | None
@@ -303,9 +356,18 @@ class SettingsEdit:
 
     def apply(self, settings: dict) -> None:
         """Atomically apply a merge; reject changed files and raise CredentialError on failure without dumping their contents."""
-        updated = self.document.merge(settings)
-        encoded = updated.encode("utf-8")
-        if len(encoded) > _MAX_BYTES:
+        self._write(self.document.merge(settings))
+
+    def disable(self) -> bool:
+        """Disconnect the recognised adapter and return whether the file changed; retain D-Bus and unrelated settings.
+
+        Raise CredentialError for another wrapper, invalid settings, concurrent edits or write failures.
+        """
+        return self._write(self.document.disable())
+
+    def _write(self, updated: str | None) -> bool:
+        encoded = updated.encode("utf-8") if updated is not None else None
+        if encoded is not None and len(encoded) > _MAX_BYTES:
             raise CredentialError("Resulting VS Code settings exceed 2 MiB; no settings were applied.")
         try:
             current = self.path.read_bytes() if self.path.exists() else None
@@ -313,10 +375,12 @@ class SettingsEdit:
                 raise CredentialError("VS Code settings changed during setup; save the editor settings and retry.")
             if current is not None and stat.S_IMODE(self.path.stat().st_mode) != self.permissions:
                 raise CredentialError("VS Code settings permissions changed during setup; retry without editing the file.")
-            if current != encoded:
+            if updated is not None and current != encoded:
                 atomic_write_text(self.path, updated, newline="", permissions=self.permissions)
+                return True
         except OSError:
             raise CredentialError("Cannot atomically update VS Code settings; check write permissions and retry.") from None
+        return False
 
 
 @contextmanager

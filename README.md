@@ -453,6 +453,43 @@ Code panel and send a small prompt. Check **View -> Output -> Claude Code** for
 the adapter's profile/customer/repository line, and confirm the customer tag in
 LiteLLM spend logs. Model requests go directly from Claude to LiteLLM.
 
+### Switch back to normal Claude usage
+
+Run on the same extension host:
+
+```bash
+llm-credentials claude disable
+```
+
+The command uses the same User/Remote settings detection as `setup --apply`.
+For an ambiguous installation or desktop profile, use
+`claude disable --settings-file /absolute/path/to/settings.json`.
+It removes the recognised LiteLLM process wrapper, the login-prompt override
+and `LLM_CREDENTIAL_MAPPING_HOME` environment entries. It also works for settings
+copied manually from setup, for an old/missing wrapper installation, and without
+an unlocked vault or a bound repository. Another tool's wrapper is rejected
+instead of removed. Repeating the command reports that nothing changed.
+
+Unrelated settings, comments and environment entries are preserved, including
+the D-Bus address: it is an OS vault-session setting, not LiteLLM routing, and
+setup cannot know whether another integration already relied on it. The command
+does not restore overwritten pre-setup preference values or remove separately
+configured gateway/authentication overrides, native Claude settings or managed
+editor policies.
+
+**Reload the VS Code window and start a new conversation.** Claude's usual
+login prompt is enabled again; sign in normally if needed. Existing conversations
+and already-running CLI agents are not reconfigured by this command.
+The change affects future extension launches using this User/Remote settings
+file, not just the current repository. LiteLLM CLI launchers remain available.
+
+LiteLLM logins, profiles, model selection and repository/workspace mappings are
+kept. To switch back to LiteLLM, unlock the vault and run setup again:
+
+```bash
+llm-credentials claude setup --profile demo --model YOUR_LITELLM_ALIAS --apply
+```
+
 ### Session behavior
 
 - At startup the wrapper resolves Claude's explicit `--project-config-root`

@@ -32,6 +32,8 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
     setup.add_argument("--apply", action="store_true", help="Apply bootstrap settings to VS Code User/Remote Settings.")
     setup.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; requires --apply.")
+    disable = claude_actions.add_parser("disable", help="Disconnect the extension from LiteLLM; keep logins and mappings.")
+    disable.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; otherwise detect the editor.")
     check = claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
     check.add_argument("--directory", type=Path, help="Launch/workspace directory to diagnose; otherwise current directory.")
     claude_actions.add_parser("token", help="Internal apiKeyHelper: return the pinned session credential only.")
@@ -157,6 +159,22 @@ def main(argv: list[str] | None = None) -> int:
                         "Reload the window and start a new Claude conversation. No editor settings were edited.",
                         file=sys.stderr,
                     )
+            elif args.action == "disable":
+                target = settings_file(args.settings_file)
+                with editing(target) as editor:
+                    changed = editor.disable()
+                print(
+                    "Disconnected the Claude Code extension from LiteLLM."
+                    if changed else "No LiteLLM Claude bootstrap settings found; nothing was changed."
+                )
+                print(
+                    f"Settings target: {json.dumps(str(target))}. "
+                    "LiteLLM logins, profiles and repository/workspace mappings were retained. "
+                    "D-Bus and unrelated settings were preserved. "
+                    "Reload the window, start a new conversation and use Claude's normal sign-in if prompted. "
+                    "Other gateway settings or editor policies are not removed.",
+                    file=sys.stderr,
+                )
             elif args.action == "check":
                 print(json.dumps(claude_check(store, args.directory), indent=2))
             else:
