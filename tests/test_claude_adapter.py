@@ -51,7 +51,8 @@ class ClaudeAdapterTests(unittest.TestCase):
         atomic_write_json(self.home / "claude.json", {"version": 1, **self.configuration.__dict__})
 
     def test_setup_validates_access_and_writes_only_nonsecret_global_adapter_config(self):
-        with patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
+        with patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": ""}), \
+                patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
                 patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
                 patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)):
             result = setup(self.store, "unit", "model-alias")
@@ -66,6 +67,59 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertNotIn("secret", (self.home / "claude.json").read_text())
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".vscode").exists())
+
+    def test_cli_setup_forwards_only_the_linux_session_bus_address_in_generated_settings(self):
+        bus_address = "unix:abstract=/tmp/dbus-fixture,guid=0123456789abcdef"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {
+            "DBUS_SESSION_BUS_ADDRESS": bus_address, "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=/system-bus",
+            "VAULT_PASSWORD": "vault-secret",
+        }), patch("llm_credential_mapping.claude.sys.platform", "linux"), \
+                patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
+                patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(main([
+                "--home", str(self.home), "claude", "setup", "--profile", "unit", "--model", "model-alias",
+            ]), 0, stderr.getvalue())
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["claudeCode.environmentVariables"], [
+            {"name": "LLM_CREDENTIAL_MAPPING_HOME", "value": str(self.home.resolve())},
+            {"name": "DBUS_SESSION_BUS_ADDRESS", "value": bus_address},
+        ])
+        self.assertNotIn("secret", stdout.getvalue())
+        self.assertEqual(json.loads((self.home / "claude.json").read_text()), {
+            "version": 1, "profile": "unit", "model": "model-alias",
+        })
+
+    def test_setup_does_not_forward_session_bus_addresses_on_other_platforms(self):
+        for platform in ("win32", "darwin"):
+            with self.subTest(platform=platform), patch.dict(os.environ, {
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+            }), patch("llm_credential_mapping.claude.sys.platform", platform), \
+                    patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
+                    patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                    patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)):
+                result = setup(self.store, "unit", "model-alias")
+            self.assertEqual(result["claudeCode.environmentVariables"], [
+                {"name": "LLM_CREDENTIAL_MAPPING_HOME", "value": str(self.home.resolve())},
+            ])
+
+    def test_linux_setup_preserves_default_output_when_the_session_bus_address_is_unset_or_empty(self):
+        for bus_address in (None, ""):
+            with self.subTest(bus_address=bus_address), patch.dict(os.environ), \
+                    patch("llm_credential_mapping.claude.sys.platform", "linux"), \
+                    patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
+                    patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                    patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)):
+                if bus_address is None:
+                    os.environ.pop("DBUS_SESSION_BUS_ADDRESS", None)
+                else:
+                    os.environ["DBUS_SESSION_BUS_ADDRESS"] = bus_address
+                result = setup(self.store, "unit", "model-alias")
+            self.assertEqual(result["claudeCode.environmentVariables"], [
+                {"name": "LLM_CREDENTIAL_MAPPING_HOME", "value": str(self.home.resolve())},
+            ])
 
     def test_setup_fails_before_writing_when_wrapper_missing_repo_unbound_or_vault_locked(self):
         with patch("llm_credential_mapping.claude.wrapper_path", return_value=self.home / "missing"):

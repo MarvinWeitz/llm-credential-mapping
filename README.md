@@ -387,6 +387,20 @@ when merging, but remove old gateway credential/routing overrides. Neither the
 snippet nor `claude.json` contains a token. The wrapper setting is
 machine-scoped, so putting it only in Workspace Settings does not work.
 
+On Linux, setup also includes the working terminal's nonempty
+`DBUS_SESSION_BUS_ADDRESS` in `claudeCode.environmentVariables`, when set.
+This lets the wrapper and credential helper reach that terminal's vault session
+even if VS Code's extension host did not inherit its D-Bus environment. The
+address is nonsecret; no vault password or other terminal variables are copied.
+It is printed for the editor settings, not stored in `claude.json`.
+
+The editor setting persists when saved, but it does not start D-Bus, unlock the
+vault or make a temporary bus address permanent. Keep the same bus running and
+the vault unlocked. If its address changes after a restart or container rebuild,
+rerun setup from the working terminal, update the generated environment entry
+and reload the window. A stable user-session bus endpoint avoids this extra
+update.
+
 Reload the VS Code window. Start a **new** conversation in the official Claude
 Code panel and send a small prompt. Check **View -> Output -> Claude Code** for
 the adapter's profile/customer/repository line, and confirm the customer tag in
@@ -443,9 +457,13 @@ since that internal command prints a secret.
 If the terminal works but the extension fails, inspect the adapter error in the
 Claude output channel. A Linux vault accessed through a terminal-started D-Bus
 session may not be reachable from VS Code's extension host. This adapter does
-not redesign container vault storage: keep a secure vault available to that
-host, or stop before sending requests. A terminal-only `claude check` is not
-proof of extension-host vault access.
+not redesign container vault storage. Rerun `claude setup` from the working
+terminal and merge its generated `DBUS_SESSION_BUS_ADDRESS` entry into Remote
+User Settings, retaining other environment entries; reload the window. If the
+terminal has no explicit address to forward, configure a shared user-session
+bus instead. Keep a secure vault available to that host, or stop before sending
+requests. A terminal-only `claude check` is not proof of extension-host vault
+access.
 
 For a Git lookup failure, the wrapper reports the actual process cwd, lookup
 directory and whether Claude launched a configuration probe. Run `claude check

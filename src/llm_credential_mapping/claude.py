@@ -169,12 +169,16 @@ def setup(
     helper_command()
     with store.locked("claude-integration"):
         atomic_write_json(store.home / "claude.json", {"version": 1, **configuration.__dict__})
+    environment_variables = [
+        {"name": "LLM_CREDENTIAL_MAPPING_HOME", "value": str(store.home.resolve())},
+    ]
+    bus_address = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if sys.platform == "linux" and bus_address:
+        environment_variables.append({"name": "DBUS_SESSION_BUS_ADDRESS", "value": bus_address})
     return {
         "claudeCode.claudeProcessWrapper": str(executable),
         "claudeCode.disableLoginPrompt": True,
-        "claudeCode.environmentVariables": [
-            {"name": "LLM_CREDENTIAL_MAPPING_HOME", "value": str(store.home.resolve())},
-        ],
+        "claudeCode.environmentVariables": environment_variables,
     }
 
 
