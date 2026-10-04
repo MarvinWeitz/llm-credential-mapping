@@ -138,6 +138,46 @@ class ClaudeAdapterTests(unittest.TestCase):
                 setup(self.store, "unit", "model-alias")
         self.assertFalse((self.home / "claude.json").exists())
 
+    def test_cli_setup_apply_persists_the_profile_and_bootstrap_without_copying_settings(self):
+        editor = self.home / "editor" / "settings.json"
+        editor.parent.mkdir()
+        editor.write_text('// keep this comment\n{"editor.tabSize":4}\n')
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
+                patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(main([
+                "--home", str(self.home), "claude", "setup", "--profile", "unit", "--model", "model-alias",
+                "--apply", "--settings-file", str(editor),
+            ]), 0, stderr.getvalue())
+        generated = json.loads(stdout.getvalue())
+        self.assertEqual(load_configuration(self.store), self.configuration)
+        saved = editor.read_text()
+        self.assertTrue(saved.startswith("// keep this comment\n"))
+        settings = json.loads(saved.split("\n", 1)[1])
+        self.assertEqual(settings, {"editor.tabSize": 4, **generated})
+        self.assertNotIn("secret", saved + stdout.getvalue() + stderr.getvalue())
+        self.assertIn("Applied", stderr.getvalue())
+
+    def test_cli_setup_apply_vault_failure_does_not_modify_cli_or_editor_settings(self):
+        editor = self.home / "editor" / "settings.json"
+        editor.parent.mkdir()
+        editor.write_bytes(b'{"editor.tabSize":4}\n')
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
+                patch("llm_credential_mapping.claude.NativeKeyring", side_effect=CredentialError("Vault is locked")), \
+                patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(main([
+                "--home", str(self.home), "claude", "setup", "--profile", "unit", "--model", "model-alias",
+                "--apply", "--settings-file", str(editor),
+            ]), 1)
+        self.assertEqual(editor.read_bytes(), b'{"editor.tabSize":4}\n')
+        self.assertFalse((self.home / "claude.json").exists())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("Vault is locked", stderr.getvalue())
+
     def test_configuration_and_context_validate_types_and_corruption(self):
         for profile, model in ((None, "alias"), ("../unit", "alias"), ("unit", None), ("unit", ""), ("unit", " bad")):
             with self.subTest(profile=profile, model=model), self.assertRaises(CredentialError):

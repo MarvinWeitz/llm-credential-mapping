@@ -8,6 +8,7 @@ from . import __version__
 from .agents import launch
 from .claude import check as claude_check, helper_token, setup as claude_setup
 from .errors import CredentialError
+from .editor_settings import editing, settings_file
 from .profiles import Profile, ProfileStore, default_home
 from .repositories import RepositoryStore, current_repository
 from .sessions import SessionManager
@@ -26,9 +27,11 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
     claude = commands.add_parser("claude", help="Integrate the official Claude Code VS Code extension.")
     claude_actions = claude.add_subparsers(dest="action", required=True)
-    setup = claude_actions.add_parser("setup", help="Validate this repository and print editor settings to merge.")
+    setup = claude_actions.add_parser("setup", help="Validate this repository and print or apply editor settings.")
     setup.add_argument("--project", "--profile", dest="project")
     setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
+    setup.add_argument("--apply", action="store_true", help="Apply bootstrap settings to VS Code User/Remote Settings.")
+    setup.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; requires --apply.")
     check = claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
     check.add_argument("--directory", type=Path, help="Launch/workspace directory to diagnose; otherwise current directory.")
     claude_actions.add_parser("token", help="Internal apiKeyHelper: return the pinned session credential only.")
@@ -127,13 +130,33 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
             elif args.action == "setup":
-                print(json.dumps(claude_setup(store, args.project, args.model), indent=2))
-                print(
-                    "Merge this snippet into VS Code User Settings (JSON), or Remote User Settings in a container. "
-                    "Keep unrelated environmentVariables entries, but remove old gateway credentials/routing overrides. "
-                    "Reload the window and start a new Claude conversation. No editor settings were edited.",
-                    file=sys.stderr,
-                )
+                if args.settings_file is not None and not args.apply:
+                    raise CredentialError("--settings-file requires --apply; no settings were edited.")
+                if args.apply:
+                    target = settings_file(args.settings_file)
+                    with editing(target) as editor:
+                        generated = claude_setup(store, args.project, args.model)
+                        try:
+                            editor.apply(generated)
+                        except CredentialError as error:
+                            raise CredentialError(
+                                f"Claude's CLI configuration was saved, but editor settings were not applied: {error}"
+                            ) from None
+                    print(json.dumps(generated, indent=2))
+                    print(
+                        f"Applied Claude bootstrap settings to {json.dumps(str(target))}. "
+                        "Unrelated settings and environment entries were preserved. "
+                        "Reload the window and start a new Claude conversation.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(json.dumps(claude_setup(store, args.project, args.model), indent=2))
+                    print(
+                        "Merge this snippet into VS Code User Settings (JSON), or Remote User Settings in a container. "
+                        "Keep unrelated environmentVariables entries, but remove old gateway credentials/routing overrides. "
+                        "Reload the window and start a new Claude conversation. No editor settings were edited.",
+                        file=sys.stderr,
+                    )
             elif args.action == "check":
                 print(json.dumps(claude_check(store, args.directory), indent=2))
             else:

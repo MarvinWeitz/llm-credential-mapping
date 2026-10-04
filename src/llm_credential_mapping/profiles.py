@@ -87,16 +87,24 @@ def default_home() -> Path:
 
 def atomic_write_json(path: Path, value: dict) -> None:
     """Replace a JSON configuration atomically; the caller must hold its configuration lock."""
+    atomic_write_text(path, json.dumps(value, indent=2) + "\n")
+
+
+def atomic_write_text(
+    path: Path, value: str, *, newline: str | None = None, permissions: int | None = None,
+) -> None:
+    """Replace text atomically under the caller's lock; optionally preserve line endings and file permissions."""
     filename = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, delete=False
+            mode="w", encoding="utf-8", newline=newline, dir=path.parent, delete=False
         ) as output:
             filename = output.name
-            json.dump(value, output, indent=2)
-            output.write("\n")
+            output.write(value)
             output.flush()
             os.fsync(output.fileno())
+        if permissions is not None:
+            os.chmod(filename, permissions)
         os.replace(filename, path)
     finally:
         if filename and os.path.exists(filename):

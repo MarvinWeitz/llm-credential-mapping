@@ -361,10 +361,55 @@ llm-credentials claude setup --profile demo --model YOUR_LITELLM_ALIAS
 
 Setup checks the installed wrapper executable, repository binding and signed-in
 employee before saving nonsecret `claude.json` beside `projects.json`. It prints
-a VS Code JSON settings snippet; it does not modify any editor/project files.
+a VS Code JSON settings snippet. Without `--apply`, no editor/project files are
+modified.
 If needed, run `repo bind --profile demo` and `login --profile demo` first.
 
-In VS Code, open **Preferences: Open User Settings (JSON)** and merge the
+To apply the bootstrap without copying JSON, use:
+
+```bash
+llm-credentials claude setup --profile demo --model YOUR_LITELLM_ALIAS --apply
+```
+
+This writes only the wrapper, login-prompt and generated environment entries to
+VS Code **User/Remote User Settings** on the same host. It preserves unrelated
+settings, comments, trailing commas, existing file permission bits and unrelated
+environment entries. Matching generated environment values are updated without
+adding duplicate entries. Existing environment variables not emitted by setup
+are retained, including a previously configured D-Bus address when the terminal
+does not supply one. No token or vault password is added.
+
+Standard Windows, macOS and Linux locations and the usual Remote server folders
+are detected; `VSCODE_AGENT_FOLDER` and `VSCODE_PORTABLE` are honored. Multiple
+installations, VS Code profiles, or an unrecognized remote location require an
+explicit path from **Preferences: Open User/Remote Settings (JSON)**:
+
+```bash
+llm-credentials claude setup --profile demo --model YOUR_LITELLM_ALIAS --apply \
+  --settings-file /absolute/path/to/User-or-Machine/settings.json
+```
+
+Use that option for custom server locations, nondefault profiles and other VS
+Code distributions too. Workspace settings and workspace files are rejected:
+these bootstrap properties are machine-scoped.
+
+Save the settings editor first and avoid editing it while applying. CLI updates
+use a file lock and atomic replacement, and detected external changes abort the
+write. Invalid JSONC, invalid environment entries or permission failures are
+reported instead of replacing the file with defaults. If editor writing fails
+after the CLI profile/model configuration was saved, the error explicitly
+reports that partial state; fix the file/permissions and rerun setup.
+
+Without `--apply`, setup still only prints the settings snippet. `--settings-file`
+requires `--apply`. Both modes require a running accessible vault and do not
+start D-Bus or unlock it. Reload the window after applying; existing/prestarted
+sessions are not updated. Profiles, models and repository/customer selections
+are otherwise read automatically by the wrapper for new sessions, so there is
+no editor configuration to copy on every session. Managed editor policies can
+still override user settings; this command does not change those policies.
+
+For manual setup without `--apply`, open **Preferences: Open User Settings
+(JSON)** in VS Code and merge the
 printed snippet. For a container/SSH workspace, use the **Remote** tab's User
 Settings instead. The snippet has these fields:
 
