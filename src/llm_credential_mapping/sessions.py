@@ -57,7 +57,7 @@ class SessionManager:
             if session is None:
                 raise CredentialError(f"No login for '{profile.name}'; run login --project {profile.name}.")
             if expected_user is not None and session.user_id != expected_user:
-                raise CredentialError("The signed-in employee changed; start a new Claude session. No credential returned.")
+                raise CredentialError("The signed-in employee changed; start a new agent session. No credential returned.")
             if session.refresh_pending:
                 raise CredentialError("Previous renewal was interrupted or uncertain; log in again. No token replayed.")
             if session.expires_at > time.time() + 60:

@@ -8,6 +8,8 @@ from . import __version__
 from .agents import launch
 from .claude import check as claude_check, helper_token, setup as claude_setup
 from .errors import CredentialError
+from .copilot import CopilotStore, connection_key, setup as copilot_setup, validate_connection
+from .copilot_bridge import check as copilot_check, serve as copilot_serve
 from .editor_settings import editing, settings_file
 from .profiles import Profile, ProfileStore, default_home
 from .repositories import RepositoryStore, current_repository
@@ -45,6 +47,25 @@ def parser() -> argparse.ArgumentParser:
             cmd.add_argument("--workspace", type=Path, help="Claude's launch directory; otherwise current directory.")
         if action == "bind":
             cmd.add_argument("--repository", type=Path, required=True, help="Primary Git checkout's local directory.")
+    copilot = commands.add_parser("copilot", help="Prototype: connect Copilot Chat through a pinned foreground bridge.")
+    copilot_actions = copilot.add_subparsers(dest="action", required=True)
+    copilot_setup_parser = copilot_actions.add_parser("setup", help="Save a bound connection and print fields for native UI setup.")
+    copilot_setup_parser.add_argument("--project", "--profile", dest="project")
+    copilot_setup_parser.add_argument("--model", required=True, help="Exact LiteLLM model alias; agents require tool calling.")
+    copilot_setup_parser.add_argument("--directory", type=Path, help="Git checkout to pin; otherwise current directory.")
+    copilot_setup_parser.add_argument("--port", type=int, default=8743, help="Private loopback port; default 8743.")
+    copilot_setup_parser.add_argument("--max-input-tokens", type=int, default=32000, help="Conservative advertised input limit.")
+    copilot_setup_parser.add_argument("--max-output-tokens", type=int, default=4096, help="Advertised and enforced output limit.")
+    copilot_setup_parser.add_argument("--vision", action="store_true", help="Declare image support only if the model supports it.")
+    copilot_actions.add_parser("list", help="List saved nonsecret connections.")
+    for action in ("key", "serve", "disable", "check"):
+        command = copilot_actions.add_parser(action, help={
+            "key": "Print only the local connection key for VS Code's API key prompt; treat it as a secret.",
+            "serve": "Run the foreground bridge in this extension-host terminal; Ctrl+C stops it.",
+            "disable": "Block the saved connection and stop its foreground bridge; retain vault logins and UI registration.",
+            "check": "Verify bridge readiness without printing either local or gateway credentials.",
+        }[action])
+        command.add_argument("--connection", help="Exact ID from copilot list; optional only when one connection exists.")
     project = commands.add_parser("project", aliases=["profile"], help="Manage gateway/business-unit profiles.")
     actions = project.add_subparsers(dest="action", required=True)
     add = actions.add_parser("add")
@@ -114,6 +135,53 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         store = ProfileStore(args.home.expanduser().resolve() if args.home else default_home())
+        if args.command == "copilot":
+            if args.action == "setup":
+                connection = copilot_setup(
+                    store, args.project, args.model, args.directory, port=args.port,
+                    max_input_tokens=args.max_input_tokens, max_output_tokens=args.max_output_tokens, vision=args.vision,
+                )
+                print(json.dumps(connection.model_settings(), indent=2))
+                print(
+                    f"Saved connection {connection.id}. Group name: {json.dumps(connection.group_name)}. "
+                    "In Chat: Manage Language Models, add Custom Endpoint and enter the LOCAL key from 'copilot key'. "
+                    "Choose Chat Completions. Merge only these apiType/models fields into the new group; "
+                    "KEEP its VS Code-generated apiKey secret reference, name and vendor. "
+                    "No editor files were changed. Run 'copilot serve' in this extension-host terminal, "
+                    "then select this repository/customer model explicitly. Token limits are conservative defaults; "
+                    "configure them to match the gateway model. No automatic active-workspace selection.",
+                    file=sys.stderr,
+                )
+            elif args.action == "list":
+                print(json.dumps([
+                    {"connection": connection.id, **connection.__dict__}
+                    for connection in CopilotStore(store).list()
+                ], indent=2))
+            elif args.action == "key":
+                connection = CopilotStore(store).select(args.connection)
+                _, manager = validate_connection(store, connection)
+                print(connection_key(connection, manager.secrets))
+                print(
+                    "This is a LOCAL bridge credential, not a LiteLLM access/refresh token. "
+                    "Enter it only in this connection's native VS Code API key prompt; do not share or commit it.",
+                    file=sys.stderr,
+                )
+            elif args.action == "serve":
+                copilot_serve(store, args.connection, lambda message: print(message, file=sys.stderr))
+            elif args.action == "check":
+                print(json.dumps(copilot_check(store, args.connection), indent=2))
+            else:
+                connection = CopilotStore(store).disable(args.connection)
+                print(f"Disabled Copilot connection {connection.id}.")
+                print(
+                    "New requests are blocked and its foreground bridge stops; in-flight requests may be interrupted. "
+                    "Check the outcome before retrying interrupted generations or tool calls. "
+                    "Select a normal GitHub Copilot model in the picker and start a new conversation. "
+                    "Native UI registration, local key, LiteLLM logins and mappings were retained; "
+                    "remove the group manually in Manage Language Models if desired. Rerun setup/serve to reconnect.",
+                    file=sys.stderr,
+                )
+            return 0
         if args.command == "claude":
             if args.action == "workspace":
                 workspaces = WorkspaceStore(store)

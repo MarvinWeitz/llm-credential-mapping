@@ -1,7 +1,8 @@
 # LLM Credential Mapping
 
 Python CLI for signing in through LiteLLM's native SSO flow and launching CLI
-agents with repository-selected, session-local customer tags.
+agents with repository-selected, session-local customer tags. Optional adapters
+connect the official Claude Code and Copilot Chat VS Code tools to the same vault.
 The command is **`llm-credentials`**.
 
 LiteLLM is the first and currently only gateway. The project/credential layer is
@@ -34,9 +35,10 @@ Git origin -> repository customer default -> isolated agent process
   until they need renewal.
 - The customer tag is pinned at launch. Two agents can share the credential
   while sending different tags; the CLI never updates tags on a shared key.
-- There is no custom VS Code extension, local proxy, new central broker, or
-  administrator credential. The optional official-Claude adapter adds a
-  rotating credential helper without changing the existing CLI launchers.
+- There is no custom VS Code extension, new central broker, or administrator
+  credential. The optional official-Claude adapter adds a rotating credential
+  helper; the optional Copilot adapter adds an authenticated foreground loopback
+  bridge. Neither changes the existing CLI launchers.
 
 ## Gateway prerequisites
 
@@ -577,6 +579,125 @@ integration's `LLM_CREDENTIAL_MAPPING_HOME` environment entry from User/Remote
 Settings. Restore `disableLoginPrompt` if you want first-party login prompts,
 then reload. Existing vault credentials and repository bindings are untouched.
 
+## Copilot Chat: foreground bridge prototype
+
+This adapter connects Copilot's native **Custom Endpoint** provider to LiteLLM
+using the same employee SSO grant and repository customer binding. It does not
+intercept GitHub-hosted requests or install another extension. Each connection
+pins one profile, employee, checkout, customer and model. **You select the
+matching customer-labelled model yourself**; opening a repository does not
+automatically switch Copilot models.
+
+### Set up and register once
+
+Use a current desktop VS Code/Copilot version that offers **Custom Endpoint**
+in **Chat: Manage Language Models**. An organization policy may disable BYOK.
+The selected LiteLLM alias must support OpenAI-compatible **Chat Completions and
+tool calling**. Responses and Messages endpoints are not supported by this
+prototype.
+
+In the bound repository's terminal, with the same accessible OS vault used
+for login:
+
+```bash
+llm-credentials copilot setup --profile demo --model gpt-5.6-luna
+llm-credentials copilot key
+```
+
+`setup` prints nonsecret `apiType`/`models` JSON and instructions including the
+suggested group name. `key` intentionally prints a **local bridge credential**,
+not an employee access or refresh token. Treat it as a secret: enter it only in
+the native provider's API-key prompt, not source files, chat, shared logs or
+screenshots.
+
+1. Open **Chat: Manage Language Models**, choose **Add Models**, then
+   **Custom Endpoint**.
+2. Use the suggested repository/customer group name and enter the key from
+   `copilot key` in the native API-key prompt. Choose **Chat Completions**.
+3. In the provider configuration opened by VS Code, merge the printed
+   `apiType` and `models` fields into this group. **Keep its existing `name`,
+   `vendor` and native-generated `apiKey` secret reference**. Do not paste the
+   literal key into JSON or replace the complete provider list.
+4. Start the bridge and keep its terminal open:
+
+   ```bash
+   llm-credentials copilot serve
+   ```
+
+5. Select this connection's customer-labelled model in Copilot's picker and
+   start a new chat. From another terminal on the bridge host, verify it:
+
+   ```bash
+   llm-credentials copilot check
+   ```
+
+There is deliberately no `--apply`: native registrations and their secret
+references belong to the active **desktop VS Code profile**, not Remote Machine
+settings. Register in each editor profile that needs this connection. Identical
+setup reuses the vault key; a different employee, customer, model, checkout,
+port or capability setting creates a different connection and endpoint.
+
+### Containers, ports and model limits
+
+Run the bridge where the Copilot provider's network requests execute. For
+containers/SSH, start on the extension host. If the provider runs on your local
+computer instead, privately forward the bridge port with VS Code and use
+`127.0.0.1` and the forwarded **local** port in the model URL. Keep the entire
+generated `/llm-credentials/ID/v1/chat/completions` path. The CLI check runs on
+the bridge host and does not verify the editor's forwarded route.
+
+The listener binds only to `127.0.0.1`. Do not expose it publicly, use a public
+port-forwarding URL or bind to `0.0.0.0`. Browser-origin requests are rejected.
+The local key authorizes use of this one connection and must remain private.
+Employee SSO credentials stay in the OS vault and renew through the existing
+CLI session manager; they are never entered in the native provider UI.
+
+Defaults advertise 32,000 input tokens, 4,096 output tokens, tool calling and
+no vision. These are conservative configuration values, **not discovered model
+capabilities**. Set appropriate values when creating the connection:
+
+```bash
+llm-credentials copilot setup --profile demo --model MODEL_ALIAS \
+  --port 8744 --max-input-tokens 64000 --max-output-tokens 8192 --vision
+```
+
+The bridge rejects output-token requests above the configured limit and supplies
+`max_completion_tokens` when the client omits both output-limit fields. Input
+limits are advertised to the native provider; the bridge does not tokenize
+prompts. Request bodies are limited to 8 MiB and forwarding to eight concurrent
+requests. Gateway budgets, permissions and actual model limits still apply.
+
+Use `copilot list` to inspect nonsecret connections. With more than one saved
+connection, pass the **full** ID as `--connection ID` to `key`, `serve`, `check`
+and `disable`. Enabled connections need different ports. Changes to the global
+default profile or a repository binding do not retag a live bridge; create and
+select a new connection for the changed context. A changed pinned profile or
+signed-in employee is rejected. The checkout origin is verified when starting
+the bridge and running `key`/`check`, not inferred from the active editor.
+
+### Disconnect and return to ordinary Copilot
+
+Stop generation before disabling:
+
+```bash
+llm-credentials copilot disable
+```
+
+New requests are blocked and the foreground bridge stops. **In-flight requests
+may be interrupted**; check their outcome, especially tool calls, before
+retrying. Select a normal GitHub Copilot model and start a new conversation.
+The native group remains available for manual removal in Manage Language
+Models. LiteLLM logins, repository mappings and the local key are retained.
+Rerun the same `setup` and `serve` to reconnect; no new key entry is needed
+unless the connection identity or vault key changed.
+
+This routes the explicitly selected chat/agent model, **not all Copilot
+traffic**. Ordinary tab completions and separately configured utility models
+may still use their existing providers. Native UI availability, tool-call
+compatibility, gateway tag logging and actual budgets need verification in
+your installed editor/gateway. Automated tests cover the CLI and localhost
+JSON/SSE protocol, not the real Copilot UI.
+
 ## Security boundaries and current limits
 
 - Only supported native OS keyrings are accepted. There is **no plaintext
@@ -602,8 +723,9 @@ then reload. Existing vault credentials and repository bindings are untouched.
 - Manual browser team consent remains required. The profile name is not sent
   as an undocumented automatic team override.
 - There is no raw `sk-...` key import or claim that GitHub-hosted Copilot traffic
-  is intercepted. The official-Claude wrapper is optional and does not install
-  a custom VS Code extension.
+  is intercepted. Both editor integrations are optional and do not install a
+  custom VS Code extension. The Copilot bridge refuses local browser requests,
+  requires its vault-backed local key and ignores client identity/tag overrides.
 
 ## Development and validation
 
@@ -614,6 +736,9 @@ then reload. Existing vault credentials and repository bindings are untouched.
 
 Tests use the standard-library unittest runner, mocked keyrings, and a local
 HTTP OAuth fixture; they need no company secrets or external LLM calls.
+Copilot tests exercise authenticated localhost forwarding, grant renewal,
+bounded payloads, SSE delivery and tool-call chunks. A Node.js fetch smoke test
+also runs when Node is installed; it needs no npm dependencies.
 GitHub Actions runs the suite and builds the wheel on Windows, macOS and Linux.
 
 The optional installed-Claude test uses only a localhost fixture and a temporary
@@ -643,3 +768,5 @@ It is private and has no open-source license assigned yet.
 - [OpenCode provider headers](https://opencode.ai/docs/providers/)
 - [Official Claude extension wrapper](https://code.claude.com/docs/en/vs-code#extension-settings)
 - [Claude credential-helper rotation](https://code.claude.com/docs/en/llm-gateway-connect#rotate-credentials-with-apikeyhelper)
+- [VS Code Custom Endpoint models](https://code.visualstudio.com/docs/agent-customization/language-models)
+- [Copilot bring-your-own-key scope](https://docs.github.com/en/copilot/concepts/models/bring-your-own-key)

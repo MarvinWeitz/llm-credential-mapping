@@ -11,7 +11,8 @@ from .agents import CUSTOMER_VARIABLE, TOKEN_VARIABLE, claude_environment
 from .errors import CredentialError
 from .litellm import required_text
 from .profiles import Profile, ProfileStore, atomic_write_json, default_home
-from .repositories import RepositoryStore, current_repository
+from .request_context import resolve_identity, validate_model
+from .repositories import current_repository
 from .sessions import SessionManager
 from .storage import NativeKeyring
 from .tags import validate_tag
@@ -40,11 +41,7 @@ class ClaudeConfiguration:
         if not isinstance(self.profile, str):
             raise CredentialError("Claude's authentication profile name must be a string.")
         Profile(self.profile, "https://validation.example", "validation")
-        if (
-            not isinstance(self.model, str) or not self.model.strip() or self.model != self.model.strip()
-            or len(self.model) > 256 or any(char.isspace() or ord(char) < 32 for char in self.model)
-        ):
-            raise CredentialError("Provide a nonempty LiteLLM model alias without whitespace.")
+        validate_model(self.model)
 
 
 @dataclass(frozen=True)
@@ -138,20 +135,10 @@ def resolve_context(
             "The workspace's primary checkout now has a different Git origin. "
             "Verify the checkout and rerun 'claude workspace bind'; no customer was selected."
         )
-    customer = RepositoryStore(store).get(profile.gateway, repository)
-    if customer is None:
-        raise CredentialError(
-            "This repository has no customer binding for the selected gateway. "
-            "Run 'llm-credentials repo bind --profile " + profile.name + "' in its terminal first."
-        )
-    manager = SessionManager(store, NativeKeyring())
-    status = manager.status(profile)
-    if status["state"] == "logged-out":
-        raise CredentialError(f"No login for '{profile.name}'; run login --profile {profile.name} in this host's terminal.")
-    user_id = status["user_id"]
-    manager.token(profile, expected_user=user_id)
+    identity = resolve_identity(store, profile, repository, NativeKeyring, SessionManager)
     return ClaudeContext(
-        str(store.home.resolve()), profile.name, profile.account, user_id, repository, customer, configuration.model,
+        str(store.home.resolve()), profile.name, profile.account, identity.user_id,
+        repository, identity.customer, configuration.model,
     ), profile
 
 
