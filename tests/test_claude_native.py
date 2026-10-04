@@ -94,6 +94,9 @@ class NativeClaudeTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
+                workspace = root / "workspace"
+                primary = workspace / "primary"
+                primary.mkdir(parents=True)
                 home = root / "credentials"
                 store = ProfileStore(home)
                 profile = Profile("native-fixture", f"http://127.0.0.1:{server.server_port}", "fixture-unit", True)
@@ -111,18 +114,23 @@ class NativeClaudeTests(unittest.TestCase):
                     )
                     command, env = wrapped_command(str(binary), [
                         "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                        "--project-config-root", str(workspace),
                         "--tools", "", "--setting-sources", "", "--no-session-persistence",
-                    ], context, profile)
+                    ], context, profile, primary)
                     env["CLAUDE_CONFIG_DIR"] = str(root / "isolated-claude")
                     message = json.dumps({
                         "type": "user", "message": {"role": "user", "content": "Reply with FIXTURE_OK."},
                         "parent_tool_use_id": None, "session_id": "",
                     }) + "\n"
                     result = subprocess.run(
-                        command, env=env, cwd=root, input=message, capture_output=True, text=True, timeout=60,
+                        command, env=env, cwd=primary, input=message, capture_output=True, text=True, timeout=60,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr[-2000:])
                     events = [json.loads(line) for line in result.stdout.splitlines()]
+                    initialization = next(
+                        event for event in events if event["type"] == "system" and event.get("subtype") == "init"
+                    )
+                    self.assertEqual(Path(initialization["cwd"]).resolve(), primary.resolve())
                     response = next(event for event in events if event["type"] == "result")
                     self.assertEqual(response["result"], "FIXTURE_OK")
                     model_calls = [call for call in calls if call[0].startswith("/v1/messages")]

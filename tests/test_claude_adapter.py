@@ -20,6 +20,7 @@ from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.litellm import Session
 from llm_credential_mapping.profiles import Profile, ProfileStore, atomic_write_json
 from llm_credential_mapping.repositories import RepositoryStore
+from llm_credential_mapping.workspaces import WorkspaceStore
 from test_sessions import MemoryStore
 
 
@@ -249,6 +250,7 @@ class ClaudeAdapterTests(unittest.TestCase):
             ]), 0)
         self.assertIn("customer:A", stderr.getvalue())
         self.assertIn("--project-config-root=" + str(root), execute.call_args.args[0])
+        self.assertIsNone(execute.call_args.args[2])
 
     def test_project_root_argument_forms_and_literal_separator(self):
         self.assertEqual(project_directory([], self.home), self.home)
@@ -263,6 +265,148 @@ class ClaudeAdapterTests(unittest.TestCase):
         ):
             with self.subTest(arguments=arguments), self.assertRaises(CredentialError):
                 project_directory(arguments, self.home)
+
+    def make_checkout(self, name, origin):
+        root = (self.home / name).resolve()
+        root.mkdir()
+        subprocess.run(["git", "init", "--quiet", str(root)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin], check=True, capture_output=True)
+        return root
+
+    def test_parent_workspace_mapping_aligns_cwd_root_and_tags_and_pins_existing_context(self):
+        a = self.make_checkout("a", "git@github.com:company/repo.git")
+        b = self.make_checkout("b", "git@github.com:company/another-repo.git")
+        host = self.home / "extension-host"
+        host.mkdir()
+        self.repositories.bind(self.profile.gateway, "github.com/company/another-repo", "customer:B")
+        workspaces = WorkspaceStore(self.store)
+        workspaces.bind(self.home, a)
+        self.save_configuration()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.Path.cwd", return_value=host), \
+                patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                patch("llm_credential_mapping.claude._execute", return_value=0) as execute, \
+                contextlib.redirect_stderr(io.StringIO()):
+            forwarded = [sys.executable, "--project-config-root=" + str(self.home), "--input-format", "stream-json"]
+            self.assertEqual(wrapper_main(forwarded), 0)
+            first = execute.call_args.args
+            self.assertEqual(first[2], a)
+            self.assertEqual(first[0][first[0].index("--project-config-root") + 1], str(a))
+            workspaces.bind(self.home, b)
+            self.assertEqual(wrapper_main(forwarded), 0)
+            second = execute.call_args.args
+            self.assertEqual(second[2], b)
+        self.assertEqual(json.loads(first[1][CONTEXT_VARIABLE])["customer"], "customer:A")
+        self.assertEqual(json.loads(second[1][CONTEXT_VARIABLE])["customer"], "customer:B")
+
+    def test_mapping_without_sdk_root_changes_cwd_but_does_not_add_a_root_flag(self):
+        root = self.make_checkout("checkout", "git@github.com:company/repo.git")
+        WorkspaceStore(self.store).bind(self.home, root)
+        self.save_configuration()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.Path.cwd", return_value=self.home), \
+                patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                patch("llm_credential_mapping.claude._execute", return_value=0) as execute, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(wrapper_main([
+                sys.executable, "--input-format", "stream-json", "--", "--project-config-root=literal",
+            ]), 0)
+        self.assertEqual(execute.call_args.args[2], root)
+        self.assertNotIn("--project-config-root", execute.call_args.args[0])
+        self.assertEqual(execute.call_args.args[0][-2:], ["--", "--project-config-root=literal"])
+
+    def test_mapped_sdk_root_argument_forms_are_rewritten_without_changing_literal_arguments(self):
+        for root_arguments in (["--project-config-root", "workspace"], ["--project-config-root=workspace"]):
+            command, env = wrapped_command(
+                sys.executable, [*root_arguments, "--", "--project-config-root=literal"],
+                self.context, self.profile, self.home,
+            )
+            self.assertEqual(command[command.index("--project-config-root") + 1], str(self.home))
+            self.assertEqual(command[-2:], ["--", "--project-config-root=literal"])
+
+    def test_direct_checkout_does_not_inherit_a_parent_mapping(self):
+        a = self.make_checkout("a", "git@github.com:company/repo.git")
+        b = self.make_checkout("b", "git@github.com:company/another-repo.git")
+        self.repositories.bind(self.profile.gateway, "github.com/company/another-repo", "customer:B")
+        WorkspaceStore(self.store).bind(self.home, a)
+        self.save_configuration()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.Path.cwd", return_value=b), \
+                patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
+                patch("llm_credential_mapping.claude._execute", return_value=0) as execute, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(wrapper_main([sys.executable, "--input-format", "stream-json"]), 0)
+        self.assertEqual(json.loads(execute.call_args.args[1][CONTEXT_VARIABLE])["customer"], "customer:B")
+        self.assertIsNone(execute.call_args.args[2])
+
+    def test_missing_primary_checkout_does_not_fall_back_to_another_repo(self):
+        root = self.make_checkout("checkout", "git@github.com:company/repo.git")
+        self.make_checkout("another-checkout", "git@github.com:company/repo.git")
+        WorkspaceStore(self.store).bind(self.home, root)
+        root.rename(self.home / "moved-checkout")
+        self.save_configuration()
+        stderr = io.StringIO()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.Path.cwd", return_value=self.home), \
+                patch("llm_credential_mapping.claude.NativeKeyring", side_effect=AssertionError), \
+                patch("llm_credential_mapping.claude._execute", side_effect=AssertionError), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(wrapper_main([sys.executable, "--input-format", "stream-json"]), 1)
+        self.assertIn("claude workspace bind", stderr.getvalue())
+        self.assertIn("No fallback repository or customer was selected", stderr.getvalue())
+
+    def test_corrupt_workspace_mapping_fails_before_vault_access_or_launch(self):
+        self.save_configuration()
+        (self.home / "workspaces.json").write_text("{")
+        stderr = io.StringIO()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.NativeKeyring", side_effect=AssertionError), \
+                patch("llm_credential_mapping.claude._execute", side_effect=AssertionError), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(wrapper_main([sys.executable, "--input-format", "stream-json"]), 1)
+        self.assertIn("workspaces.json", stderr.getvalue())
+
+    def test_checkout_origin_change_is_rejected_before_credentials_are_read(self):
+        root = self.make_checkout("checkout", "git@github.com:company/repo.git")
+        WorkspaceStore(self.store).bind(self.home, root)
+        self.save_configuration()
+        subprocess.run(
+            ["git", "-C", str(root), "remote", "set-url", "origin", "git@github.com:company/changed-repo.git"],
+            check=True, capture_output=True,
+        )
+        stderr = io.StringIO()
+        with patch("llm_credential_mapping.claude.default_home", return_value=self.home), \
+                patch("llm_credential_mapping.claude.Path.cwd", return_value=self.home), \
+                patch("llm_credential_mapping.claude.NativeKeyring", side_effect=AssertionError), \
+                patch("llm_credential_mapping.claude._execute", side_effect=AssertionError), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(wrapper_main([sys.executable, "--input-format", "stream-json"]), 1)
+        self.assertIn("different Git origin", stderr.getvalue())
+
+    def test_setup_and_check_can_run_in_the_mapped_parent_workspace(self):
+        root = self.make_checkout("checkout", "git@github.com:company/repo.git")
+        WorkspaceStore(self.store).bind(self.home, root)
+        with patch("llm_credential_mapping.claude.Path.cwd", return_value=self.home), \
+                patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)), \
+                patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets):
+            setup(self.store, "unit", "model-alias")
+            result = check(self.store)
+        self.assertEqual(result["workspace_directory"], str(self.home))
+        self.assertEqual(result["lookup_directory"], str(root))
+        self.assertTrue(result["primary_repository_mapped"])
+        self.assertEqual(result["customer"], "customer:A")
+
+    def test_executed_child_runs_in_the_explicit_primary_directory(self):
+        program = (
+            "import os,pathlib,sys; from llm_credential_mapping.claude import _execute; "
+            "sys.exit(_execute([sys.executable,'-c','import os;print(os.getcwd())'],dict(os.environ),pathlib.Path(sys.argv[1])))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", program, str(self.home)],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), self.home)
 
     def test_failed_config_probe_reports_cwd_and_does_not_guess_the_only_saved_repo(self):
         self.save_configuration()

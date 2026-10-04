@@ -13,6 +13,7 @@ from .repositories import RepositoryStore, current_repository
 from .sessions import SessionManager
 from .storage import NativeKeyring
 from .tags import list_tags, validate_tag
+from .workspaces import WorkspaceStore
 
 
 def parser() -> argparse.ArgumentParser:
@@ -29,8 +30,16 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--project", "--profile", dest="project")
     setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
     check = claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
-    check.add_argument("--directory", type=Path, help="Git lookup directory to diagnose; otherwise current directory.")
+    check.add_argument("--directory", type=Path, help="Launch/workspace directory to diagnose; otherwise current directory.")
     claude_actions.add_parser("token", help="Internal apiKeyHelper: return the pinned session credential only.")
+    workspace = claude_actions.add_parser("workspace", help="Select an explicit primary checkout for a launch workspace.")
+    workspace_actions = workspace.add_subparsers(dest="workspace_action", required=True)
+    for action in ("bind", "list", "unbind"):
+        cmd = workspace_actions.add_parser(action)
+        if action != "list":
+            cmd.add_argument("--workspace", type=Path, help="Claude's launch directory; otherwise current directory.")
+        if action == "bind":
+            cmd.add_argument("--repository", type=Path, required=True, help="Primary Git checkout's local directory.")
     project = commands.add_parser("project", aliases=["profile"], help="Manage gateway/business-unit profiles.")
     actions = project.add_subparsers(dest="action", required=True)
     add = actions.add_parser("add")
@@ -101,7 +110,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         store = ProfileStore(args.home.expanduser().resolve() if args.home else default_home())
         if args.command == "claude":
-            if args.action == "setup":
+            if args.action == "workspace":
+                workspaces = WorkspaceStore(store)
+                if args.workspace_action == "list":
+                    print(json.dumps([binding.__dict__ for binding in workspaces.list()], indent=2))
+                else:
+                    workspace = args.workspace if args.workspace is not None else Path.cwd()
+                    if args.workspace_action == "bind":
+                        print(json.dumps(workspaces.bind(workspace, args.repository).__dict__, indent=2))
+                    else:
+                        workspaces.unbind(workspace)
+                        print("Removed this workspace's primary repository mapping.")
+                    print(
+                        "Reload the VS Code window before using the changed selection. "
+                        "Running processes are unchanged; editor tabs do not change customer tags.",
+                        file=sys.stderr,
+                    )
+            elif args.action == "setup":
                 print(json.dumps(claude_setup(store, args.project, args.model), indent=2))
                 print(
                     "Merge this snippet into VS Code User Settings (JSON), or Remote User Settings in a container. "

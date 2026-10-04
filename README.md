@@ -296,6 +296,55 @@ or locally for a local workspace. The CLI, Git, repository configuration and OS
 vault must be available on that same host.
 Use official Claude Code extension 2.1.246 or newer.
 
+### Parent and multi-repository workspaces
+
+If VS Code launches Claude from a parent folder rather than a Git checkout,
+select one primary repository explicitly:
+
+```bash
+llm-credentials claude workspace bind --workspace WORKSPACE_DIRECTORY --repository GIT_CHECKOUT_DIRECTORY
+llm-credentials claude workspace list
+llm-credentials claude check --directory WORKSPACE_DIRECTORY
+```
+
+Use the actual launch directory shown in the adapter error, not the path to a
+`.code-workspace` file. The selected checkout must have an `origin` remote.
+Its existing gateway/repository customer binding supplies the tag. This extra
+mapping does not create a customer tag, change authentication or require vault
+access. If the checkout has no customer binding, run
+`repo bind --profile demo --directory GIT_CHECKOUT_DIRECTORY` separately.
+
+Mappings are local nonsecret `workspaces.json` alongside `projects.json`, keyed
+by the exact absolute launch directory. They contain the selected checkout path
+and expected Git origin identity. They are not written into your repositories.
+If the checkout moves, disappears or its origin changes, the adapter fails
+rather than silently selecting another repository/customer.
+
+For a workspace containing several repositories, **one primary repository**
+is used for Claude. The wrapper starts Claude in that checkout and adjusts an
+SDK-supplied project root to match, so relative tool operations and customer
+attribution use the same selection. Other workspace repositories can still be
+accessible to tools: this is not a filesystem or authorization boundary.
+Switching editor tabs does not change the primary repository or the tag.
+
+Re-run `workspace bind` to change the selection, then **reload the VS Code
+window before starting a conversation**, so prestarted processes cannot retain
+the old selection. Existing processes are not modified by the CLI. Do not
+resume another customer's conversation after a primary-repository change.
+Distinct launch directories can have independent selections; windows using the
+same launch directory and CLI configuration share the same primary selection.
+Direct launches inside a Git checkout do not inherit a parent directory's
+mapping: mappings are exact, not recursive.
+
+Remove a selection with:
+
+```bash
+llm-credentials claude workspace unbind --workspace WORKSPACE_DIRECTORY
+```
+
+Reload afterwards. Without a mapping or a Git repository at the launch root,
+the adapter again fails explicitly instead of guessing among child checkouts.
+
 ### Try it
 
 Reinstall the updated CLI to create its second executable entry point:
@@ -347,7 +396,8 @@ LiteLLM spend logs. Model requests go directly from Claude to LiteLLM.
 
 - At startup the wrapper resolves Claude's explicit `--project-config-root`
   directory when provided by the SDK, otherwise the process's working directory,
-  to the Git `origin`, then uses the existing gateway/repository binding. There is
+  through any exact primary-workspace mapping to the Git `origin`, then uses the
+  existing gateway/repository customer binding. There is
   no browser or interactive customer picker in a background process; an unbound
   repository fails with a `repo bind` instruction.
 - `claude setup` selects one authentication profile and model for future
@@ -401,8 +451,9 @@ For a Git lookup failure, the wrapper reports the actual process cwd, lookup
 directory and whether Claude launched a configuration probe. Run `claude check
 --directory PATH` with that lookup directory to compare it with your terminal.
 The opened VS Code folder can differ from the directory you entered in an
-integrated terminal. Open the bound repository directly, or ensure the host
-supplies its explicit project root. The adapter never guesses from child
+integrated terminal. Open the bound repository directly, supply a primary
+workspace mapping, or ensure the host supplies its explicit project root.
+The adapter never guesses from child
 repositories or the only saved binding. Git trust/ownership failures are
 reported separately; it does not bypass Git's `safe.directory` protection.
 

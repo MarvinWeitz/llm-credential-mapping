@@ -15,6 +15,7 @@ from .repositories import RepositoryStore, current_repository
 from .sessions import SessionManager
 from .storage import NativeKeyring
 from .tags import validate_tag
+from .workspaces import WorkspaceStore
 
 CONTEXT_VARIABLE = "LLM_CREDENTIAL_MAPPING_CLAUDE_CONTEXT"
 _CLEARED_VARIABLES = (
@@ -118,9 +119,24 @@ def load_configuration(store: ProfileStore) -> ClaudeConfiguration:
 
 def resolve_context(
     store: ProfileStore, configuration: ClaudeConfiguration, directory: Path | None = None,
+    expected_repository: str | None = None,
 ) -> tuple[ClaudeContext, Profile]:
+    """Resolve customer/employee context; a supplied origin identity must match before any vault access."""
     profile = store.get(configuration.profile)
-    repository = current_repository(directory)
+    try:
+        repository = current_repository(directory)
+    except CredentialError as error:
+        if expected_repository is None:
+            raise
+        raise CredentialError(
+            f"Cannot validate this workspace's primary checkout: {error} "
+            "Verify its path and rerun 'claude workspace bind'; no customer was selected."
+        ) from None
+    if expected_repository is not None and repository != expected_repository:
+        raise CredentialError(
+            "The workspace's primary checkout now has a different Git origin. "
+            "Verify the checkout and rerun 'claude workspace bind'; no customer was selected."
+        )
     customer = RepositoryStore(store).get(profile.gateway, repository)
     if customer is None:
         raise CredentialError(
@@ -144,7 +160,12 @@ def setup(
     """Validate repo/vault access, save nonsecret adapter config, and return VS Code settings to merge; no editor files are changed."""
     configuration = ClaudeConfiguration(store.get(profile_name).name, model)
     executable = verify_wrapper()
-    resolve_context(store, configuration)
+    workspace = Path.cwd()
+    binding = WorkspaceStore(store).get(workspace)
+    resolve_context(
+        store, configuration, Path(binding.directory) if binding else workspace,
+        binding.repository if binding else None,
+    )
     helper_command()
     with store.locked("claude-integration"):
         atomic_write_json(store.home / "claude.json", {"version": 1, **configuration.__dict__})
@@ -158,15 +179,20 @@ def setup(
 
 
 def check(store: ProfileStore, directory: Path | None = None) -> dict:
-    """Resolve the current repo and verify/renew its credential, returning only nonsecret diagnostic metadata."""
+    """Resolve a launch directory's primary checkout and verify/renew its credential; return nonsecret diagnostics."""
     executable = verify_wrapper()
     helper_command()
-    directory = directory.expanduser().resolve() if directory is not None else Path.cwd()
-    context, profile = resolve_context(store, load_configuration(store), directory)
+    workspace = directory.expanduser().resolve() if directory is not None else Path.cwd()
+    binding = WorkspaceStore(store).get(workspace)
+    directory = Path(binding.directory) if binding else workspace
+    context, profile = resolve_context(
+        store, load_configuration(store), directory, binding.repository if binding else None,
+    )
     return {
         "profile": context.profile, "gateway": profile.gateway, "team_id": profile.team_id,
         "user_id": context.user_id, "repository": context.repository, "customer": context.customer,
-        "model": context.model, "wrapper": str(executable), "lookup_directory": str(directory), "state": "ready",
+        "model": context.model, "wrapper": str(executable), "workspace_directory": str(workspace),
+        "lookup_directory": str(directory), "primary_repository_mapped": binding is not None, "state": "ready",
     }
 
 
@@ -210,6 +236,7 @@ def _settings(value: str) -> dict:
 
 def wrapped_command(
     executable: str, arguments: list[str], context: ClaudeContext, profile: Profile,
+    project_root: Path | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """Preserve Claude's stdio arguments/settings while pinning routing/model/tags and adding a token helper, without token argv."""
     forwarded: list[str] = []
@@ -222,7 +249,9 @@ def wrapped_command(
             literal = arguments[index:]
             break
         option, separator, value = argument.partition("=")
-        if option in ("--settings", "--model", "--fallback-model"):
+        if option in ("--settings", "--model", "--fallback-model") or (
+            option == "--project-config-root" and project_root is not None
+        ):
             if not separator:
                 index += 1
                 if index >= len(arguments):
@@ -235,6 +264,8 @@ def wrapped_command(
                 settings["env"] = merged_env
             elif option == "--fallback-model":
                 forwarded.extend([option, context.model])
+            elif option == "--project-config-root":
+                forwarded.extend([option, str(project_root)])
         else:
             forwarded.append(argument)
         index += 1
@@ -261,7 +292,9 @@ def wrapped_command(
     return command, env
 
 
-def _execute(command: list[str], env: dict[str, str]) -> int:
+def _execute(command: list[str], env: dict[str, str], directory: Path | None = None) -> int:
+    if directory is not None:
+        os.chdir(directory)
     if os.name != "nt":
         os.execvpe(command[0], command, env)
         raise CredentialError("Claude process replacement unexpectedly returned.")
@@ -309,24 +342,32 @@ def wrapper_main(argv: list[str] | None = None) -> int:
             return _execute(arguments, os.environ.copy())
         store = ProfileStore(default_home())
         cwd = Path.cwd()
-        directory = project_directory(forwarded, cwd)
+        workspace = project_directory(forwarded, cwd)
+        binding = WorkspaceStore(store).get(workspace)
+        directory = Path(binding.directory) if binding else workspace
         configuration = load_configuration(store)
         try:
-            context, profile = resolve_context(store, configuration, directory)
+            context, profile = resolve_context(
+                store, configuration, directory, binding.repository if binding else None,
+            )
         except CredentialError as error:
             mode = "configuration-probe" if os.environ.get("CLAUDE_CODE_CONFIG_PROBE") == "1" else "session"
             raise CredentialError(
                 f"{error} Claude process cwd={json.dumps(str(cwd))}; "
+                f"workspace directory={json.dumps(str(workspace))}; "
                 f"Git lookup directory={json.dumps(str(directory))}; mode={mode}. "
                 "No fallback repository or customer was selected."
             ) from None
-        command, env = wrapped_command(executable, forwarded, context, profile)
+        command, env = wrapped_command(
+            executable, forwarded, context, profile, directory if binding else None,
+        )
         print(
             f"LLM credentials: profile {json.dumps(context.profile)}, customer {json.dumps(context.customer)}, "
-            f"repository {json.dumps(context.repository)}. Context pinned for this process.",
+            f"repository {json.dumps(context.repository)}, directory {json.dumps(str(directory))}. "
+            "Context pinned for this process.",
             file=sys.stderr,
         )
-        return _execute(command, env)
+        return _execute(command, env, directory if binding else None)
     except CredentialError as error:
         print(f"LLM Claude adapter: {error} Run 'llm-credentials claude check' on the extension host.", file=sys.stderr)
         return 1
