@@ -301,12 +301,61 @@ class EditorSettingsTests(unittest.TestCase):
                 self.assertRaises(CredentialError):
             settings_file()
 
+    def test_remote_profile_folders_do_not_make_shared_machine_settings_ambiguous(self):
+        scenarios = (
+            ("stable", ".vscode-server", {}),
+            ("container", ".vscode-server", {"REMOTE_CONTAINERS": "fixture"}),
+            ("insiders", ".vscode-server-insiders", {"CODESPACES": "fixture"}),
+            ("ssh", ".vscode-server", {"SSH_CONNECTION": "fixture"}),
+            ("custom", "custom-agent", {"VSCODE_AGENT_FOLDER": "custom-agent"}),
+        )
+        for name, folder, environment in scenarios:
+            home = self.home / name
+            server = home / folder
+            (server / "data" / "User" / "profiles" / "first").mkdir(parents=True)
+            (server / "data" / "User" / "profiles" / "second").mkdir()
+            if "VSCODE_AGENT_FOLDER" in environment:
+                environment = {"VSCODE_AGENT_FOLDER": str(server)}
+            with self.subTest(name=name), patch.dict(os.environ, environment, clear=True), \
+                    patch("llm_credential_mapping.editor_settings.sys.platform", "linux"), \
+                    patch("llm_credential_mapping.editor_settings.Path.home", return_value=home):
+                self.assertEqual(settings_file(), server / "data" / "Machine" / "settings.json")
+
+    def test_apply_cli_automatically_updates_remote_machine_settings_despite_editor_profiles(self):
+        server = self.home / ".vscode-server"
+        (server / "data" / "User" / "profiles" / "fixture").mkdir(parents=True)
+        target = server / "data" / "Machine" / "settings.json"
+        target.parent.mkdir()
+        target.write_bytes(b'{"editor.tabSize":4}\n')
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {"VSCODE_AGENT_FOLDER": str(server)}, clear=True), \
+                patch("llm_credential_mapping.cli.claude_setup", return_value=self.generated), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main([
+                "--home", str(self.home / "credentials"), "claude", "setup",
+                "--profile", "demo", "--model", "gpt-5.6-luna", "--apply",
+            ])
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(json.loads(target.read_text()), {"editor.tabSize": 4, **self.generated})
+        self.assertEqual(json.loads(stdout.getvalue()), self.generated)
+        self.assertIn("Applied", stderr.getvalue())
+        self.assertFalse((server / "data" / "User" / "profiles" / "fixture" / "settings.json").exists())
+
     def test_profiles_require_an_explicit_active_settings_file(self):
         profile = self.home / ".config" / "Code" / "User" / "profiles" / "profile-fixture"
         profile.mkdir(parents=True)
         with patch.dict(os.environ, {}, clear=True), \
                 patch("llm_credential_mapping.editor_settings.sys.platform", "linux"), \
                 patch("llm_credential_mapping.editor_settings.Path.home", return_value=self.home):
+            with self.assertRaises(CredentialError):
+                settings_file()
+            self.assertEqual(settings_file(profile / "settings.json"), profile / "settings.json")
+
+    def test_portable_editor_profiles_still_require_an_explicit_active_settings_file(self):
+        portable = self.home / "portable"
+        profile = portable / "user-data" / "User" / "profiles" / "fixture"
+        profile.mkdir(parents=True)
+        with patch.dict(os.environ, {"VSCODE_PORTABLE": str(portable)}, clear=True):
             with self.assertRaises(CredentialError):
                 settings_file()
             self.assertEqual(settings_file(profile / "settings.json"), profile / "settings.json")

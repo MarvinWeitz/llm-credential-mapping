@@ -222,7 +222,7 @@ class _Document:
 
 
 def settings_file(explicit: Path | None = None) -> Path:
-    """Resolve a standard VS Code User/Remote settings file; require an explicit path for ambiguous locations/profiles."""
+    """Resolve User/Remote settings; require an explicit path for ambiguous locations or desktop editor profiles."""
     try:
         if explicit is not None:
             path = explicit.expanduser()
@@ -264,12 +264,11 @@ def settings_file(explicit: Path | None = None) -> Path:
             if len(candidates) > 1:
                 raise CredentialError("Multiple VS Code settings locations found; use --settings-file for the intended editor.")
             path = candidates[0] if candidates else root / "Code" / "User" / "settings.json"
-        if explicit is None:
-            if any(
-                folder.is_dir() and any(item.is_dir() for item in folder.iterdir())
-                for folder in (path.parent / "profiles", path.parent.parent / "User" / "profiles")
-            ):
-                raise CredentialError("VS Code profiles found; use --settings-file for the active profile.")
+        # Remote Machine settings are shared across editor profiles.
+        if explicit is None and path.parent.name == "User":
+            profiles = path.parent / "profiles"
+            if profiles.is_dir() and any(item.is_dir() for item in profiles.iterdir()):
+                raise CredentialError("VS Code desktop profiles found; use --settings-file for the active editor profile.")
         if path.name != "settings.json" or path.parent.name.casefold() == ".vscode":
             raise CredentialError("Choose a VS Code User/Remote settings.json file, not Workspace Settings.")
         resolved = path.resolve()

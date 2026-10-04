@@ -380,17 +380,19 @@ are retained, including a previously configured D-Bus address when the terminal
 does not supply one. No token or vault password is added.
 
 Standard Windows, macOS and Linux locations and the usual Remote server folders
-are detected; `VSCODE_AGENT_FOLDER` and `VSCODE_PORTABLE` are honored. Multiple
-installations, VS Code profiles, or an unrecognized remote location require an
-explicit path from **Preferences: Open User/Remote Settings (JSON)**:
+are detected; `VSCODE_AGENT_FOLDER` and `VSCODE_PORTABLE` are honored. Remote
+Machine settings are shared across VS Code editor profiles, so remote profile
+folders do not prevent automatic setup. Multiple installations, desktop editor
+profiles, or an unrecognized remote location require an explicit path from
+**Preferences: Open User/Remote Settings (JSON)**:
 
 ```bash
 llm-credentials claude setup --profile demo --model YOUR_LITELLM_ALIAS --apply \
   --settings-file /absolute/path/to/User-or-Machine/settings.json
 ```
 
-Use that option for custom server locations, nondefault profiles and other VS
-Code distributions too. Workspace settings and workspace files are rejected:
+Use that option for custom server locations, nondefault desktop profiles and
+other VS Code distributions too. Workspace settings and workspace files are rejected:
 these bootstrap properties are machine-scoped.
 
 Save the settings editor first and avoid editing it while applying. CLI updates
