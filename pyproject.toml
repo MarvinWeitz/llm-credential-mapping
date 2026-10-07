@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "llm-credential-mapping"
 version = "0.1.0"
-description = "Project-scoped CLI credentials and agent launching, initially for LiteLLM"
+description = "LiteLLM SSO credentials and customer attribution for AI coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

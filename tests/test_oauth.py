@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import unittest
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -13,7 +14,7 @@ from urllib.request import urlopen
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.litellm import Discovery, LiteLLMClient, LoopbackCallback, Session
 from llm_credential_mapping.profiles import Profile
-from llm_credential_mapping.transport import JsonTransport
+from llm_credential_mapping.transport import GatewayError, JsonTransport
 
 
 def discovery(origin):
@@ -67,12 +68,14 @@ class DiscoveryTests(unittest.TestCase):
             {"expires_in": float("inf")}, {"token_type": "Other"}, {"access_token": "a\nb"},
         ):
             with self.subTest(change=change), self.assertRaises(CredentialError):
-                Session.from_response({**base, **change}, self.profile, "client")
+                Session.from_response({**base, **change}, self.profile, "client", Discovery.parse(self.data, self.profile))
 
 
 class OAuthFixture:
     def __init__(self):
         self.posts = []
+        self.gets = []
+        self.token_status = 200
         self.challenge = None
         self.team = "team-a"
         self.user = "employee"
@@ -91,6 +94,7 @@ class OAuthFixture:
                 self.wfile.write(raw)
 
             def do_GET(self):
+                fixture.gets.append(self.path)
                 if self.path == "/.well-known/litellm-cli-auth":
                     self.respond(discovery(fixture.origin))
                 elif self.path == "/redirect":
@@ -120,6 +124,9 @@ class OAuthFixture:
                         "redirect_uris": body["redirect_uris"],
                     })
                 elif self.path == "/token":
+                    if fixture.token_status != 200:
+                        self.respond({"error": "temporarily_unavailable"}, fixture.token_status)
+                        return
                     if body["resource"] != fixture.origin:
                         self.respond({"error": "wrong-resource"}, 400)
                         return
@@ -186,13 +193,33 @@ class OAuthIntegrationTests(unittest.TestCase):
     def test_actual_http_pkce_login_refresh_and_revocation(self):
         session = self.login()
         self.assertEqual(session.user_id, "employee")
+        self.assertEqual(session.token_endpoint, self.fixture.origin + "/token")
+        self.assertEqual(session.lifetime, 3600)
         session.check_binding(self.profile)
         new = self.client.refresh(session)
         self.assertEqual(new.user_id, session.user_id)
+        self.assertEqual(new.revocation_endpoint, session.revocation_endpoint)
         self.client.revoke(new)
         paths = [path for path, body in self.fixture.posts]
         self.assertEqual(paths, ["/register", "/token", "/token", "/revoke"])
         self.assertEqual(self.fixture.posts[2][1]["grant_type"], "refresh_token")
+
+    def test_refresh_and_revoke_use_stored_endpoints_without_discovery(self):
+        session = self.login()
+        self.fixture.gets.clear()
+        self.client.revoke(self.client.refresh(session))
+        self.assertEqual(self.fixture.gets, [])
+
+    def test_refresh_failures_report_whether_a_retry_can_succeed(self):
+        session = self.login()
+        for status, retryable in ((503, True), (500, True), (429, True), (400, False), (401, False)):
+            self.fixture.token_status = status
+            with self.subTest(status=status), self.assertRaises(GatewayError) as result:
+                self.client.refresh(session)
+            self.assertEqual((result.exception.status, result.exception.retryable), (status, retryable))
+        with self.assertRaises(GatewayError) as result:
+            self.client.refresh(replace(session, token_endpoint="http://127.0.0.1:9/token"))
+        self.assertTrue(result.exception.retryable)
 
     def test_refresh_cannot_switch_employee(self):
         session = self.login()

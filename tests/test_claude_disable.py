@@ -230,7 +230,7 @@ class ClaudeDisableTests(unittest.TestCase):
         credentials = self.home / "credentials"
         credentials.mkdir()
         snapshots = {}
-        for name in ("projects.json", "repositories.json", "workspaces.json", "claude.json"):
+        for name in ("profiles.json", "repositories.json", "workspaces.json", "claude.json"):
             snapshots[name] = b'{"private":"fixture-secret"}\n'
             (credentials / name).write_bytes(snapshots[name])
         self.write(json.dumps(self.generated))

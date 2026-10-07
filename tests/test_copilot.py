@@ -16,7 +16,7 @@ from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.litellm import Session
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.repositories import RepositoryStore
-from test_sessions import MemoryStore
+from test_sessions import MemoryStore, make_session
 
 
 class CopilotTests(unittest.TestCase):
@@ -30,10 +30,7 @@ class CopilotTests(unittest.TestCase):
         self.repository = "github.com/company/repo"
         RepositoryStore(self.profiles).bind(self.profile.gateway, self.repository, "customer:A")
         self.vault = MemoryStore()
-        self.session = Session(
-            self.profile.gateway, self.profile.team_id, "employee", "client",
-            "access-secret", "refresh-secret", time.time() + 3600,
-        )
+        self.session = make_session(self.profile)
         self.vault.put(self.profile.account, self.session.to_dict())
         self.connections = CopilotStore(self.profiles)
 
@@ -135,7 +132,7 @@ class CopilotTests(unittest.TestCase):
             with self.assertRaisesRegex(CredentialError, "employee changed"):
                 validate_connection(self.profiles, connection, self.vault)
         self.profiles.path.write_text(json.dumps({
-            "version": 1, "active": "unit", "projects": {
+            "version": 1, "active": "unit", "profiles": {
                 "unit": {"gateway": "https://changed.example", "team_id": "team", "allow_http": False},
             },
         }))

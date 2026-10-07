@@ -58,22 +58,23 @@ class Discovery:
             "token_endpoint", "revocation_endpoint", "resource",
         ):
             value = required_text(data, key)
-            parsed = urlsplit(value)
-            try:
-                origin = gateway_origin(f"{parsed.scheme}://{parsed.netloc}", profile.allow_http)
-            except ValueError:
-                raise CredentialError("Gateway discovery contains an invalid endpoint.") from None
-            if origin != profile.gateway or parsed.username or parsed.password or parsed.query or parsed.fragment:
-                raise CredentialError("Gateway discovery endpoint is outside the trusted gateway origin.")
+            _require_gateway_url(value, profile)
             if key in ("issuer", "resource") and gateway_origin(value, profile.allow_http) != profile.gateway:
                 raise CredentialError("Gateway issuer/resource does not match the configured origin.")
             endpoints[key] = value
         return cls(**endpoints)
 
 
+_SESSION_FIELDS = (
+    "gateway", "team_id", "user_id", "client_id", "access_token", "refresh_token",
+    "issued_at", "expires_at", "token_endpoint", "revocation_endpoint", "resource", "needs_login",
+)
+_ENDPOINT_FIELDS = ("token_endpoint", "revocation_endpoint", "resource")
+
+
 @dataclass(frozen=True)
 class Session:
-    """A single employee/team OAuth grant; credentials are secret and excluded from repr."""
+    """A single employee/team OAuth grant and the endpoints that renew or revoke it; credentials are excluded from repr."""
 
     gateway: str
     team_id: str
@@ -81,16 +82,21 @@ class Session:
     client_id: str
     access_token: str = field(repr=False)
     refresh_token: str = field(repr=False)
+    issued_at: float
     expires_at: float
-    refresh_pending: bool = False
+    token_endpoint: str
+    revocation_endpoint: str
+    resource: str
+    needs_login: bool = False
 
     @classmethod
-    def from_response(cls, data: dict, profile: Profile, client_id: str) -> "Session":
+    def from_response(cls, data: dict, profile: Profile, client_id: str, endpoints: "Discovery | Session") -> "Session":
         if required_text(data, "token_type").lower() != "bearer":
             raise CredentialError("Gateway returned an unsupported token type.")
         expiry = data.get("expires_in")
         if type(expiry) not in (int, float) or not math.isfinite(expiry) or expiry <= 0:
             raise CredentialError("Gateway returned an invalid token expiry.")
+        now = time.time()
         return cls(
             profile.gateway,
             required_text(data, "team_id"),
@@ -98,36 +104,54 @@ class Session:
             client_id,
             required_text(data, "access_token"),
             required_text(data, "refresh_token"),
-            time.time() + expiry,
+            now,
+            now + expiry,
+            endpoints.token_endpoint,
+            endpoints.revocation_endpoint,
+            endpoints.resource,
         )
 
     def check_binding(self, profile: Profile) -> None:
+        """Require this grant to belong to the profile's gateway and team, with endpoints on that gateway."""
         if self.gateway != profile.gateway or self.team_id != profile.team_id:
             raise CredentialError(
-                f"Credential team does not match project '{profile.name}'. "
+                f"Credential team does not match profile '{profile.name}'. "
                 "Log in again and choose its configured LiteLLM team."
             )
+        for name in _ENDPOINT_FIELDS:
+            _require_gateway_url(getattr(self, name), profile)
+
+    @property
+    def lifetime(self) -> float:
+        return self.expires_at - self.issued_at
 
     def to_dict(self) -> dict:
-        return {"version": 1, **self.__dict__}
+        return {"version": 2, **self.__dict__}
 
     @classmethod
     def from_dict(cls, data: dict) -> "Session":
-        if set(data) != {
-            "version", "gateway", "team_id", "user_id", "client_id",
-            "access_token", "refresh_token", "expires_at", "refresh_pending",
-        } or type(data["version"]) is not int or data["version"] != 1:
-            raise CredentialError("Invalid stored session; remove this profile's entry from the OS vault and log in again.")
-        for name in ("gateway", "team_id", "user_id", "client_id", "access_token", "refresh_token"):
-            required_text(data, name)
-        expiry = data["expires_at"]
+        if set(data) != {"version", *_SESSION_FIELDS} or type(data["version"]) is not int or data["version"] != 2:
+            raise CredentialError("Unsupported stored session; log in again.")
+        for name in _SESSION_FIELDS:
+            if name not in ("issued_at", "expires_at", "needs_login"):
+                required_text(data, name)
         if (
-            type(expiry) not in (float, int)
-            or not math.isfinite(expiry)
-            or type(data["refresh_pending"]) is not bool
+            any(type(data[name]) not in (float, int) or not math.isfinite(data[name]) for name in ("issued_at", "expires_at"))
+            or data["issued_at"] > data["expires_at"]
+            or type(data["needs_login"]) is not bool
         ):
-            raise CredentialError("Invalid stored session expiry/state; remove this profile's entry from the OS vault.")
-        return cls(**{key: value for key, value in data.items() if key != "version"})
+            raise CredentialError("Invalid stored session expiry/state; log in again.")
+        return cls(**{name: data[name] for name in _SESSION_FIELDS})
+
+
+def _require_gateway_url(value: str, profile: Profile) -> None:
+    parsed = urlsplit(value)
+    try:
+        origin = gateway_origin(f"{parsed.scheme}://{parsed.netloc}", profile.allow_http)
+    except CredentialError:
+        raise CredentialError("Gateway endpoint is invalid.") from None
+    if origin != profile.gateway or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise CredentialError("Gateway endpoint is outside the trusted gateway origin.")
 
 
 class LoopbackCallback:
@@ -279,24 +303,28 @@ class LiteLLMClient:
                 },
                 form=True,
             )
-            return Session.from_response(response, self.profile, client_id)
+            return Session.from_response(response, self.profile, client_id, discovery)
         finally:
             callback.close()
 
     def refresh(self, session: Session) -> Session:
-        discovery = self.discover()
+        """Rotate the refresh grant at the endpoint stored at login; never rediscover or follow redirects.
+
+        Raise GatewayError for transport/HTTP failures (see GatewayError.retryable) and CredentialError
+        for an unusable response or a changed employee/team, after revoking that unexpected grant.
+        """
         response = self.transport.request(
             "POST",
-            discovery.token_endpoint,
+            session.token_endpoint,
             {
                 "grant_type": "refresh_token",
                 "refresh_token": session.refresh_token,
                 "client_id": session.client_id,
-                "resource": discovery.resource,
+                "resource": session.resource,
             },
             form=True,
         )
-        renewed = Session.from_response(response, self.profile, session.client_id)
+        renewed = Session.from_response(response, self.profile, session.client_id, session)
         try:
             renewed.check_binding(self.profile)
             if renewed.user_id != session.user_id:
@@ -312,10 +340,9 @@ class LiteLLMClient:
         return renewed
 
     def revoke(self, session: Session) -> None:
-        discovery = self.discover()
         self.transport.request(
             "POST",
-            discovery.revocation_endpoint,
+            session.revocation_endpoint,
             {"token": session.refresh_token, "client_id": session.client_id},
             form=True,
         )

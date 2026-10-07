@@ -21,7 +21,7 @@ from llm_credential_mapping.litellm import Session
 from llm_credential_mapping.profiles import Profile, ProfileStore, atomic_write_json
 from llm_credential_mapping.repositories import RepositoryStore
 from llm_credential_mapping.workspaces import WorkspaceStore
-from test_sessions import MemoryStore
+from test_sessions import MemoryStore, make_session
 
 
 class ClaudeAdapterTests(unittest.TestCase):
@@ -36,10 +36,7 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.repositories = RepositoryStore(self.store)
         self.repositories.bind(self.profile.gateway, self.repository, "customer:A")
         self.secrets = MemoryStore()
-        self.session = Session(
-            self.profile.gateway, self.profile.team_id, "employee", "client",
-            "access-secret", "refresh-secret", time.time() + 3600,
-        )
+        self.session = make_session(self.profile)
         self.secrets.put(self.profile.account, self.session.to_dict())
         self.configuration = ClaudeConfiguration("unit", "model-alias")
         self.context = ClaudeContext(
@@ -194,7 +191,7 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def test_check_is_nonsecret_and_renews_an_expiring_login(self):
         self.save_configuration()
-        self.secrets.put(self.profile.account, replace(self.session, expires_at=time.time() + 1).to_dict())
+        self.secrets.put(self.profile.account, replace(self.session, issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
         client = Mock()
         client.refresh.return_value = replace(self.session, access_token="renewed-secret", refresh_token="rotated-secret")
         with patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
@@ -222,7 +219,7 @@ class ClaudeAdapterTests(unittest.TestCase):
     def test_helper_rejects_employee_or_profile_changes_and_uncertain_refresh(self):
         with patch.dict(os.environ, {CONTEXT_VARIABLE: self.context.encode()}), \
                 patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets):
-            for change in ({"user_id": "other-employee"}, {"refresh_pending": True}):
+            for change in ({"user_id": "other-employee"}, {"needs_login": True}):
                 self.secrets.put(self.profile.account, replace(self.session, **change).to_dict())
                 with self.subTest(change=change), self.assertRaises(CredentialError):
                     helper_token()

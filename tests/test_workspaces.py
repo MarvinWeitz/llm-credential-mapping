@@ -125,4 +125,4 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(len(json.loads(output)), 1)
             result, output, errors = call("unbind", "--workspace", str(self.workspace))
             self.assertEqual(result, 0)
-        self.assertFalse((self.home / "projects.json").exists())
+        self.assertFalse((self.home / "profiles.json").exists())

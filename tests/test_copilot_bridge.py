@@ -19,7 +19,7 @@ from llm_credential_mapping.litellm import Session
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.repositories import RepositoryStore
 from llm_credential_mapping.sessions import SessionManager
-from test_sessions import MemoryStore
+from test_sessions import MemoryStore, make_session
 
 
 class CopilotBridgeTests(unittest.TestCase):
@@ -88,10 +88,7 @@ class CopilotBridgeTests(unittest.TestCase):
         self.repository = "github.com/company/repo"
         RepositoryStore(self.profiles).bind(self.profile.gateway, self.repository, "customer:A")
         self.vault = MemoryStore()
-        self.session = Session(
-            self.profile.gateway, self.profile.team_id, "employee", "client",
-            "access-secret", "refresh-secret", time.time() + 3600,
-        )
+        self.session = make_session(self.profile)
         self.vault.put(self.profile.account, self.session.to_dict())
         self.refreshes = []
         fixture = self
@@ -101,7 +98,7 @@ class CopilotBridgeTests(unittest.TestCase):
                 fixture.refreshes.append(session.refresh_token)
                 return replace(
                     session, access_token="renewed-secret", refresh_token="rotated-secret",
-                    expires_at=time.time() + 3600,
+                    issued_at=time.time(), expires_at=time.time() + 3600,
                 )
 
         self.manager = SessionManager(self.profiles, self.vault, lambda profile: Refresh())
@@ -190,7 +187,7 @@ class CopilotBridgeTests(unittest.TestCase):
         self.assertIn(b"data: [DONE]", rest)
 
     def test_expired_grant_rotates_once_and_requests_never_receive_refresh_or_local_keys(self):
-        self.vault.put(self.profile.account, replace(self.session, expires_at=time.time() + 1).to_dict())
+        self.vault.put(self.profile.account, replace(self.session, issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
         for _ in range(2):
             response = self.request()
             self.assertEqual(response.status, 200)
@@ -201,7 +198,7 @@ class CopilotBridgeTests(unittest.TestCase):
         self.assertNotIn(self.key, str(self.requests))
 
     def test_changed_employee_is_rejected_before_refresh_or_upstream_access(self):
-        self.vault.put(self.profile.account, replace(self.session, user_id="another", expires_at=time.time() + 1).to_dict())
+        self.vault.put(self.profile.account, replace(self.session, user_id="another", issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
         response = self.request()
         self.assertEqual(response.status, 503)
         self.assertIn("employee changed", json.loads(response.read())["error"]["message"])
@@ -442,7 +439,7 @@ class CopilotBridgeTests(unittest.TestCase):
         self.assertEqual(response.status, 404)
         response.read()
         self.profiles.path.write_text(json.dumps({
-            "version": 1, "active": "unit", "projects": {
+            "version": 1, "active": "unit", "profiles": {
                 "unit": {"gateway": "https://changed.example", "team_id": "team", "allow_http": False},
             },
         }))

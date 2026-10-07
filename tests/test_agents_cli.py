@@ -14,7 +14,7 @@ from llm_credential_mapping.cli import main
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.storage import NativeKeyring
-from test_sessions import MemoryStore
+from test_sessions import MemoryStore, make_session
 
 
 class AgentTests(unittest.TestCase):
@@ -232,12 +232,12 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
             return main(["--home", str(self.home), *args])
 
-    def test_project_commands_need_no_keyring(self):
+    def test_profile_commands_need_no_keyring(self):
         with patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
-            self.assertEqual(self.call("project", "add", "a", "--gateway", "https://example.com", "--team-id", "a"), 0)
-            self.assertEqual(self.call("project", "use", "a"), 0)
-            self.assertEqual(self.call("project", "list"), 0)
-        self.assertIn("Selected project", self.stdout.getvalue())
+            self.assertEqual(self.call("profile", "add", "a", "--gateway", "https://example.com", "--team-id", "a"), 0)
+            self.assertEqual(self.call("profile", "use", "a"), 0)
+            self.assertEqual(self.call("profile", "list"), 0)
+        self.assertIn("Selected profile", self.stdout.getvalue())
 
     def test_token_command_has_exact_stdout(self):
         store = ProfileStore(self.home)
@@ -245,9 +245,24 @@ class CliTests(unittest.TestCase):
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
                 patch("llm_credential_mapping.cli.SessionManager") as manager:
             manager.return_value.token.return_value = "access-secret"
-            self.assertEqual(self.call("token", "--project", "a"), 0)
+            self.assertEqual(self.call("token", "--profile", "a"), 0)
         self.assertEqual(self.stdout.getvalue(), "access-secret\n")
         self.assertEqual(self.stderr.getvalue(), "")
+
+    def test_token_json_has_expiry_and_context_but_no_refresh_token(self):
+        store = ProfileStore(self.home)
+        profile = Profile("a", "https://example.com", "a")
+        store.add(profile)
+        vault = MemoryStore()
+        vault.put(profile.account, make_session(profile).to_dict())
+        with patch("llm_credential_mapping.cli.NativeKeyring", return_value=vault):
+            self.assertEqual(self.call("token", "--json"), 0)
+        value = json.loads(self.stdout.getvalue())
+        self.assertEqual(
+            set(value), {"access_token", "expires_at", "profile", "gateway", "team_id", "user_id"},
+        )
+        self.assertEqual((value["access_token"], value["gateway"]), ("access-secret", "https://example.com"))
+        self.assertNotIn("refresh-secret", self.stdout.getvalue())
 
     def test_missing_login_reports_stderr_not_stdout(self):
         ProfileStore(self.home).add(Profile("a", "https://example.com", "a"))
@@ -262,7 +277,7 @@ class CliTests(unittest.TestCase):
                 patch("llm_credential_mapping.cli.SessionManager") as manager, \
                 patch("llm_credential_mapping.cli.launch", return_value=9) as launched:
             manager.return_value.token.return_value = "secret"
-            self.assertEqual(self.call("run", "--project", "a", "--customer", "customer:A", "claude", "--", "--resume"), 9)
+            self.assertEqual(self.call("run", "--profile", "a", "--customer", "customer:A", "claude", "--", "--resume"), 9)
             self.assertEqual(launched.call_args.args[3], ["--resume"])
             self.assertEqual(launched.call_args.args[5], "customer:A")
 
@@ -273,7 +288,7 @@ class CliTests(unittest.TestCase):
                 patch("llm_credential_mapping.cli.launch", return_value=0) as launched:
             manager.return_value.token.return_value = "secret"
             self.assertEqual(
-                self.call("run", "--project", "a", "--customer", "customer:A", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
+                self.call("run", "--profile", "a", "--customer", "customer:A", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
             )
             self.assertEqual(launched.call_args.args[3:], (["run", "Explain this repo"], "alias", "customer:A"))
 

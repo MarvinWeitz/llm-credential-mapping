@@ -13,7 +13,7 @@ from .errors import CredentialError
 
 
 class SecretStore(Protocol):
-    """Store a project's complete session atomically, without plaintext fallback."""
+    """Store a profile's complete session atomically, without plaintext fallback."""
 
     def get(self, account: str) -> dict | None: ...
     def put(self, account: str, value: dict) -> None: ...

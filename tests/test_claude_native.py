@@ -12,6 +12,7 @@ from urllib.parse import parse_qs
 
 from llm_credential_mapping.claude import ClaudeContext, wrapped_command
 from llm_credential_mapping.litellm import Session
+from test_sessions import make_session
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.storage import NativeKeyring
 from test_oauth import discovery
@@ -102,9 +103,9 @@ class NativeClaudeTests(unittest.TestCase):
                 profile = Profile("native-fixture", f"http://127.0.0.1:{server.server_port}", "fixture-unit", True)
                 store.add(profile)
                 secrets = NativeKeyring()
-                session = Session(
-                    profile.gateway, profile.team_id, "fixture-employee", "fixture-client",
-                    "fixture-access", "fixture-refresh", time.time() + 3600,
+                session = make_session(
+                    profile, user_id="fixture-employee", client_id="fixture-client",
+                    access_token="fixture-access", refresh_token="fixture-refresh",
                 )
                 secrets.put(profile.account, session.to_dict())
                 try:

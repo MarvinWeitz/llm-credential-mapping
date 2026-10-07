@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from functools import cached_property
 from pathlib import Path
 from typing import Callable
 
@@ -19,92 +20,27 @@ from .tags import list_tags, validate_tag
 from .workspaces import WorkspaceStore
 
 
-def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(
-        prog="llm-credentials",
-        description="Sign in to a LiteLLM business unit and launch agents with session-local customer tags.",
-    )
-    root.add_argument("--version", action="version", version=__version__)
-    root.add_argument("--home", type=Path, help="Nonsecret configuration directory.")
-    commands = root.add_subparsers(dest="command", required=True)
-    claude = commands.add_parser("claude", help="Integrate the official Claude Code VS Code extension.")
-    claude_actions = claude.add_subparsers(dest="action", required=True)
-    setup = claude_actions.add_parser("setup", help="Validate this repository and print or apply editor settings.")
-    setup.add_argument("--project", "--profile", dest="project")
-    setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
-    setup.add_argument("--apply", action="store_true", help="Apply bootstrap settings to VS Code User/Remote Settings.")
-    setup.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; requires --apply.")
-    disable = claude_actions.add_parser("disable", help="Disconnect the extension from LiteLLM; keep logins and mappings.")
-    disable.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; otherwise detect the editor.")
-    check = claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
-    check.add_argument("--directory", type=Path, help="Launch/workspace directory to diagnose; otherwise current directory.")
-    claude_actions.add_parser("token", help="Internal apiKeyHelper: return the pinned session credential only.")
-    workspace = claude_actions.add_parser("workspace", help="Select an explicit primary checkout for a launch workspace.")
-    workspace_actions = workspace.add_subparsers(dest="workspace_action", required=True)
-    for action in ("bind", "list", "unbind"):
-        cmd = workspace_actions.add_parser(action)
-        if action != "list":
-            cmd.add_argument("--workspace", type=Path, help="Claude's launch directory; otherwise current directory.")
-        if action == "bind":
-            cmd.add_argument("--repository", type=Path, required=True, help="Primary Git checkout's local directory.")
-    copilot = commands.add_parser("copilot", help="Prototype: connect Copilot Chat through a pinned foreground bridge.")
-    copilot_actions = copilot.add_subparsers(dest="action", required=True)
-    copilot_setup_parser = copilot_actions.add_parser("setup", help="Save a bound connection and print fields for native UI setup.")
-    copilot_setup_parser.add_argument("--project", "--profile", dest="project")
-    copilot_setup_parser.add_argument("--model", required=True, help="Exact LiteLLM model alias; agents require tool calling.")
-    copilot_setup_parser.add_argument("--directory", type=Path, help="Git checkout to pin; otherwise current directory.")
-    copilot_setup_parser.add_argument("--port", type=int, default=8743, help="Private loopback port; default 8743.")
-    copilot_setup_parser.add_argument("--max-input-tokens", type=int, default=32000, help="Conservative advertised input limit.")
-    copilot_setup_parser.add_argument("--max-output-tokens", type=int, default=4096, help="Advertised and enforced output limit.")
-    copilot_setup_parser.add_argument("--vision", action="store_true", help="Declare image support only if the model supports it.")
-    copilot_actions.add_parser("list", help="List saved nonsecret connections.")
-    for action in ("key", "serve", "disable", "check"):
-        command = copilot_actions.add_parser(action, help={
-            "key": "Print only the local connection key for VS Code's API key prompt; treat it as a secret.",
-            "serve": "Run the foreground bridge in this extension-host terminal; Ctrl+C stops it.",
-            "disable": "Block the saved connection and stop its foreground bridge; retain vault logins and UI registration.",
-            "check": "Verify bridge readiness without printing either local or gateway credentials.",
-        }[action])
-        command.add_argument("--connection", help="Exact ID from copilot list; optional only when one connection exists.")
-    project = commands.add_parser("project", aliases=["profile"], help="Manage gateway/business-unit profiles.")
-    actions = project.add_subparsers(dest="action", required=True)
-    add = actions.add_parser("add")
-    add.add_argument("name")
-    add.add_argument("--gateway", required=True, help="Trusted LiteLLM public origin, not /v1.")
-    add.add_argument("--team-id", required=True, help="Exact LiteLLM team ID, not its display name.")
-    add.add_argument("--allow-insecure-localhost", action="store_true", help="Development only.")
-    actions.add_parser("list")
-    use = actions.add_parser("use")
-    use.add_argument("name")
-    tags = commands.add_parser("tags", help="Discover visible gateway tags; this is not an authorization list.")
-    tag_actions = tags.add_subparsers(dest="action", required=True)
-    tag_list = tag_actions.add_parser("list")
-    tag_list.add_argument("--project", "--profile", dest="project")
-    tag_list.add_argument("--prefix", help="Only display tags starting with this exact prefix.")
-    tag_list.add_argument("--json", action="store_true")
-    repo = commands.add_parser("repo", help="Manage repository customer defaults.")
-    repo_actions = repo.add_subparsers(dest="action", required=True)
-    for action in ("bind", "list", "unbind"):
-        cmd = repo_actions.add_parser(action)
-        cmd.add_argument("--project", "--profile", dest="project")
-        if action != "list":
-            cmd.add_argument("--directory", type=Path, help="Repository directory; otherwise current directory.")
-        if action == "bind":
-            cmd.add_argument("--customer", help="Exact approved customer tag; otherwise choose from visible tags.")
-            cmd.add_argument("--tag-prefix", help="Filter the tag picker by this exact prefix.")
-    for name in ("login", "token", "status", "logout", "run"):
-        cmd = commands.add_parser(name)
-        cmd.add_argument("--project", "--profile", dest="project", help="Explicit profile; otherwise the selected default.")
-        if name == "login":
-            cmd.add_argument("--no-browser", action="store_true")
-            cmd.add_argument("--timeout", type=int, default=180, help="Browser callback wait in seconds.")
-        if name == "run":
-            cmd.add_argument("--customer", help="Exact customer tag for this process only; does not change the repo default.")
-            cmd.add_argument("--tag-prefix", help="Filter the tag picker for an unbound repository.")
-            cmd.add_argument("--model", help="LiteLLM model alias; required for OpenCode.")
-            cmd.add_argument("agent", choices=("claude", "codex", "opencode"))
-            cmd.add_argument("agent_args", nargs=argparse.REMAINDER)
-    return root
+def notify(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+class Context:
+    """Per-invocation state: the configuration store and, lazily, the selected profile and its vault session."""
+
+    def __init__(self, store: ProfileStore, args: argparse.Namespace) -> None:
+        self.store = store
+        self.args = args
+
+    @cached_property
+    def profile(self) -> Profile:
+        return self.store.get(getattr(self.args, "profile", None))
+
+    @cached_property
+    def sessions(self) -> SessionManager:
+        return SessionManager(self.store, NativeKeyring())
+
+    def token(self) -> str:
+        return self.sessions.token(self.profile)
 
 
 def _pick_customer(profile: Profile, token: Callable[[], str], prefix: str | None) -> str:
@@ -131,204 +67,377 @@ def _pick_customer(profile: Profile, token: Callable[[], str], prefix: str | Non
     raise CredentialError("Invalid customer selection; choose a displayed tag or pass --customer explicitly.")
 
 
+# Profiles and sessions
+
+
+def profile_add(context: Context) -> None:
+    args = context.args
+    profile = Profile(args.name, args.gateway, args.team_id, args.allow_insecure_localhost)
+    context.store.add(profile)
+    print(f"Added profile '{profile.name}' (business-unit team {profile.team_id}).")
+
+
+def profile_list(context: Context) -> None:
+    active, profiles = context.store.list()
+    for profile in profiles:
+        marker = "*" if profile.name == active else " "
+        print(f"{marker} {profile.name}\t{profile.gateway}\t{profile.team_id}")
+
+
+def profile_use(context: Context) -> None:
+    context.store.select(context.args.name)
+    print(f"Selected profile '{context.args.name}'. Running agents are unchanged.")
+
+
+def login(context: Context) -> None:
+    timeout = context.args.timeout
+    if not 1 <= timeout <= 900:
+        raise CredentialError("--timeout must be between 1 and 900 seconds.")
+    profile = context.profile
+    session = context.sessions.login(profile, notify, no_browser=context.args.no_browser, timeout=timeout)
+    print(f"Signed in as {session.user_id} for '{profile.name}' (team {session.team_id}).")
+
+
+def token(context: Context) -> None:
+    if not context.args.json:
+        print(context.token())
+        return
+    profile = context.profile
+    session = context.sessions.session(profile)
+    print(json.dumps({
+        "access_token": session.access_token,
+        "expires_at": session.expires_at,
+        "profile": profile.name,
+        "gateway": profile.gateway,
+        "team_id": session.team_id,
+        "user_id": session.user_id,
+    }))
+
+
+def status(context: Context) -> None:
+    print(json.dumps(context.sessions.status(context.profile), indent=2))
+
+
+def logout(context: Context) -> None:
+    context.sessions.logout(context.profile)
+    print(f"Logged out of '{context.profile.name}'. Previously issued access tokens expire naturally.")
+
+
+# Tags, repositories and agents
+
+
+def tags_list(context: Context) -> None:
+    tags = list_tags(context.profile, context.token(), context.args.prefix)
+    if context.args.json:
+        print(json.dumps([{"name": tag.name, "description": tag.description} for tag in tags], indent=2))
+        return
+    for tag in tags:
+        print(f"{json.dumps(tag.name)}\t{json.dumps(tag.description)}")
+    notify(f"{len(tags)} visible tag(s). Visibility is not customer authorization.")
+
+
+def repo_list(context: Context) -> None:
+    print(json.dumps(RepositoryStore(context.store).list(context.profile.gateway), indent=2))
+
+
+def repo_bind(context: Context) -> None:
+    args = context.args
+    profile = context.profile
+    repository = current_repository(args.directory.expanduser().resolve() if args.directory else None)
+    customer = validate_tag(args.customer) if args.customer is not None else _pick_customer(
+        profile, context.token, args.tag_prefix,
+    )
+    RepositoryStore(context.store).bind(profile.gateway, repository, customer, replace=True)
+    print(f"Bound {json.dumps(repository)} to {json.dumps(customer)}. Running agents are unchanged.")
+
+
+def repo_unbind(context: Context) -> None:
+    args = context.args
+    repository = current_repository(args.directory.expanduser().resolve() if args.directory else None)
+    RepositoryStore(context.store).unbind(context.profile.gateway, repository)
+    print(f"Removed binding for {json.dumps(repository)}. Running agents are unchanged.")
+
+
+def run(context: Context) -> int:
+    args = context.args
+    profile = context.profile
+    if args.customer is not None:
+        customer = validate_tag(args.customer)
+    else:
+        repository = current_repository()
+        repositories = RepositoryStore(context.store)
+        customer = repositories.get(profile.gateway, repository)
+        if customer is None:
+            customer = _pick_customer(profile, context.token, args.tag_prefix)
+            repositories.bind(profile.gateway, repository, customer)
+            notify("Saved this repository's customer default.")
+    arguments = args.agent_args
+    if arguments and arguments[0] == "--":
+        arguments = arguments[1:]
+    notify(f"Customer {json.dumps(customer)} is pinned for this process (business unit {profile.team_id}).")
+    return launch(args.agent, profile, context.token(), arguments, args.model, customer)
+
+
+# Official Claude Code VS Code extension
+
+
+def claude_workspace(context: Context) -> None:
+    args = context.args
+    workspaces = WorkspaceStore(context.store)
+    if args.workspace_action == "list":
+        print(json.dumps([binding.__dict__ for binding in workspaces.list()], indent=2))
+        return
+    workspace = args.workspace if args.workspace is not None else Path.cwd()
+    if args.workspace_action == "bind":
+        print(json.dumps(workspaces.bind(workspace, args.repository).__dict__, indent=2))
+    else:
+        workspaces.unbind(workspace)
+        print("Removed this workspace's primary repository mapping.")
+    notify(
+        "Reload the VS Code window before using the changed selection. "
+        "Running processes are unchanged; editor tabs do not change customer tags."
+    )
+
+
+def claude_setup_command(context: Context) -> None:
+    args = context.args
+    if args.settings_file is not None and not args.apply:
+        raise CredentialError("--settings-file requires --apply; no settings were edited.")
+    if not args.apply:
+        print(json.dumps(claude_setup(context.store, args.profile, args.model), indent=2))
+        notify(
+            "Merge this snippet into VS Code User Settings (JSON), or Remote User Settings in a container. "
+            "Keep unrelated environmentVariables entries, but remove old gateway credentials/routing overrides. "
+            "Reload the window and start a new Claude conversation. No editor settings were edited."
+        )
+        return
+    target = settings_file(args.settings_file)
+    with editing(target) as editor:
+        generated = claude_setup(context.store, args.profile, args.model)
+        try:
+            editor.apply(generated)
+        except CredentialError as error:
+            raise CredentialError(
+                f"Claude's CLI configuration was saved, but editor settings were not applied: {error}"
+            ) from None
+    print(json.dumps(generated, indent=2))
+    notify(
+        f"Applied Claude bootstrap settings to {json.dumps(str(target))}. "
+        "Unrelated settings and environment entries were preserved. "
+        "Reload the window and start a new Claude conversation."
+    )
+
+
+def claude_disable(context: Context) -> None:
+    target = settings_file(context.args.settings_file)
+    with editing(target) as editor:
+        changed = editor.disable()
+    print(
+        "Disconnected the Claude Code extension from LiteLLM."
+        if changed else "No LiteLLM Claude bootstrap settings found; nothing was changed."
+    )
+    notify(
+        f"Settings target: {json.dumps(str(target))}. "
+        "LiteLLM logins, profiles and repository/workspace mappings were retained. "
+        "D-Bus and unrelated settings were preserved. "
+        "Reload the window, start a new conversation and use Claude's normal sign-in if prompted. "
+        "Other gateway settings or editor policies are not removed."
+    )
+
+
+def claude_check_command(context: Context) -> None:
+    print(json.dumps(claude_check(context.store, context.args.directory), indent=2))
+
+
+def claude_token(context: Context) -> None:
+    print(helper_token())
+
+
+# Copilot Chat foreground bridge
+
+
+def copilot_setup_command(context: Context) -> None:
+    args = context.args
+    connection = copilot_setup(
+        context.store, args.profile, args.model, args.directory, port=args.port,
+        max_input_tokens=args.max_input_tokens, max_output_tokens=args.max_output_tokens, vision=args.vision,
+    )
+    print(json.dumps(connection.model_settings(), indent=2))
+    notify(
+        f"Saved connection {connection.id}. Group name: {json.dumps(connection.group_name)}. "
+        "In Chat: Manage Language Models, add Custom Endpoint and enter the LOCAL key from 'copilot key'. "
+        "Choose Chat Completions. Merge only these apiType/models fields into the new group; "
+        "KEEP its VS Code-generated apiKey secret reference, name and vendor. "
+        "No editor files were changed. Run 'copilot serve' in this extension-host terminal, "
+        "then select this repository/customer model explicitly. Token limits are conservative defaults; "
+        "configure them to match the gateway model. No automatic active-workspace selection."
+    )
+
+
+def copilot_list(context: Context) -> None:
+    print(json.dumps([
+        {"connection": connection.id, **connection.__dict__}
+        for connection in CopilotStore(context.store).list()
+    ], indent=2))
+
+
+def copilot_key(context: Context) -> None:
+    connection = CopilotStore(context.store).select(context.args.connection)
+    _, manager = validate_connection(context.store, connection)
+    print(connection_key(connection, manager.secrets))
+    notify(
+        "This is a LOCAL bridge credential, not a LiteLLM access/refresh token. "
+        "Enter it only in this connection's native VS Code API key prompt; do not share or commit it."
+    )
+
+
+def copilot_serve_command(context: Context) -> None:
+    copilot_serve(context.store, context.args.connection, notify)
+
+
+def copilot_check_command(context: Context) -> None:
+    print(json.dumps(copilot_check(context.store, context.args.connection), indent=2))
+
+
+def copilot_disable(context: Context) -> None:
+    connection = CopilotStore(context.store).disable(context.args.connection)
+    print(f"Disabled Copilot connection {connection.id}.")
+    notify(
+        "New requests are blocked and its foreground bridge stops; in-flight requests may be interrupted. "
+        "Check the outcome before retrying interrupted generations or tool calls. "
+        "Select a normal GitHub Copilot model in the picker and start a new conversation. "
+        "Native UI registration, local key, LiteLLM logins and mappings were retained; "
+        "remove the group manually in Manage Language Models if desired. Rerun setup/serve to reconnect."
+    )
+
+
+def _profile_option(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--profile", help="Authentication profile; otherwise the selected default.")
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(
+        prog="llm-credentials",
+        description="Sign in to a LiteLLM business unit and launch agents with session-local customer tags.",
+    )
+    root.add_argument("--version", action="version", version=__version__)
+    root.add_argument("--home", type=Path, help="Nonsecret configuration directory.")
+    commands = root.add_subparsers(dest="command", required=True)
+
+    profile = commands.add_parser("profile", help="Manage gateway/business-unit profiles.")
+    profile_actions = profile.add_subparsers(dest="action", required=True)
+    add = profile_actions.add_parser("add")
+    add.add_argument("name")
+    add.add_argument("--gateway", required=True, help="Trusted LiteLLM public origin, not /v1.")
+    add.add_argument("--team-id", required=True, help="Exact LiteLLM team ID, not its display name.")
+    add.add_argument("--allow-insecure-localhost", action="store_true", help="Development only.")
+    add.set_defaults(handler=profile_add)
+    profile_actions.add_parser("list").set_defaults(handler=profile_list)
+    use = profile_actions.add_parser("use")
+    use.add_argument("name")
+    use.set_defaults(handler=profile_use)
+
+    command = commands.add_parser("login", help="Sign in through the gateway's SSO in a browser.")
+    _profile_option(command)
+    command.add_argument("--no-browser", action="store_true", help="Print the sign-in URL instead of opening it.")
+    command.add_argument("--timeout", type=int, default=180, help="Browser callback wait in seconds.")
+    command.set_defaults(handler=login)
+    command = commands.add_parser("token", help="Print a current access token for credential helpers.")
+    _profile_option(command)
+    command.add_argument("--json", action="store_true", help="Print the token with its expiry and nonsecret context.")
+    command.set_defaults(handler=token)
+    for name, handler, text in (
+        ("status", status, "Show the sign-in state without printing credentials."),
+        ("logout", logout, "Revoke the refresh grant and delete the local credential."),
+    ):
+        command = commands.add_parser(name, help=text)
+        _profile_option(command)
+        command.set_defaults(handler=handler)
+
+    tags = commands.add_parser("tags", help="Discover visible gateway tags; this is not an authorization list.")
+    tag_list = tags.add_subparsers(dest="action", required=True).add_parser("list")
+    _profile_option(tag_list)
+    tag_list.add_argument("--prefix", help="Only display tags starting with this exact prefix.")
+    tag_list.add_argument("--json", action="store_true")
+    tag_list.set_defaults(handler=tags_list)
+
+    repo = commands.add_parser("repo", help="Manage repository customer defaults.")
+    repo_actions = repo.add_subparsers(dest="action", required=True)
+    for action, handler in (("bind", repo_bind), ("list", repo_list), ("unbind", repo_unbind)):
+        command = repo_actions.add_parser(action)
+        _profile_option(command)
+        if action != "list":
+            command.add_argument("--directory", type=Path, help="Repository directory; otherwise current directory.")
+        if action == "bind":
+            command.add_argument("--customer", help="Exact approved customer tag; otherwise choose from visible tags.")
+            command.add_argument("--tag-prefix", help="Filter the tag picker by this exact prefix.")
+        command.set_defaults(handler=handler)
+
+    command = commands.add_parser("run", help="Launch an agent with the repository's customer tag.")
+    _profile_option(command)
+    command.add_argument("--customer", help="Exact customer tag for this process only; does not change the repo default.")
+    command.add_argument("--tag-prefix", help="Filter the tag picker for an unbound repository.")
+    command.add_argument("--model", help="LiteLLM model alias; required for OpenCode.")
+    command.add_argument("agent", choices=("claude", "codex", "opencode"))
+    command.add_argument("agent_args", nargs=argparse.REMAINDER)
+    command.set_defaults(handler=run)
+
+    claude = commands.add_parser("claude", help="Integrate the official Claude Code VS Code extension.")
+    claude_actions = claude.add_subparsers(dest="action", required=True)
+    setup = claude_actions.add_parser("setup", help="Validate this repository and print or apply editor settings.")
+    _profile_option(setup)
+    setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
+    setup.add_argument("--apply", action="store_true", help="Apply bootstrap settings to VS Code User/Remote Settings.")
+    setup.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; requires --apply.")
+    setup.set_defaults(handler=claude_setup_command)
+    disable = claude_actions.add_parser("disable", help="Disconnect the extension from LiteLLM; keep logins and mappings.")
+    disable.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; otherwise detect the editor.")
+    disable.set_defaults(handler=claude_disable)
+    check = claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
+    check.add_argument("--directory", type=Path, help="Launch/workspace directory to diagnose; otherwise current directory.")
+    check.set_defaults(handler=claude_check_command)
+    claude_actions.add_parser(
+        "token", help="Internal apiKeyHelper: return the pinned session credential only.",
+    ).set_defaults(handler=claude_token)
+    workspace = claude_actions.add_parser("workspace", help="Select an explicit primary checkout for a launch workspace.")
+    workspace_actions = workspace.add_subparsers(dest="workspace_action", required=True)
+    for action in ("bind", "list", "unbind"):
+        command = workspace_actions.add_parser(action)
+        if action != "list":
+            command.add_argument("--workspace", type=Path, help="Claude's launch directory; otherwise current directory.")
+        if action == "bind":
+            command.add_argument("--repository", type=Path, required=True, help="Primary Git checkout's local directory.")
+        command.set_defaults(handler=claude_workspace)
+
+    copilot = commands.add_parser("copilot", help="Prototype: connect Copilot Chat through a pinned foreground bridge.")
+    copilot_actions = copilot.add_subparsers(dest="action", required=True)
+    copilot_setup_parser = copilot_actions.add_parser("setup", help="Save a bound connection and print fields for native UI setup.")
+    _profile_option(copilot_setup_parser)
+    copilot_setup_parser.add_argument("--model", required=True, help="Exact LiteLLM model alias; agents require tool calling.")
+    copilot_setup_parser.add_argument("--directory", type=Path, help="Git checkout to pin; otherwise current directory.")
+    copilot_setup_parser.add_argument("--port", type=int, default=8743, help="Private loopback port; default 8743.")
+    copilot_setup_parser.add_argument("--max-input-tokens", type=int, default=32000, help="Conservative advertised input limit.")
+    copilot_setup_parser.add_argument("--max-output-tokens", type=int, default=4096, help="Advertised and enforced output limit.")
+    copilot_setup_parser.add_argument("--vision", action="store_true", help="Declare image support only if the model supports it.")
+    copilot_setup_parser.set_defaults(handler=copilot_setup_command)
+    copilot_actions.add_parser("list", help="List saved nonsecret connections.").set_defaults(handler=copilot_list)
+    for action, handler, text in (
+        ("key", copilot_key, "Print only the local connection key for VS Code's API key prompt; treat it as a secret."),
+        ("serve", copilot_serve_command, "Run the foreground bridge in this extension-host terminal; Ctrl+C stops it."),
+        ("disable", copilot_disable, "Block the saved connection and stop its foreground bridge; retain vault logins and UI registration."),
+        ("check", copilot_check_command, "Verify bridge readiness without printing either local or gateway credentials."),
+    ):
+        command = copilot_actions.add_parser(action, help=text)
+        command.add_argument("--connection", help="Exact ID from copilot list; optional only when one connection exists.")
+        command.set_defaults(handler=handler)
+    return root
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         store = ProfileStore(args.home.expanduser().resolve() if args.home else default_home())
-        if args.command == "copilot":
-            if args.action == "setup":
-                connection = copilot_setup(
-                    store, args.project, args.model, args.directory, port=args.port,
-                    max_input_tokens=args.max_input_tokens, max_output_tokens=args.max_output_tokens, vision=args.vision,
-                )
-                print(json.dumps(connection.model_settings(), indent=2))
-                print(
-                    f"Saved connection {connection.id}. Group name: {json.dumps(connection.group_name)}. "
-                    "In Chat: Manage Language Models, add Custom Endpoint and enter the LOCAL key from 'copilot key'. "
-                    "Choose Chat Completions. Merge only these apiType/models fields into the new group; "
-                    "KEEP its VS Code-generated apiKey secret reference, name and vendor. "
-                    "No editor files were changed. Run 'copilot serve' in this extension-host terminal, "
-                    "then select this repository/customer model explicitly. Token limits are conservative defaults; "
-                    "configure them to match the gateway model. No automatic active-workspace selection.",
-                    file=sys.stderr,
-                )
-            elif args.action == "list":
-                print(json.dumps([
-                    {"connection": connection.id, **connection.__dict__}
-                    for connection in CopilotStore(store).list()
-                ], indent=2))
-            elif args.action == "key":
-                connection = CopilotStore(store).select(args.connection)
-                _, manager = validate_connection(store, connection)
-                print(connection_key(connection, manager.secrets))
-                print(
-                    "This is a LOCAL bridge credential, not a LiteLLM access/refresh token. "
-                    "Enter it only in this connection's native VS Code API key prompt; do not share or commit it.",
-                    file=sys.stderr,
-                )
-            elif args.action == "serve":
-                copilot_serve(store, args.connection, lambda message: print(message, file=sys.stderr))
-            elif args.action == "check":
-                print(json.dumps(copilot_check(store, args.connection), indent=2))
-            else:
-                connection = CopilotStore(store).disable(args.connection)
-                print(f"Disabled Copilot connection {connection.id}.")
-                print(
-                    "New requests are blocked and its foreground bridge stops; in-flight requests may be interrupted. "
-                    "Check the outcome before retrying interrupted generations or tool calls. "
-                    "Select a normal GitHub Copilot model in the picker and start a new conversation. "
-                    "Native UI registration, local key, LiteLLM logins and mappings were retained; "
-                    "remove the group manually in Manage Language Models if desired. Rerun setup/serve to reconnect.",
-                    file=sys.stderr,
-                )
-            return 0
-        if args.command == "claude":
-            if args.action == "workspace":
-                workspaces = WorkspaceStore(store)
-                if args.workspace_action == "list":
-                    print(json.dumps([binding.__dict__ for binding in workspaces.list()], indent=2))
-                else:
-                    workspace = args.workspace if args.workspace is not None else Path.cwd()
-                    if args.workspace_action == "bind":
-                        print(json.dumps(workspaces.bind(workspace, args.repository).__dict__, indent=2))
-                    else:
-                        workspaces.unbind(workspace)
-                        print("Removed this workspace's primary repository mapping.")
-                    print(
-                        "Reload the VS Code window before using the changed selection. "
-                        "Running processes are unchanged; editor tabs do not change customer tags.",
-                        file=sys.stderr,
-                    )
-            elif args.action == "setup":
-                if args.settings_file is not None and not args.apply:
-                    raise CredentialError("--settings-file requires --apply; no settings were edited.")
-                if args.apply:
-                    target = settings_file(args.settings_file)
-                    with editing(target) as editor:
-                        generated = claude_setup(store, args.project, args.model)
-                        try:
-                            editor.apply(generated)
-                        except CredentialError as error:
-                            raise CredentialError(
-                                f"Claude's CLI configuration was saved, but editor settings were not applied: {error}"
-                            ) from None
-                    print(json.dumps(generated, indent=2))
-                    print(
-                        f"Applied Claude bootstrap settings to {json.dumps(str(target))}. "
-                        "Unrelated settings and environment entries were preserved. "
-                        "Reload the window and start a new Claude conversation.",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(json.dumps(claude_setup(store, args.project, args.model), indent=2))
-                    print(
-                        "Merge this snippet into VS Code User Settings (JSON), or Remote User Settings in a container. "
-                        "Keep unrelated environmentVariables entries, but remove old gateway credentials/routing overrides. "
-                        "Reload the window and start a new Claude conversation. No editor settings were edited.",
-                        file=sys.stderr,
-                    )
-            elif args.action == "disable":
-                target = settings_file(args.settings_file)
-                with editing(target) as editor:
-                    changed = editor.disable()
-                print(
-                    "Disconnected the Claude Code extension from LiteLLM."
-                    if changed else "No LiteLLM Claude bootstrap settings found; nothing was changed."
-                )
-                print(
-                    f"Settings target: {json.dumps(str(target))}. "
-                    "LiteLLM logins, profiles and repository/workspace mappings were retained. "
-                    "D-Bus and unrelated settings were preserved. "
-                    "Reload the window, start a new conversation and use Claude's normal sign-in if prompted. "
-                    "Other gateway settings or editor policies are not removed.",
-                    file=sys.stderr,
-                )
-            elif args.action == "check":
-                print(json.dumps(claude_check(store, args.directory), indent=2))
-            else:
-                print(helper_token())
-            return 0
-        if args.command in ("project", "profile"):
-            label = "project" if args.command == "project" else "profile"
-            if args.action == "add":
-                profile = Profile(args.name, args.gateway, args.team_id, args.allow_insecure_localhost)
-                store.add(profile)
-                print(f"Added {label} '{profile.name}' (business-unit team {profile.team_id}).")
-            elif args.action == "use":
-                store.select(args.name)
-                print(f"Selected {label} '{args.name}'. Running agents are unchanged.")
-            else:
-                active, profiles = store.list()
-                for profile in profiles:
-                    marker = "*" if profile.name == active else " "
-                    print(f"{marker} {profile.name}\t{profile.gateway}\t{profile.team_id}")
-            return 0
-        profile = store.get(args.project)
-        manager: SessionManager | None = None
-
-        def credentials() -> SessionManager:
-            nonlocal manager
-            if manager is None:
-                manager = SessionManager(store, NativeKeyring())
-            return manager
-
-        token = lambda: credentials().token(profile)
-        notify = lambda message: print(message, file=sys.stderr)
-        if args.command == "tags":
-            tags = list_tags(profile, token(), args.prefix)
-            if args.json:
-                print(json.dumps([{"name": tag.name, "description": tag.description} for tag in tags], indent=2))
-            else:
-                for tag in tags:
-                    print(f"{json.dumps(tag.name)}\t{json.dumps(tag.description)}")
-                notify(f"{len(tags)} visible tag(s). Visibility is not customer authorization.")
-            return 0
-        if args.command == "repo":
-            repositories = RepositoryStore(store)
-            if args.action == "list":
-                print(json.dumps(repositories.list(profile.gateway), indent=2))
-            else:
-                directory = args.directory.expanduser().resolve() if args.directory else None
-                repository = current_repository(directory)
-                if args.action == "bind":
-                    customer = validate_tag(args.customer) if args.customer is not None else _pick_customer(
-                        profile, token, args.tag_prefix,
-                    )
-                    repositories.bind(profile.gateway, repository, customer, replace=True)
-                    print(f"Bound {json.dumps(repository)} to {json.dumps(customer)}. Running agents are unchanged.")
-                else:
-                    repositories.unbind(profile.gateway, repository)
-                    print(f"Removed binding for {json.dumps(repository)}. Running agents are unchanged.")
-            return 0
-        if args.command == "login":
-            if not 1 <= args.timeout <= 900:
-                raise CredentialError("--timeout must be between 1 and 900 seconds.")
-            session = credentials().login(profile, notify, no_browser=args.no_browser, timeout=args.timeout)
-            print(f"Signed in as {session.user_id} for '{profile.name}' (team {session.team_id}).")
-        elif args.command == "token":
-            print(token())
-        elif args.command == "status":
-            print(json.dumps(credentials().status(profile), indent=2))
-        elif args.command == "logout":
-            credentials().logout(profile)
-            print(f"Logged out of '{profile.name}'. Previously issued access tokens expire naturally.")
-        elif args.command == "run":
-            if args.customer is not None:
-                customer = validate_tag(args.customer)
-            else:
-                repository = current_repository()
-                repositories = RepositoryStore(store)
-                customer = repositories.get(profile.gateway, repository)
-                if customer is None:
-                    customer = _pick_customer(profile, token, args.tag_prefix)
-                    repositories.bind(profile.gateway, repository, customer)
-                    notify("Saved this repository's customer default.")
-            arguments = args.agent_args
-            if arguments and arguments[0] == "--":
-                arguments = arguments[1:]
-            notify(f"Customer {json.dumps(customer)} is pinned for this process (business unit {profile.team_id}).")
-            return launch(args.agent, profile, token(), arguments, args.model, customer)
-        return 0
+        return args.handler(Context(store, args)) or 0
     except CredentialError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
