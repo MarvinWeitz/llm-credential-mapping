@@ -91,9 +91,9 @@ Step 1 details (already implemented, 264 tests passing):
 - `cli.py`: one handler per subcommand, `--profile` only, `token --json`
   (prints access_token, expires_at, profile, gateway, team_id, user_id).
 
-**Pending:** an adversarial review of step 1 was started but its results were
-not collected. Before step 2, re-check these points (they were the review
-lenses):
+**Pending:** the adversarial review of step 1 confirmed several issues; they
+are listed with scenarios and fixes in [`step1-review.md`](step1-review.md).
+Fix them first. The review covered these lenses:
 
 - Concurrency: several processes calling `token()` (Claude helper, Codex auth
   command, VS Code extension); a helper killed mid-refresh; a login in one
