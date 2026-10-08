@@ -5,11 +5,16 @@ the work can continue in a fresh session (local Claude Code or by hand) without
 the original conversation. Start with [Current state](#current-state), then
 continue at **step 2**.
 
+On 2026-10-08 a new step 2 ([adapter seams](#step-2-adapter-seams-no-behavior-change))
+was inserted; the former steps 2–6 are now steps 3–7.
+
 Related files:
 
-- `docs/plan/drafts/` – unreviewed drafts for step 2
+- `docs/plan/drafts/` – unreviewed drafts for step 3
   (`repositories.py`, `customers.py`). Copy them into
   `src/llm_credential_mapping/` as a starting point; they have no tests yet.
+  They predate the adapter design: `Attribution.headers()` in `customers.py`
+  must move to the LiteLLM gateway adapter (see step 3).
 - `docs/plan/research/` – raw research notes with source references
   (LiteLLM, Claude Code, Codex, OpenCode, VS Code/Copilot). Line numbers in
   those notes are sometimes off; the claims were cross-checked by a second
@@ -26,12 +31,17 @@ Goals, in priority order:
    CLI, OpenCode CLI and GitHub Copilot Chat.
 3. Keep LiteLLM native SSO with short-lived tokens. No `sk-` keys to issue,
    rotate or paste.
+4. Stay open at both ends without extra complexity now: the credential side
+   (today LiteLLM with SSO; later perhaps LiteLLM with fixed keys or another
+   gateway) and the tool side are adapters. Adding one is a new module plus a
+   registry entry, with no changes elsewhere. See [Adapters](#adapters-both-ends-are-replaceable).
 
 Decisions made:
 
 | Topic | Decision |
 | --- | --- |
-| Attribution carrier | LiteLLM request tag header `x-litellm-tags` (Projects deferred, see `docs/future/litellm-projects.md`). |
+| Extensibility | Three adapter kinds: gateway, auth, integration (tool). Plain registries in code, no plugin loading. Only `litellm` + `litellm-sso` are implemented. |
+| Attribution carrier | Chosen by the gateway adapter. For LiteLLM: request tag header `x-litellm-tags` plus `x-litellm-spend-logs-metadata` (Projects deferred, see `docs/future/litellm-projects.md`). The core only knows the customer. |
 | Compatibility | Greenfield. Nothing was ever live: no migration code, no compatibility aliases, delete replaced code. |
 | Unmapped repository in background tools (VS Code, hooks) | Block with an actionable message. No silent untagged requests. |
 | Central rules | Optional per profile (HTTPS URL or absolute file path). Files and local overrides work without it. |
@@ -47,7 +57,8 @@ one-time per machine   llm-credentials profile add / login
                        install the VS Code extension (Copilot)
 per repository         nothing if a central rule matches; otherwise one committed .llm-customer
 per request            each tool calls `llm-credentials token` (cached, renewed early)
-                       and sends x-litellm-tags + x-litellm-spend-logs-metadata from the resolver
+                       and sends the gateway's attribution headers for the resolved customer
+                       (LiteLLM: x-litellm-tags + x-litellm-spend-logs-metadata)
 ```
 
 - **Auth**: LiteLLM native CLI SSO. The CLI keeps the grant in the OS keyring
@@ -60,10 +71,115 @@ per request            each tool calls `llm-credentials token` (cached, renewed 
      skip `$HOME` itself)
   4. central rules (glob on the normalized Git origin, then `upstream`)
   5. unmapped → terminal picker in a TTY, otherwise block
-- **Repository identity on every request**:
+- **Repository identity on every request**: the gateway adapter sends the
+  customer's source and repository along with the customer. For LiteLLM:
   `x-litellm-spend-logs-metadata: {"customer_source":"rules","repository":"github.com/acme/foo"}`
   so spend can be re-attributed later (LiteLLM stores this JSON in spend logs;
   verified in `litellm/proxy/litellm_pre_call_utils.py` `_get_spend_logs_metadata_from_request_headers`).
+
+## Adapters: both ends are replaceable
+
+The CLI maps *who you are* (credential) and *which customer you work for*
+(attribution) onto *the tools you use*. Both ends are adapters. The core in the
+middle names neither LiteLLM nor any tool.
+
+```text
+input side   auth adapter       how a credential is obtained      litellm-sso (now); static-key (later)
+             gateway adapter    endpoint URLs, attribution        litellm (now); other gateways (later)
+                                headers, optional tag catalogue
+                   |
+core               v            profiles, keyring, customer resolver, CLI JSON contracts
+                   |            (no vendor names, URL paths or header names)
+                   v
+output side  integration        writes tool config, launches      claude, codex, opencode (Python);
+             adapter            tools, reads the CLI contracts     VS Code extension (TypeScript)
+```
+
+**Auth** and **gateway** are separate on purpose. LiteLLM SSO only works with a
+LiteLLM gateway, but a fixed key (a LiteLLM virtual key or any bearer key) works
+with every gateway. A profile names one of each, and an auth kind can restrict
+which gateway kinds it accepts (`litellm-sso` → `litellm` only).
+
+Interfaces (`src/llm_credential_mapping/adapters.py`, the only abstraction layer):
+
+```python
+class Api(StrEnum):            # what a tool speaks; a gateway maps each to a base URL
+    ANTHROPIC_MESSAGES = "anthropic-messages"
+    OPENAI_CHAT = "openai-chat"
+    OPENAI_RESPONSES = "openai-responses"
+
+@dataclass(frozen=True)
+class Credential:
+    secret: str = field(repr=False)
+    expires_at: float | None   # None: does not expire (fixed key)
+    user: str | None           # who the gateway sees, if known
+
+class Auth(Protocol):          # one instance per profile, e.g. litellm-sso
+    def login(self, notify: Callable[[str], None], **options) -> Credential: ...
+    def logout(self) -> None: ...
+    def status(self) -> dict: ...                 # nonsecret, includes "state"
+    def credential(self) -> Credential: ...       # renews when needed, never prompts
+
+class Gateway(Protocol):       # e.g. litellm
+    def endpoint(self, api: Api) -> str: ...      # CredentialError if unsupported
+    def attribution_headers(self, attribution: Attribution) -> dict[str, str]: ...
+    def attribution_header_names(self) -> tuple[str, ...]: ...  # for static tool config (Codex)
+    def visible_customers(self, credential: Credential) -> list[Tag] | None: ...  # None: no catalogue
+
+class Integration(Protocol):   # e.g. claude; receives the profile, its gateway and the helper command
+    def setup(self, context: IntegrationContext, *, model: str | None) -> None: ...  # user-level, reversible
+    def remove(self) -> bool: ...
+    def launch(self, context: IntegrationContext, attribution: Attribution, args: list[str]) -> int: ...
+
+AUTH = {"litellm-sso": ...}               # each kind also validates its own profile settings
+GATEWAYS = {"litellm": ...}
+INTEGRATIONS = {"claude": ..., "codex": ..., "opencode": ...}
+
+# Attribution and Tag are core types (customers.py). IntegrationContext bundles
+# the profile, its Gateway instance and the `llm-credentials token` helper command.
+```
+
+The signatures are a starting point; adjust them while implementing step 2 as
+long as the rules below hold.
+
+Rules:
+
+- Vendor knowledge lives only in `gateways/<kind>.py` and `auth/<kind>*.py`:
+  URL paths (`/v1`, `/tag/list`), header names, team IDs, OAuth contracts.
+  Tool config formats live only in `integrations/<tool>.py`.
+- Core modules and integrations reach adapters only through the registries in
+  `adapters.py`. `tests/test_architecture.py` checks this by parsing imports,
+  and rejects vendor header names and URL paths (`x-litellm`, `/tag/list`,
+  `"/v1"`) outside the adapter modules. User-facing text may still mention
+  LiteLLM where an option is LiteLLM-specific.
+- Out-of-process clients (Claude/Codex credential helpers, the OpenCode plugin,
+  the VS Code extension) only use these CLI JSON contracts and never hard-code a
+  header name or URL path:
+  - `token --json` → `{"access_token", "expires_at" (number or null), "profile", "user" (or null)}`
+  - `repo show --json` → `{"customer", "source", "detail", "repository", "headers": {...}}`
+  - `profile show --json` → `{"name", "gateway", "auth", "endpoints": {api: url}}`
+- An integration that needs an API the gateway does not offer fails with a
+  clear message at setup and launch.
+
+Not built (on purpose):
+
+- no plugin discovery, entry points or config-defined adapters; a new adapter is
+  code in this repository plus one registry line;
+- no second implementation now. Tests use a fake gateway and a fake auth to
+  prove the seams;
+- no generic OAuth framework. Renewal, backoff and locking stay inside
+  `litellm-sso` until a second auth kind actually needs refreshing.
+
+What a future addition costs:
+
+- **Fixed keys** (LiteLLM virtual key or any bearer gateway): `auth/static_key.py`,
+  about 50 lines. `login` asks for the key with hidden input and stores it in the
+  keyring, `credential()` returns it with `expires_at=None`, `logout` deletes it.
+  No integration changes.
+- **Another gateway**: `gateways/<kind>.py` with its endpoints and how a customer
+  is expressed as headers, plus an `auth/` module if it has its own sign-in. No
+  integration changes.
+- **Another tool**: `integrations/<tool>.py`. No gateway or auth changes.
 
 ## Current state
 
@@ -93,7 +209,13 @@ Step 1 details (already implemented, 264 tests passing):
 
 **Pending:** the adversarial review of step 1 confirmed several issues; they
 are listed with scenarios and fixes in [`step1-review.md`](step1-review.md).
-Fix them first. The review covered these lenses:
+Fix them first. Decided on 2026-10-08: the retry wait after a temporary failure
+(fix 3) and the "renewal refused, keep using the token until it nearly expires"
+state (fix 2) are stored as fields in the stored session itself, not in a
+separate file. Login and a successful renewal replace the session and so clear
+them. The schema change means existing test logins sign in again (greenfield).
+A session whose renewal changed identity is a separate hard stop that releases
+no token. The review covered these lenses:
 
 - Concurrency: several processes calling `token()` (Claude helper, Codex auth
   command, VS Code extension); a helper killed mid-refresh; a login in one
@@ -106,10 +228,70 @@ Fix them first. The review covered these lenses:
 - Regressions: every old CLI option still exists (compare with
   `git show ee72c6b:src/llm_credential_mapping/cli.py`); Windows/macOS file locking.
 
-## Step 2: shared customer resolver
+## Step 2: adapter seams (no behavior change)
 
-Files: `repositories.py` (rewrite from draft), new `customers.py` (from draft),
-`profiles.py` (rules option), `cli.py`, tests.
+Goal: put the [adapter interfaces](#adapters-both-ends-are-replaceable) in place
+before the resolver and the tool setups are built on top of them. This is mostly
+moving code. Do it after the step 1 fixes so the review's line references still
+apply while fixing.
+
+Today LiteLLM leaks into the core: `Profile.team_id` (`profiles.py`),
+`TAG_HEADER` and `profile.gateway + "/v1"` in `agents.py`, `/tag/list` in
+`tags.py`, LiteLLM header names in the step 3 draft `customers.py`.
+
+1. **`adapters.py`**: `Api`, `Credential`, the `Auth`/`Gateway`/`Integration`
+   protocols, the three registries.
+2. **Core `customers.py`** (extended in step 3): `Attribution(customer, source,
+   detail, repository)` and `validate_customer` (today's `validate_tag`: 1–256
+   printable ASCII, no commas, no surrounding whitespace; safe for any header).
+3. **`gateways/litellm.py`**: endpoints (`anthropic-messages` → root,
+   `openai-chat`/`openai-responses` → root + `/v1`), `attribution_headers`
+   (`x-litellm-tags`; `x-litellm-spend-logs-metadata` from step 3 on),
+   `visible_customers` (today's `list_tags`, `/tag/list`).
+4. **`auth/`**: `litellm.py` → `auth/litellm_oauth.py` (discovery, PKCE login,
+   refresh, revoke); `sessions.py` → `auth/litellm_sso.py` (the `SessionManager`
+   becomes the engine of the `litellm-sso` adapter). The team ID moves into the
+   adapter's profile settings.
+5. **Profiles** (`profiles.json` version 2; greenfield, so existing local
+   profiles are re-added and signed in again):
+   ```json
+   {"version": 2, "active": "consulting", "profiles": {"consulting": {
+     "gateway": {"type": "litellm", "url": "https://llm.company.example", "allow_http": false},
+     "auth": {"type": "litellm-sso", "team_id": "BUSINESS_UNIT_TEAM_ID"}}}}
+   ```
+   The vault account is the hash of the resolved configuration folder + name +
+   gateway + auth, so changing any of them gives a separate vault entry.
+   Including the folder (decided 2026-10-08) fixes a race: today the lock file
+   lives in the configuration folder but the vault entry does not, so two
+   folders (`--home`, `LLM_CREDENTIAL_MAPPING_HOME`) with the same profile share
+   one sign-in without sharing a lock, and concurrent renewals can lose a
+   rotated grant without revoking it. Cost: reaching the same folder through two
+   different paths means signing in twice. Add a test with two folders and one
+   vault. Step 3 adds `rules`.
+6. **CLI**: `profile add NAME --gateway URL [--gateway-type litellm] [--auth litellm-sso] --team-id ID`
+   (defaults shown; `--team-id` belongs to `litellm-sso` and is rejected for
+   other auth kinds). New `profile show [NAME] [--json]`. `login`, `logout`,
+   `status` and `token` go through `AUTH[...]`; `token --json` becomes the
+   generic contract (drops `team_id`/`gateway`, adds `user`). `tags list` uses
+   `visible_customers` and says so clearly when a gateway has no catalogue.
+   Help texts stop naming LiteLLM except where an option is LiteLLM-specific.
+7. **Integrations**: `agents.py` → `integrations/claude.py`, `codex.py`,
+   `opencode.py`, implementing only `launch` for now via `gateway.endpoint()` and
+   `gateway.attribution_headers()`. Setup comes in steps 4 and 5.
+8. **Code that is deleted later** (Claude wrapper, workspaces, editor settings,
+   Copilot bridge) gets only the import and field changes needed to keep its
+   tests passing until steps 4 and 7. Do not port it to the interfaces.
+9. **Tests**: move and adjust existing tests. Add `tests/test_architecture.py`
+   (import and string guard, see Rules), and a fake gateway (different paths,
+   header `x-test-customer`) with a fake fixed-key auth that run the three
+   integrations' launch commands, showing that no LiteLLM assumption is left.
+   All other behavior stays the same.
+
+## Step 3: shared customer resolver
+
+Files: `repositories.py` (rewrite from draft), `customers.py` (resolver from
+draft), `profiles.py` (rules option), `gateways/litellm.py` (spend-log metadata
+header), `cli.py`, tests.
 
 1. **Repository identity** (`repositories.repository_identity`, draft ready):
    - lowercase host and path for all forges; drop ports and `.git`; strip credentials;
@@ -141,15 +323,21 @@ Files: `repositories.py` (rewrite from draft), new `customers.py` (from draft),
    - URLs cached in `<home>/rules-cache/<sha256(url)>.json` for 1 h with ETag;
      on fetch failure use the stale cache; bearer token sent only when the
      URL has the gateway's origin.
-   - The catalogue replaces `/tag/list` in the picker when present
-     (`/tag/list` is empty for new users).
+   - The catalogue replaces the gateway's `visible_customers` in the picker
+     when present (LiteLLM's `/tag/list` is empty for new users). Without
+     either, the picker asks for an explicit customer.
 4. **Resolver** `customers.resolve_customer(store, profile, directory, explicit=None)
-   -> Attribution | None` with `Attribution(customer, source, detail, repository)`
-   and `Attribution.headers()` (tag + spend-log metadata JSON, compact, ASCII).
+   -> Attribution | None` with the step 2 `Attribution(customer, source, detail, repository)`.
+   It stays gateway-neutral: headers come from
+   `GATEWAYS[profile.gateway_type].attribution_headers(attribution)`. The
+   LiteLLM adapter returns the tag plus the spend-log metadata JSON (compact,
+   ASCII); the draft's `Attribution.headers()` moves there.
    `unmapped_error()` gives the actionable message.
 5. **CLI**:
-   - `repo show [--directory D] [--json]` → attribution or exit 1 with the
-     unmapped message (used later by hooks and the VS Code extension);
+   - `repo show [--directory D] [--json]` → attribution plus the profile
+     gateway's `headers`, or exit 1 with the unmapped message (used later by
+     hooks, the OpenCode plugin and the VS Code extension, which therefore never
+     need to know header names);
    - `repo bind [--customer TAG] [--shared] [--directory D] [--tag-prefix P]`;
    - `repo unbind`, `repo list` (local overrides only);
    - `run` uses the resolver; unmapped + TTY → picker, saves a local override.
@@ -157,9 +345,9 @@ Files: `repositories.py` (rewrite from draft), new `customers.py` (from draft),
    resolver, case, ports); file lookup (subfolder, parent folder, `$HOME`
    skipped, invalid file is an error); rules parsing/matching/order/upstream;
    cache (fresh, stale on outage, 304, bearer only same-origin); resolution order;
-   headers JSON.
+   LiteLLM attribution headers JSON (in the gateway adapter's tests).
 
-## Step 3: Claude Code via native settings (CLI and VS Code extension)
+## Step 4: Claude Code via native settings (CLI and VS Code extension)
 
 Verified facts (Claude Code docs, `code.claude.com/docs/en/settings-reference`,
 `llm-gateway-connect`, `vs-code`, `hooks`; tested locally with Claude Code 2.1.291):
@@ -184,7 +372,9 @@ Verified facts (Claude Code docs, `code.claude.com/docs/en/settings-reference`,
 - `claudeCode.claudeProcessWrapper` side effects: conversations start in Manual
   permission mode; the "conversation open elsewhere" check is skipped.
 
-Implementation:
+Implementation (in `integrations/claude.py`; it uses only the gateway's
+`anthropic-messages` endpoint, its attribution headers and the helper command,
+so it works unchanged with another gateway or a fixed-key profile):
 
 1. `llm-credentials setup claude [--profile P] [--model M] [--remove]` edits
    `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json` (strict JSON, file lock,
@@ -192,7 +382,7 @@ Implementation:
    - `apiKeyHelper` = `<sys.executable> -I -m llm_credential_mapping token --profile P`
      (quote with `shlex.join`; Windows `subprocess.list2cmdline`, reject
      `%!^&|<>"` in the interpreter path);
-   - `env.ANTHROPIC_BASE_URL` = gateway; optional `model`;
+   - `env.ANTHROPIC_BASE_URL` = `gateway.endpoint(Api.ANTHROPIC_MESSAGES)`; optional `model`;
    - `hooks.UserPromptSubmit` entry running `... claude guard --profile P`
      (replace our previous entry, keep others);
    - refuse to overwrite a foreign `apiKeyHelper`/`ANTHROPIC_BASE_URL` unless
@@ -201,11 +391,11 @@ Implementation:
    - print the VS Code user setting `{"claudeCode.disableLoginPrompt": true}`.
 2. `llm-credentials claude guard --profile P` (hook; reads hook JSON from stdin,
    uses its `cwd`):
-   - tag present in `ANTHROPIC_CUSTOM_HEADERS` and not written by us → allow
-     (user override, e.g. `claude --settings`);
-   - tag written by us and still matching the resolver → allow;
+   - attribution headers present in `ANTHROPIC_CUSTOM_HEADERS` and not written
+     by us → allow (user override, e.g. `claude --settings`);
+   - headers written by us and still matching the resolver → allow;
    - otherwise resolve: found → write `.claude/settings.local.json`
-     (`env.ANTHROPIC_CUSTOM_HEADERS` = other header lines + tag + metadata;
+     (`env.ANTHROPIC_CUSTOM_HEADERS` = other header lines + the gateway's attribution headers;
      keep other keys) at the checkout root (cwd on Windows / outside Git), add
      `.claude/settings.local.json` to `git rev-parse --git-path info/exclude`
      unless already ignored, then block once: "Customer X assigned (source);
@@ -228,7 +418,7 @@ Implementation:
    blocks unmapped repo with zero gateway requests, 401 → helper re-run,
    whether blocking once after writing is really needed for `UserPromptSubmit`.
 
-## Step 4: Codex and OpenCode without wrappers
+## Step 5: Codex and OpenCode without wrappers
 
 Codex (verified in source, `openai/codex` rust-v0.160.1 and main):
 
@@ -244,35 +434,44 @@ Codex (verified in source, `openai/codex` rust-v0.160.1 and main):
 - Codex passes `*TOKEN*`/`*KEY*` variables to tool shells by default → never put
   the token in Codex's environment.
 
-Implementation:
+Implementation (in `integrations/codex.py` and `integrations/opencode.py`;
+header names and URLs come from the profile's gateway adapter, never literals):
+
+Codex reads header values from environment variables named in its config, so
+each attribution header gets a fixed variable name derived from the header
+name: `LLM_CREDENTIALS_HEADER_` + the header name in upper case with every other
+character replaced by `_` (`x-litellm-tags` → `LLM_CREDENTIALS_HEADER_X_LITELLM_TAGS`).
+Setup and `shell-init` both derive the names, so they always agree.
 
 1. `setup codex [--profile P] [--model M] [--remove]` writes
    `${CODEX_HOME:-~/.codex}/config.toml` with two marker-delimited managed
    blocks: top-level keys at the top (`model_provider = "llm-credentials"`,
-   optional `model`) and tables at the end:
+   optional `model`) and tables at the end. Output for a LiteLLM profile:
    ```toml
    [model_providers.llm-credentials]
-   name = "LiteLLM (llm-credentials)"
-   base_url = "<gateway>/v1"
+   name = "llm-credentials (P)"
+   base_url = "<gateway.endpoint(openai-responses)>"
    wire_api = "responses"
-   env_http_headers = { "x-litellm-tags" = "LLM_CREDENTIALS_TAG", "x-litellm-spend-logs-metadata" = "LLM_CREDENTIALS_SPEND_METADATA" }
+   env_http_headers = { "x-litellm-tags" = "LLM_CREDENTIALS_HEADER_X_LITELLM_TAGS", "x-litellm-spend-logs-metadata" = "LLM_CREDENTIALS_HEADER_X_LITELLM_SPEND_LOGS_METADATA" }
 
    [model_providers.llm-credentials.auth]
    command = "<abs python>"
-   args = ["-I", "-m", "llm_credential_mapping", "token", "--profile", "P", "--require-tag-env"]
+   args = ["-I", "-m", "llm_credential_mapping", "token", "--profile", "P", "--require-attribution-env"]
    timeout_ms = 30000
    refresh_interval_ms = 240000
    ```
    Refuse if the user already has a top-level `model_provider` outside the
-   markers. Validate the result with `tomllib`.
-2. `token --require-tag-env` fails (no token) when `LLM_CREDENTIALS_TAG` is
-   missing → fail closed even though Codex would drop the header.
+   markers. Validate the result with `tomllib`. Rerun setup after changing the
+   profile's gateway.
+2. `token --require-attribution-env` fails (no token) when any of the
+   gateway's header variables is missing → fail closed even though Codex would
+   drop the header.
 3. `llm-credentials shell-init bash|zsh|fish|pwsh [--profile P]` prints a hook
    that on directory change runs `repo show --env` and exports/unsets only the
-   non-secret `LLM_CREDENTIALS_TAG` and `LLM_CREDENTIALS_SPEND_METADATA`
-   (quote safely per shell; tags may contain `'`). These variables are *not*
-   read by the resolver (`LLM_CREDENTIALS_CUSTOMER` is the explicit override).
-4. `run codex`: same provider via `-c` overrides plus the two variables; no
+   non-secret `LLM_CREDENTIALS_HEADER_*` variables (quote safely per shell;
+   values may contain `'`). These variables are *not* read by the resolver
+   (`LLM_CREDENTIALS_CUSTOMER` is the explicit override).
+4. `run codex`: same provider via `-c` overrides plus the header variables; no
    token in the environment.
 5. OpenCode: global plugin (verified in source, `anomalyco/opencode`):
    - v1: plugin receives `{directory, worktree}`; hook `chat.headers` runs per
@@ -280,17 +479,20 @@ Implementation:
    - v2.0.24+: default export `{id, setup|effect}`; session hook
      `model.request` can set headers and `baseURL`; context has `location`.
    - The plugin calls `llm-credentials token --json` (cache until shortly before
-     expiry) and `repo show --json --directory <worktree>`; sends the bearer only
-     to the profile gateway; refuses requests when unmapped.
+     expiry; `expires_at: null` means no expiry) and
+     `repo show --json --directory <worktree>`, and sends that output's
+     `headers` as they are. It sends the bearer only to the profile's endpoint
+     and refuses requests when unmapped.
    - `setup opencode` installs the plugin and a provider (OpenAI-compatible,
-     `baseURL <gateway>/v1`, models from `/v1/models`). Check whether a plugin
-     `config` hook can inject the provider so no JSON editing is needed.
+     `baseURL` = the `openai-chat` endpoint from `profile show --json`, models
+     from `<that endpoint>/models`). Check whether a plugin `config` hook can
+     inject the provider so no JSON editing is needed.
    - Open question: header-case collision on v1 (`Authorization` vs
      provider-generated header) – test on the wire.
 6. Live tests: install `@openai/codex` and `opencode-ai` with npm and run them
    against the fake gateway.
 
-## Step 5: Copilot Chat via a small VS Code extension
+## Step 6: Copilot Chat via a small VS Code extension
 
 Verified (VS Code source/docs, `microsoft/vscode`, `vscode-docs`):
 
@@ -310,24 +512,29 @@ Implementation:
 
 1. `vscode-extension/` (TypeScript, MIT notice from the fork). Settings:
    `llmCredentials.command` (path to `llm-credentials`), `llmCredentials.profile`.
-2. Token: `llm-credentials token --json` (cache until 60 s before expiry,
-   retry once on 401). Customer: `repo show --json --directory <workspace folder>`
-   per window; multi-root: use the folder of the active editor, auto-select if
-   all folders resolve to the same customer, else status-bar choice.
-3. Requests: `POST <gateway>/v1/chat/completions` with bearer, `x-litellm-tags`,
-   `x-litellm-spend-logs-metadata`. Models from the gateway (check that session
-   tokens work on `/model_group/info` or `/v1/models`).
+2. Token: `llm-credentials token --json` (cache until 60 s before expiry or
+   indefinitely when `expires_at` is null, retry once on 401). Customer:
+   `repo show --json --directory <workspace folder>` per window; multi-root:
+   use the folder of the active editor, auto-select if all folders resolve to
+   the same customer, else status-bar choice.
+3. Requests: `POST <openai-chat endpoint>/chat/completions` (endpoint from
+   `profile show --json`) with the bearer and the `headers` from `repo show`.
+   The extension contains no gateway-specific header names or paths. Models
+   from `<openai-chat endpoint>/models` (check that LiteLLM session tokens work
+   there; drop the fork's LiteLLM-only `/model_group/info` discovery).
 4. Status bar shows the customer; notification "Sign in" runs
    `llm-credentials login` when the CLI reports re-login.
 5. Optional command: set `claudeCode.disableLoginPrompt` for the Claude extension.
 6. Build with npm/tsc, unit tests for conversion and resolution, `vsce package`
    for a VSIX, CI job. Pilot in real VS Code (cannot be tested headless).
 
-## Step 6: cleanup and documentation
+## Step 7: cleanup and documentation
 
 - Delete `copilot.py`, `copilot_bridge.py`, their tests and CLI commands.
 - Rewrite README: one-screen quickstart (profile add → login → setup → done),
   then one short section per tool; move details to `docs/`.
+- `docs/adapters.md`: how to add a gateway, an auth kind or a tool, using the
+  fake adapters from the step 2 tests as the worked example.
 - CI: keep the Python matrix, add the extension build; consider ruff.
 - Final end-to-end review against the goals.
 
@@ -339,10 +546,17 @@ Implementation:
   `/v1/responses`, `/v1/chat/completions`, records request headers and returns
   minimal valid responses (see `tests/test_oauth.py` and `tests/test_parallel_customers.py`
   for existing fixtures). Profiles for it need `--allow-insecure-localhost`.
+- Fake adapters (from step 2): a non-LiteLLM gateway (other paths, header
+  `x-test-customer`) and a fixed-key auth. Every integration is tested against
+  them as well as against LiteLLM.
 - Real gateway (only possible on your side): SSO login, tags and repository
   metadata in spend logs, renewal over a long session, refused grant → re-login.
 
-## Follow-ups (not in steps 1–6)
+## Follow-ups (not in steps 1–7)
+
+- `auth/static_key.py` for LiteLLM virtual keys or other bearer gateways (see
+  [Adapters](#adapters-both-ends-are-replaceable)), when there is a real need.
+  Goal 3 still applies to the default setup.
 
 - `login --no-browser`: accept the pasted redirect URL (state-checked) for
   SSH/devcontainers. LiteLLM also has a server-side "manual delivery" mode
