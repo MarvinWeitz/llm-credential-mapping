@@ -1,24 +1,26 @@
 import argparse
 import json
+import os
 import sys
 from functools import cached_property
 from pathlib import Path
 
 from . import __version__
 from .adapters import Api, Auth, Credential, Gateway, IntegrationContext
-from .claude import check as claude_check, helper_token, setup as claude_setup
 from .customers import (
     Attribution, Rules, RulesLoader, Tag, resolve_customer, unmapped_error, validate_customer, write_customer_file,
 )
 from .errors import CredentialError
 from .copilot import CopilotStore, connection_key, setup as copilot_setup, validate_connection
 from .copilot_bridge import check as copilot_check, serve as copilot_serve
-from .editor_settings import editing, settings_file
 from .profiles import Profile, ProfileStore, default_home
+from .integrations.claude import Claude
 from .registry import AUTH, GATEWAYS, INTEGRATIONS, auth_for, gateway_for
 from .repositories import Checkout, RepositoryStore, find_checkout
 from .storage import NativeKeyring
-from .workspaces import WorkspaceStore
+
+
+CLAUDE = Claude()
 
 
 def notify(message: str) -> None:
@@ -254,19 +256,23 @@ def repo_bind(context: Context) -> None:
     )
     if args.shared:
         path = write_customer_file(checkout.root if checkout is not None else directory, customer)
-        print(f"Wrote {path} for {json.dumps(customer)}. Commit it to share it with your team. Running agents are unchanged.")
+        print(f"Wrote {path} for {json.dumps(customer)}. Commit it to share it with your team.")
         resolved = context.resolve(directory, checkout)
         if resolved is not None and resolved.source != "file":
             notify(f"Note: your {resolved.source} assignment ({resolved.detail}) still takes precedence here.")
-        return
-    RepositoryStore(context.store).bind(context.profile.gateway, repository, customer, replace=True)
-    print(f"Bound {json.dumps(repository)} to {json.dumps(customer)} for you only. Running agents are unchanged.")
+    else:
+        RepositoryStore(context.store).bind(context.profile.gateway, repository, customer, replace=True)
+        print(f"Bound {json.dumps(repository)} to {json.dumps(customer)} for you only.")
+    _refresh_claude(context, directory, checkout)
 
 
 def repo_unbind(context: Context) -> None:
-    repository = _origin(find_checkout(_directory(context.args)))
+    directory = _directory(context.args)
+    checkout = find_checkout(directory)
+    repository = _origin(checkout)
     RepositoryStore(context.store).unbind(context.profile.gateway, repository)
-    print(f"Removed your override for {json.dumps(repository)}. Running agents are unchanged.")
+    print(f"Removed your override for {json.dumps(repository)}.")
+    _refresh_claude(context, directory, checkout)
 
 
 def run(context: Context) -> int:
@@ -289,83 +295,63 @@ def run(context: Context) -> int:
         f"Customer {json.dumps(attribution.customer)} ({attribution.source}: {attribution.detail}) "
         f"is pinned for this process (profile {profile.name})."
     )
-    integration = IntegrationContext(profile, context.gateway, context.token())
-    return launch(args.agent, integration, attribution, arguments, args.model)
+    return launch(args.agent, _integration_context(context, context.token()), attribution, arguments, args.model)
 
 
-# Official Claude Code VS Code extension
+# Tool setup and the Claude prompt guard
 
 
-def claude_workspace(context: Context) -> None:
+def _integration_context(context: Context, token: str = "") -> IntegrationContext:
+    return IntegrationContext(context.profile, context.gateway, token, context.store.home)
+
+
+def setup_tool(context: Context) -> None:
     args = context.args
-    workspaces = WorkspaceStore(context.store)
-    if args.workspace_action == "list":
-        print(json.dumps([binding.__dict__ for binding in workspaces.list()], indent=2))
-        return
-    workspace = args.workspace if args.workspace is not None else Path.cwd()
-    if args.workspace_action == "bind":
-        print(json.dumps(workspaces.bind(workspace, args.repository).__dict__, indent=2))
+    integration = INTEGRATIONS[args.tool]
+    if args.remove:
+        notes = integration.remove(_integration_context(context))
     else:
-        workspaces.unbind(workspace)
-        print("Removed this workspace's primary repository mapping.")
-    notify(
-        "Reload the VS Code window before using the changed selection. "
-        "Running processes are unchanged; editor tabs do not change customer tags."
-    )
+        context.credential()  # Fail now, not in the tool, when the profile is not signed in.
+        notes = integration.setup(_integration_context(context), args.model, args.replace)
+    for note in notes:
+        print(note)
 
 
-def claude_setup_command(context: Context) -> None:
-    args = context.args
-    if args.settings_file is not None and not args.apply:
-        raise CredentialError("--settings-file requires --apply; no settings were edited.")
-    if not args.apply:
-        print(json.dumps(claude_setup(context.store, args.profile, args.model), indent=2))
-        notify(
-            "Merge this snippet into VS Code User Settings (JSON), or Remote User Settings in a container. "
-            "Keep unrelated environmentVariables entries, but remove old gateway credentials/routing overrides. "
-            "Reload the window and start a new Claude conversation. No editor settings were edited."
+def claude_guard(context: Context) -> None:
+    """UserPromptSubmit hook: print a block decision unless the prompt will carry the right customer.
+
+    Fails closed: any error blocks the prompt with its message instead of letting it through untagged.
+    """
+    try:
+        data = json.loads(sys.stdin.read(1_048_576) or "{}")
+    except ValueError:
+        data = {}
+    cwd = data.get("cwd") if isinstance(data, dict) else None
+    try:
+        directory = Path(cwd).resolve() if isinstance(cwd, str) and cwd else Path.cwd().resolve()
+        checkout = find_checkout(directory)
+        attribution = context.resolve(directory, checkout)
+        reason = CLAUDE.guard(
+            _integration_context(context), directory, checkout.root if checkout is not None else None,
+            attribution, str(unmapped_error(directory, checkout)), os.environ,
         )
-        return
-    target = settings_file(args.settings_file)
-    with editing(target) as editor:
-        generated = claude_setup(context.store, args.profile, args.model)
-        try:
-            editor.apply(generated)
-        except CredentialError as error:
-            raise CredentialError(
-                f"Claude's CLI configuration was saved, but editor settings were not applied: {error}"
-            ) from None
-    print(json.dumps(generated, indent=2))
-    notify(
-        f"Applied Claude bootstrap settings to {json.dumps(str(target))}. "
-        "Unrelated settings and environment entries were preserved. "
-        "Reload the window and start a new Claude conversation."
-    )
+    except CredentialError as error:
+        reason = f"llm-credentials: {error}"
+    except Exception:  # noqa: BLE001 - a crashing guard must not let the prompt through.
+        reason = "llm-credentials could not check the customer for this prompt; run 'llm-credentials repo show'."
+    if reason is not None:
+        print(json.dumps({"decision": "block", "reason": reason}))
 
 
-def claude_disable(context: Context) -> None:
-    target = settings_file(context.args.settings_file)
-    with editing(target) as editor:
-        changed = editor.disable()
-    print(
-        "Disconnected the Claude Code extension from LiteLLM."
-        if changed else "No LiteLLM Claude bootstrap settings found; nothing was changed."
-    )
-    notify(
-        f"Settings target: {json.dumps(str(target))}. "
-        "LiteLLM logins, profiles and repository/workspace mappings were retained. "
-        "D-Bus and unrelated settings were preserved. "
-        "Reload the window, start a new conversation and use Claude's normal sign-in if prompted. "
-        "Other gateway settings or editor policies are not removed."
-    )
-
-
-def claude_check_command(context: Context) -> None:
-    print(json.dumps(claude_check(context.store, context.args.directory), indent=2))
-
-
-def claude_token(context: Context) -> None:
-    print(helper_token())
+def _refresh_claude(context: Context, directory: Path, checkout: Checkout | None) -> None:
+    """Rewrite Claude local settings this tool wrote, so running sessions follow a changed assignment."""
+    root = checkout.root if checkout is not None else None
+    attribution = context.resolve(directory, checkout)
+    integration = _integration_context(context)
+    for folder in dict.fromkeys(folder for folder in (root, directory) if folder is not None):
+        path = folder / ".claude" / "settings.local.json"
+        if CLAUDE.refresh_local(integration, path, attribution, root):
+            notify(f"Updated {path}; running Claude sessions use the new customer from their next prompt.")
 
 
 # Copilot Chat foreground bridge
@@ -521,32 +507,20 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("agent_args", nargs=argparse.REMAINDER)
     command.set_defaults(handler=run)
 
-    claude = commands.add_parser("claude", help="Integrate the official Claude Code VS Code extension.")
-    claude_actions = claude.add_subparsers(dest="action", required=True)
-    setup = claude_actions.add_parser("setup", help="Validate this repository and print or apply editor settings.")
-    _profile_option(setup)
-    setup.add_argument("--model", required=True, help="LiteLLM alias pinned for extension model requests.")
-    setup.add_argument("--apply", action="store_true", help="Apply bootstrap settings to VS Code User/Remote Settings.")
-    setup.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; requires --apply.")
-    setup.set_defaults(handler=claude_setup_command)
-    disable = claude_actions.add_parser("disable", help="Disconnect the extension from LiteLLM; keep logins and mappings.")
-    disable.add_argument("--settings-file", type=Path, help="Explicit User/Remote settings.json; otherwise detect the editor.")
-    disable.set_defaults(handler=claude_disable)
-    check = claude_actions.add_parser("check", help="Check repo binding and vault access without printing credentials.")
-    check.add_argument("--directory", type=Path, help="Launch/workspace directory to diagnose; otherwise current directory.")
-    check.set_defaults(handler=claude_check_command)
-    claude_actions.add_parser(
-        "token", help="Internal apiKeyHelper: return the pinned session credential only.",
-    ).set_defaults(handler=claude_token)
-    workspace = claude_actions.add_parser("workspace", help="Select an explicit primary checkout for a launch workspace.")
-    workspace_actions = workspace.add_subparsers(dest="workspace_action", required=True)
-    for action in ("bind", "list", "unbind"):
-        command = workspace_actions.add_parser(action)
-        if action != "list":
-            command.add_argument("--workspace", type=Path, help="Claude's launch directory; otherwise current directory.")
-        if action == "bind":
-            command.add_argument("--repository", type=Path, required=True, help="Primary Git checkout's local directory.")
-        command.set_defaults(handler=claude_workspace)
+    command = commands.add_parser("setup", help="Configure a tool once to use this CLI for credentials and customers.")
+    command.add_argument("tool", choices=sorted(INTEGRATIONS))
+    _profile_option(command)
+    command.add_argument("--model", help="Default model alias for the tool.")
+    command.add_argument("--replace", action="store_true", help="Replace another tool's credential configuration.")
+    command.add_argument("--remove", action="store_true", help="Remove what setup configured; keep everything else.")
+    command.set_defaults(handler=setup_tool)
+
+    claude = commands.add_parser("claude", help="Claude Code hooks installed by 'setup claude'.")
+    guard = claude.add_subparsers(dest="action", required=True).add_parser(
+        "guard", help="UserPromptSubmit hook: assign the customer and block prompts that would be sent without one.",
+    )
+    _profile_option(guard)
+    guard.set_defaults(handler=claude_guard)
 
     copilot = commands.add_parser("copilot", help="Prototype: connect Copilot Chat through a pinned foreground bridge.")
     copilot_actions = copilot.add_subparsers(dest="action", required=True)

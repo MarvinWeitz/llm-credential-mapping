@@ -267,6 +267,44 @@ described below, with these differences:
   next rule. Admins list specific rules before catch-alls, so a fork gets its
   upstream's specific rule even when a later catch-all matches its origin.
 
+**Step 4 done (2026-10-08), 244 tests passing on Windows** (plus 3 live tests,
+see below). `integrations/claude.py` now has `setup`/`remove`, the prompt
+`guard`, the `.claude/settings.local.json` writer and `run claude` via
+`--settings`. Deleted: the `claude.py` wrapper, `windows_process.py`,
+`editor_settings.py`, `workspaces.py`, the `llm-credentials-claude` entry point
+and their tests. `request_context.py` stays for the Copilot bridge (step 7).
+
+- Commands: `setup claude [--profile P] [--model M] [--replace] [--remove]`
+  (a generic `setup TOOL`; Codex/OpenCode answer "not available yet, use run"
+  until step 5) and `claude guard [--profile P]` (the hook). Setup records what
+  it wrote in `<home>/claude.json`; `--remove` deletes only values that are
+  still the ones it wrote. The helper and hook commands include `--home`.
+- `repo bind`/`unbind` rewrite `.claude/settings.local.json` files this tool
+  wrote (checkout root and the given directory), so running sessions follow.
+- Live test `tests/test_claude_native.py` (set
+  `LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY`; temporary `CLAUDE_CONFIG_DIR`,
+  fake gateway, stub helper). Passed with the VS Code extension's bundled
+  Claude Code 2.1.292 on Windows: unmapped repo blocked with zero gateway
+  requests; assignment blocks once, then every request carries the tag and
+  spend-log metadata; a 401 makes Claude call the helper again; subdirectory
+  sessions are tagged; `run --customer` (`--settings`) passes the user-level
+  guard with its own customer and writes no local file.
+- Found by the live test: **Claude Code on Windows runs hooks through Git
+  Bash**, which stripped the backslashes of the unquoted Windows command, so
+  the hook failed and the prompt went out untagged (a failing hook is a
+  non-blocking error). `shell_command` now double-quotes every argument with
+  forward slashes on Windows (valid in cmd and bash) and refuses `% ! " $` and
+  backticks.
+- Remaining risk: if the hook command cannot start at all (e.g. the virtual
+  environment moved), Claude treats that as a non-blocking error and sends the
+  prompt untagged. Rerun `setup claude` after moving the installation; the
+  gateway-side tag check (follow-ups) is the real safety net.
+- Not verified yet (needs the real extension UI): that
+  `claudeCode.disableLoginPrompt` plus the user-level helper is enough for the
+  VS Code extension, and which folder it uses as the launch directory in
+  multi-root workspaces. `README.md` still describes the removed wrapper
+  (rewrite in step 7).
+
 ## Step 2: adapter seams (no behavior change)
 
 Goal: put the [adapter interfaces](#adapters-both-ends-are-replaceable) in place

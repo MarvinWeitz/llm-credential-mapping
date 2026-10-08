@@ -15,7 +15,6 @@ dependencies = [
 
 [project.scripts]
 llm-credentials = "llm_credential_mapping.cli:main"
-llm-credentials-claude = "llm_credential_mapping.claude:wrapper_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

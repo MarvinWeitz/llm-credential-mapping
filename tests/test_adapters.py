@@ -15,7 +15,7 @@ from llm_credential_mapping.adapters import Api, Credential, IntegrationContext
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.customers import Attribution
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.integrations.common import header_variable
+from llm_credential_mapping.integrations.common import header_variable, shell_command
 from llm_credential_mapping.profiles import Profile
 
 
@@ -89,7 +89,8 @@ class FakeAdapterTests(unittest.TestCase):
             return registry.INTEGRATIONS[agent].command(self.context, self.attribution, list(args), model)
 
     def test_claude_uses_the_gateway_endpoint_and_headers(self):
-        _, env = self.command("claude")
+        args, _ = self.command("claude")
+        env = json.loads(args[args.index("--settings") + 1])["env"]
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://fake.example/anthropic")
         self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], "x-test-customer: customer:A\nx-test-source: explicit")
 
@@ -148,10 +149,12 @@ class FakeAdapterTests(unittest.TestCase):
                 self.assertEqual(call("tags", "list"), 1)
                 self.assertIn("offer a customer catalogue", stderr.getvalue())
                 self.assertEqual(call("run", "--customer", "customer:A", "claude"), 0)
-            env = run.call_args.kwargs["env"]
-            self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://fake.example/anthropic")
-            self.assertIn("x-test-customer: customer:A", env["ANTHROPIC_CUSTOM_HEADERS"])
-            self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fixed-secret")
+            argv = run.call_args.args[0]
+            settings = json.loads(argv[argv.index("--settings") + 1])
+            self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://fake.example/anthropic")
+            self.assertIn("x-test-customer: customer:A", settings["env"]["ANTHROPIC_CUSTOM_HEADERS"])
+            self.assertIn(shell_command(["--home", str(Path(home).resolve())]), settings["apiKeyHelper"])
+            self.assertNotIn("fixed-secret", json.dumps([argv, run.call_args.kwargs["env"]]))
             saved = json.loads((Path(home) / "profiles.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["profiles"]["fake"], {
                 "gateway": {"type": "fake", "url": "https://fake.example", "allow_http": False},

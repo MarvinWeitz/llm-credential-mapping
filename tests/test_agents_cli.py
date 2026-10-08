@@ -15,7 +15,7 @@ from llm_credential_mapping.auth.litellm_sso import vault_account
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.customers import Attribution
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.integrations.common import CUSTOMER_VARIABLE, TOKEN_VARIABLE, header_variable
+from llm_credential_mapping.integrations.common import CUSTOMER_VARIABLE, TOKEN_VARIABLE, header_variable, shell_command
 from llm_credential_mapping.integrations.opencode import _opencode_command, _opencode_major
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.registry import INTEGRATIONS, gateway_for
@@ -26,6 +26,10 @@ from test_sessions import MemoryStore, make_session
 def _arguments(profile, token, customer):
     context = IntegrationContext(profile, gateway_for(profile), token)
     return context, Attribution(customer, "explicit", "--customer") if customer is not None else None
+
+
+def claude_settings(args):
+    return json.loads(args[args.index("--settings") + 1])
 
 
 def agent_command(agent, profile, token, args, model=None, customer=None):
@@ -42,15 +46,19 @@ class AgentTests(unittest.TestCase):
     def setUp(self):
         self.profile = Profile("a", "https://example.com", {"team_id": "team-a"})
 
-    def test_claude_sets_gateway_only_in_child_environment(self):
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "old", "CLAUDE_CODE_USE_BEDROCK": "1"}, clear=True):
+    def test_claude_gets_a_renewing_helper_instead_of_a_token(self):
+        inherited = {"ANTHROPIC_API_KEY": "old", "ANTHROPIC_AUTH_TOKEN": "old", "CLAUDE_CODE_USE_BEDROCK": "1"}
+        with patch.dict(os.environ, inherited, clear=True):
             args, env = agent_command("claude", self.profile, "secret", ["--resume"], "alias")
-            self.assertEqual(args, ["claude", "--resume"])
-            self.assertNotIn("ANTHROPIC_API_KEY", env)
-            self.assertNotIn("CLAUDE_CODE_USE_BEDROCK", env)
-            self.assertEqual(env["ANTHROPIC_BASE_URL"], self.profile.gateway)
-            self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "secret")
             self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "old")
+        self.assertEqual((args[:2], args[3:]), (["claude", "--settings"], ["--resume"]))
+        settings = claude_settings(args)
+        self.assertEqual(settings["env"], {"ANTHROPIC_BASE_URL": self.profile.gateway})
+        self.assertEqual(settings["model"], "alias")
+        self.assertTrue(settings["apiKeyHelper"].endswith(shell_command(["llm_credential_mapping", "token", "--profile", "a"])))
+        for name in inherited:
+            self.assertNotIn(name, env)
+        self.assertNotIn("secret", json.dumps([args, env]))
 
     def test_codex_uses_responses_provider_without_secret_arguments(self):
         args, env = agent_command("codex", self.profile, "credential-secret", ["exec", "hello"], "alias")
@@ -65,22 +73,26 @@ class AgentTests(unittest.TestCase):
             with self.subTest(agent=agent), patch.dict(os.environ, {CUSTOMER_VARIABLE: "parent"}, clear=True):
                 args_a, env_a = agent_command(agent, self.profile, "same-secret", [], "alias", "customer:A")
                 args_b, env_b = agent_command(agent, self.profile, "same-secret", [], "alias", "customer:B")
-                self.assertEqual(env_a[TOKEN_VARIABLE], env_b[TOKEN_VARIABLE])
                 self.assertEqual(env_a[CUSTOMER_VARIABLE], "customer:A")
                 self.assertEqual(env_b[CUSTOMER_VARIABLE], "customer:B")
                 self.assertEqual(os.environ[CUSTOMER_VARIABLE], "parent")
                 self.assertNotIn("same-secret", " ".join(args_a + args_b))
                 if agent == "claude":
-                    self.assertEqual(env_a["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {\"customer_source\":\"explicit\"}")
-                    self.assertEqual(env_b["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:B\nx-litellm-spend-logs-metadata: {\"customer_source\":\"explicit\"}")
-                elif agent == "codex":
+                    for args, customer in ((args_a, "customer:A"), (args_b, "customer:B")):
+                        self.assertEqual(
+                            claude_settings(args)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+                            f'x-litellm-tags: {customer}\nx-litellm-spend-logs-metadata: {{"customer_source":"explicit"}}',
+                        )
+                else:
+                    self.assertEqual(env_a[TOKEN_VARIABLE], env_b[TOKEN_VARIABLE])
+                if agent == "codex":
                     variable = header_variable("x-litellm-tags")
                     self.assertIn(
                         'model_providers.llm-credential-mapping.env_http_headers.x-litellm-tags="' + variable + '"',
                         args_a,
                     )
                     self.assertEqual((env_a[variable], env_b[variable]), ("customer:A", "customer:B"))
-                else:
+                elif agent == "opencode":
                     for env, customer in ((env_a, "customer:A"), (env_b, "customer:B")):
                         options = json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"]["llm-credential-mapping"]["options"]
                         self.assertEqual(options["headers"], {"x-litellm-tags": customer, "x-litellm-spend-logs-metadata": '{"customer_source":"explicit"}'})
@@ -88,9 +100,12 @@ class AgentTests(unittest.TestCase):
     def test_claude_replaces_inherited_tags_but_preserves_other_headers(self):
         existing = "X-Trace: trace\nX-LiteLLM-Tags: old-customer\nx-litellm-tags: another"
         with patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": existing}):
-            _, env = agent_command("claude", self.profile, "secret", [], customer="customer:A")
-            self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: trace\nx-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {\"customer_source\":\"explicit\"}")
+            args, _ = agent_command("claude", self.profile, "secret", [], customer="customer:A")
             self.assertEqual(os.environ["ANTHROPIC_CUSTOM_HEADERS"], existing)
+        self.assertEqual(
+            claude_settings(args)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+            'X-Trace: trace\nx-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {"customer_source":"explicit"}',
+        )
 
     def test_codex_customer_header_overrides_are_valid_toml(self):
         args, env = agent_command("codex", self.profile, "secret", [], customer="customer:A")

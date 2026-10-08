@@ -2,12 +2,12 @@ import json
 
 from ..adapters import Api, IntegrationContext
 from ..customers import Attribution
-from .common import TOKEN_VARIABLE, attribution_headers, child_environment, header_variable, run
+from .common import TOKEN_VARIABLE, LaunchOnly, attribution_headers, child_environment, header_variable, run
 
 PROVIDER = "llm-credential-mapping"
 
 
-class Codex:
+class Codex(LaunchOnly):
     """Codex through the gateway's OpenAI Responses API, configured with -c overrides only."""
 
     name = "codex"

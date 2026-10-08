@@ -1,7 +1,9 @@
 import os
 import re
+import shlex
 import shutil
 import subprocess
+from typing import Sequence
 
 from ..adapters import IntegrationContext
 from ..customers import Attribution
@@ -31,9 +33,38 @@ def attribution_headers(context: IntegrationContext, attribution: Attribution | 
     return headers
 
 
+def shell_command(argv: Sequence[str]) -> str:
+    """Quote a command for tools that run it through a shell.
+
+    On Windows the same string may run under cmd or Git Bash (Claude Code uses Git Bash for hooks), so
+    every argument is double-quoted with forward slashes, which both read literally; characters either
+    shell would expand inside double quotes are refused.
+    """
+    if os.name == "nt":
+        if any(char in arg for arg in argv for char in '%!"$`\r\n'):
+            raise CredentialError(
+                "A path in the credential helper command contains shell metacharacters; "
+                "install the CLI and keep its configuration in a simple path."
+            )
+        return " ".join('"' + arg.replace("\\", "/") + '"' for arg in argv)
+    return shlex.join(argv)
+
+
 def header_variable(name: str) -> str:
     """A fixed environment variable for one attribution header, for tools that read header values from the environment."""
     return "LLM_CREDENTIALS_HEADER_" + re.sub(r"[^A-Z0-9]", "_", name.upper())
+
+
+class LaunchOnly:
+    """For tools whose user-level setup does not exist yet; they can still be launched with ``run``."""
+
+    name = ""
+
+    def setup(self, context: IntegrationContext, model: str | None = None, replace: bool = False) -> list[str]:
+        raise CredentialError(f"Setup for {self.name} is not available yet; use 'llm-credentials run {self.name}'.")
+
+    def remove(self, context: IntegrationContext) -> list[str]:
+        return self.setup(context)
 
 
 def run(name: str, command: list[str], env: dict[str, str]) -> int:

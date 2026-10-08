@@ -6,11 +6,9 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "llm_credential_mapping"
 ADAPTER_PACKAGES = ("auth", "gateways")
-# Legacy editor adapters that use LiteLLM directly; deleted in plan steps 4 and 7.
-LEGACY = {
-    "claude.py", "copilot.py", "copilot_bridge.py", "request_context.py",
-    "workspaces.py", "editor_settings.py", "windows_process.py",
-}
+# The legacy Copilot bridge uses LiteLLM directly; deleted in plan step 7.
+LEGACY = {"copilot.py", "copilot_bridge.py", "request_context.py"}
+
 VENDOR_STRINGS = ("x-litellm", "/tag/list", "/v1", "litellm-cli-auth")
 
 

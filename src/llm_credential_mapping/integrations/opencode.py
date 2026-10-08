@@ -7,7 +7,7 @@ import subprocess
 from ..adapters import Api, IntegrationContext
 from ..customers import Attribution
 from ..errors import CredentialError
-from .common import TOKEN_VARIABLE, attribution_headers, child_environment, execute
+from .common import TOKEN_VARIABLE, LaunchOnly, attribution_headers, child_environment, execute
 
 PROVIDER = "llm-credential-mapping"
 
@@ -54,7 +54,7 @@ def _opencode_major(executable: str) -> int:
     return int(match[1])
 
 
-class OpenCode:
+class OpenCode(LaunchOnly):
     """OpenCode through the gateway's OpenAI Chat Completions API, as an inline provider."""
 
     name = "opencode"
