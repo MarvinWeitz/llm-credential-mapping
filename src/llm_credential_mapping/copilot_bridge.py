@@ -14,7 +14,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from .copilot import CopilotConnection, CopilotStore, connection_key, validate_connection
 from .errors import CredentialError
 from .profiles import Profile, ProfileStore
-from .sessions import SessionManager
+from .auth.litellm_sso import SessionManager  # Legacy, deleted in plan step 7.
 from .transport import NoRedirects
 
 

@@ -11,9 +11,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from .errors import CredentialError
-from .profiles import Profile, gateway_origin
-from .transport import JsonTransport
+from ..errors import CredentialError
+from ..profiles import Profile, gateway_origin
+from ..transport import JsonTransport
+
+
+def team_id(profile: Profile) -> str:
+    """The LiteLLM team chosen at browser consent; validated by the litellm-sso auth kind."""
+    return profile.auth["team_id"]
 
 
 def required_text(data: dict, name: str) -> str:
@@ -126,7 +131,7 @@ class Session:
 
     def check_binding(self, profile: Profile) -> None:
         """Require this grant to belong to the profile's gateway and team, with endpoints on that gateway."""
-        if self.gateway != profile.gateway or self.team_id != profile.team_id:
+        if self.gateway != profile.gateway or self.team_id != team_id(profile):
             raise CredentialError(
                 f"Credential team does not match profile '{profile.name}'. "
                 "Log in again and choose its configured LiteLLM team."
@@ -302,7 +307,7 @@ class LiteLLMClient:
             })
             notify(
                 f"Choose the LiteLLM team for '{self.profile.name}' "
-                f"(expected ID: {self.profile.team_id}) in browser consent."
+                f"(expected ID: {team_id(self.profile)}) in browser consent."
             )
             if no_browser:
                 notify(url)

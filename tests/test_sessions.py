@@ -9,11 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from llm_credential_mapping import sessions
+from llm_credential_mapping.auth import litellm_sso as sessions
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.litellm import IdentityChanged, Session
+from llm_credential_mapping.auth.litellm_oauth import IdentityChanged, Session
 from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.sessions import SessionManager, refresh_margin
+from llm_credential_mapping.auth.litellm_sso import SessionManager, refresh_margin
 from llm_credential_mapping.transport import GatewayError
 
 
@@ -38,7 +38,7 @@ def make_session(
     """A stored grant for a profile, with endpoints on the profile's gateway."""
     issued_at = time.time() if issued_at is None else issued_at
     return Session(
-        profile.gateway, profile.team_id, user_id, client_id, access_token, refresh_token,
+        profile.gateway, profile.auth["team_id"], user_id, client_id, access_token, refresh_token,
         issued_at, issued_at + lifetime,
         profile.gateway + "/token", profile.gateway + "/revoke", profile.gateway,
     )
@@ -57,23 +57,24 @@ class SessionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.profiles = ProfileStore(Path(self.temp.name))
-        self.profile = Profile("a", "https://example.com", "team-a")
+        self.profile = Profile("a", "https://example.com", {"team_id": "team-a"})
         self.secrets = MemoryStore()
         self.client = Mock()
         self.notify = Mock()
         self.clock = Clock()
         self.manager = SessionManager(self.profiles, self.secrets, lambda profile: self.client, self.clock)
+        self.account = self.manager.account(self.profile)
         self.session = make_session(self.profile, issued_at=self.clock.now)
         self.client.login.return_value = self.session
 
     def store(self, session):
-        self.secrets.put(self.profile.account, session.to_dict())
+        self.secrets.put(self.account, session.to_dict())
 
     def expired(self):
         return replace(self.session, issued_at=self.clock.now - 3601, expires_at=self.clock.now - 1)
 
     def stored(self):
-        return Session.from_dict(self.secrets.get(self.profile.account))
+        return Session.from_dict(self.secrets.get(self.account))
 
     def renewal(self, **changes):
         renewed = replace(
@@ -92,14 +93,14 @@ class SessionTests(unittest.TestCase):
         self.client.login.return_value = replace(self.session, team_id="wrong")
         with self.assertRaises(CredentialError):
             self.manager.login(self.profile, self.notify)
-        self.assertIsNone(self.secrets.get(self.profile.account))
+        self.assertIsNone(self.secrets.get(self.account))
         self.client.revoke.assert_called_once()
 
     def test_foreign_renewal_endpoint_is_rejected_at_login(self):
         self.client.login.return_value = replace(self.session, token_endpoint="https://attacker.example/token")
         with self.assertRaises(CredentialError):
             self.manager.login(self.profile, self.notify)
-        self.assertIsNone(self.secrets.get(self.profile.account))
+        self.assertIsNone(self.secrets.get(self.account))
 
     def test_wrong_team_preserves_previous_login(self):
         self.store(self.session)
@@ -126,7 +127,7 @@ class SessionTests(unittest.TestCase):
         return [call.args[0] for call in self.notify.call_args_list if call.args[0].startswith("Warning")]
 
     def test_relogin_replaces_an_unreadable_previous_session(self):
-        self.secrets.put(self.profile.account, {"version": 1})
+        self.secrets.put(self.account, {"version": 1})
         self.manager.login(self.profile, self.notify)
         self.assertEqual(self.manager.token(self.profile), "access-secret")
         self.client.revoke.assert_not_called()
@@ -454,11 +455,22 @@ class SessionTests(unittest.TestCase):
 
     def test_sessions_are_isolated_between_profiles(self):
         self.manager.login(self.profile, self.notify)
-        b = Profile("b", "https://example.com", "team-b")
+        b = Profile("b", "https://example.com", {"team_id": "team-b"})
         self.client.login.return_value = replace(self.session, team_id="team-b", access_token="b")
         self.manager.login(b, self.notify)
         self.assertEqual(self.manager.token(self.profile), "access-secret")
         self.assertEqual(self.manager.token(b), "b")
+
+    def test_configuration_folders_never_share_a_grant(self):
+        other_home = tempfile.TemporaryDirectory()
+        self.addCleanup(other_home.cleanup)
+        other = SessionManager(ProfileStore(Path(other_home.name)), self.secrets, lambda profile: self.client, self.clock)
+        self.manager.login(self.profile, self.notify)
+        self.assertNotEqual(other.account(self.profile), self.account)
+        with self.assertRaises(CredentialError) as result:
+            other.token(self.profile)
+        self.assertIn("No login", str(result.exception))
+        self.assertEqual(self.manager.token(self.profile), "access-secret")
 
     def test_status_does_not_expose_secrets_or_refresh(self):
         self.manager.login(self.profile, self.notify)
@@ -472,14 +484,14 @@ class SessionTests(unittest.TestCase):
         self.manager.login(self.profile, self.notify)
         self.manager.logout(self.profile)
         self.client.revoke.assert_called_once_with(self.session)
-        self.assertIsNone(self.secrets.get(self.profile.account))
+        self.assertIsNone(self.secrets.get(self.account))
 
     def test_failed_logout_keeps_grant_for_retry(self):
         self.manager.login(self.profile, self.notify)
         self.client.revoke.side_effect = CredentialError("offline")
         with self.assertRaises(CredentialError):
             self.manager.logout(self.profile)
-        self.assertIsNotNone(self.secrets.get(self.profile.account))
+        self.assertIsNotNone(self.secrets.get(self.account))
 
     def test_invalid_or_unsupported_stored_grant_is_an_error(self):
         for value in (
@@ -494,7 +506,7 @@ class SessionTests(unittest.TestCase):
             {**self.session.to_dict(), "issued_at": self.session.expires_at + 1},
             {**self.session.to_dict(), "expires_at": float("nan")},
         ):
-            self.secrets.put(self.profile.account, value)
+            self.secrets.put(self.account, value)
             with self.subTest(value=value), self.assertRaises(CredentialError):
                 self.manager.token(self.profile)
 

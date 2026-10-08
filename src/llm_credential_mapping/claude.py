@@ -7,15 +7,19 @@ import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agents import CUSTOMER_VARIABLE, TOKEN_VARIABLE, claude_environment
+# Legacy VS Code wrapper, deleted in plan step 4; it may use the LiteLLM modules directly.
+from .adapters import Api
+from .auth.litellm_oauth import required_text, team_id
+from .auth.litellm_sso import SessionManager
+from .customers import Attribution, validate_customer
 from .errors import CredentialError
-from .litellm import required_text
-from .profiles import Profile, ProfileStore, atomic_write_json, default_home
+from .integrations.claude import claude_environment
+from .integrations.common import CUSTOMER_VARIABLE, TOKEN_VARIABLE
+from .profiles import Profile, ProfileStore, atomic_write_json, default_home, validate_profile_name
+from .registry import gateway_for
 from .request_context import resolve_identity, validate_model
 from .repositories import current_repository
-from .sessions import SessionManager
 from .storage import NativeKeyring
-from .tags import validate_tag
 from .workspaces import WorkspaceStore
 
 CONTEXT_VARIABLE = "LLM_CREDENTIAL_MAPPING_CLAUDE_CONTEXT"
@@ -38,9 +42,7 @@ class ClaudeConfiguration:
     model: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.profile, str):
-            raise CredentialError("Claude's authentication profile name must be a string.")
-        Profile(self.profile, "https://validation.example", "validation")
+        validate_profile_name(self.profile)
         validate_model(self.model)
 
 
@@ -75,7 +77,7 @@ class ClaudeContext:
         if not Path(data["home"]).is_absolute():
             raise CredentialError("Pinned Claude configuration home must be absolute.")
         ClaudeConfiguration(data["profile"], data["model"])
-        validate_tag(data["customer"])
+        validate_customer(data["customer"])
         return cls(**{key: value for key, value in data.items() if key != "version"})
 
 
@@ -181,7 +183,7 @@ def check(store: ProfileStore, directory: Path | None = None) -> dict:
         store, load_configuration(store), directory, binding.repository if binding else None,
     )
     return {
-        "profile": context.profile, "gateway": profile.gateway, "team_id": profile.team_id,
+        "profile": context.profile, "gateway": profile.gateway, "team_id": team_id(profile),
         "user_id": context.user_id, "repository": context.repository, "customer": context.customer,
         "model": context.model, "wrapper": str(executable), "workspace_directory": str(workspace),
         "lookup_directory": str(directory), "primary_repository_mapped": binding is not None, "state": "ready",
@@ -262,9 +264,12 @@ def wrapped_command(
             forwarded.append(argument)
         index += 1
     inherited = {**os.environ, **settings.get("env", {})}
-    env = claude_environment(profile, context.model, context.customer, inherited)
+    gateway = gateway_for(profile)
+    base_url = gateway.endpoint(Api.ANTHROPIC_MESSAGES)
+    headers = gateway.attribution_headers(Attribution(context.customer, "local", "repo bind", context.repository))
+    env = claude_environment(base_url, headers, context.model, context.customer, inherited)
     overrides = {
-        "ANTHROPIC_BASE_URL": profile.gateway,
+        "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": env["ANTHROPIC_CUSTOM_HEADERS"],
         CONTEXT_VARIABLE: context.encode(),
         CUSTOMER_VARIABLE: context.customer,

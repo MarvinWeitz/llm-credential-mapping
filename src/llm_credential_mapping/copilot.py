@@ -5,14 +5,15 @@ import secrets
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+# Legacy Copilot bridge, deleted in plan step 7; it may use the LiteLLM modules directly.
+from .auth.litellm_oauth import required_text
+from .auth.litellm_sso import SessionManager
+from .customers import validate_customer
 from .errors import CredentialError
-from .litellm import required_text
-from .profiles import Profile, ProfileStore, atomic_write_json
+from .profiles import Profile, ProfileStore, atomic_write_json, validate_profile_name
 from .repositories import current_repository, repository_identity
 from .request_context import resolve_identity, validate_model
-from .sessions import SessionManager
 from .storage import NativeKeyring, SecretStore
-from .tags import validate_tag
 
 
 def _validate_capabilities(port: int, max_input_tokens: int, max_output_tokens: int, vision: bool) -> None:
@@ -50,9 +51,9 @@ class CopilotConnection:
     def __post_init__(self) -> None:
         for name in ("profile", "account", "user_id", "repository", "customer", "model", "directory"):
             required_text(asdict(self), name)
-        Profile(self.profile, "https://validation.example", "validation")
+        validate_profile_name(self.profile)
         validate_model(self.model)
-        validate_tag(self.customer)
+        validate_customer(self.customer)
         if not re.fullmatch(r"[0-9a-f]{64}", self.account):
             raise CredentialError("Invalid Copilot profile account identity.")
         if not Path(self.directory).is_absolute():

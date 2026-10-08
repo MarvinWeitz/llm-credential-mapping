@@ -1,12 +1,16 @@
+import hashlib
+import json
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Callable
 
-from .errors import CredentialError
-from .litellm import IdentityChanged, LiteLLMClient, Session
-from .profiles import Profile, ProfileStore
-from .storage import SecretStore
-from .transport import REQUEST_TIMEOUT_SECONDS, GatewayError
+from ..adapters import Credential
+from ..errors import CredentialError
+from ..profiles import Profile, ProfileStore
+from ..storage import SecretStore
+from ..transport import REQUEST_TIMEOUT_SECONDS, GatewayError
+from .litellm_oauth import IdentityChanged, LiteLLMClient, Session, team_id
 
 # Two gateway round trips (refresh plus a possible revoke) at the transport timeout, plus vault I/O.
 LOCK_WAIT_SECONDS = 60
@@ -15,6 +19,26 @@ MINIMUM_VALIDITY_SECONDS = 60
 # Waits after consecutive temporary renewal failures: 30 s, doubling up to 15 min.
 FIRST_RETRY_DELAY_SECONDS = 30
 MAXIMUM_RETRY_DELAY_SECONDS = 900
+
+
+def settings(values: dict) -> dict:
+    """Validate litellm-sso profile settings: exactly the business-unit team ID chosen at browser consent."""
+    value = values.get("team_id")
+    if set(values) != {"team_id"} or (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or len(value) > 256
+        or any(ord(char) < 32 for char in value)
+    ):
+        raise CredentialError("LiteLLM SSO needs the exact, nonempty LiteLLM team ID (--team-id) and nothing else.")
+    return {"team_id": value}
+
+
+def vault_account(home: Path, profile: Profile) -> str:
+    """The vault entry for a profile in one configuration folder; separate folders never share a grant or its lock."""
+    value = json.dumps([str(home.resolve()), profile.account])
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def refresh_margin(session: Session) -> float:
@@ -48,11 +72,14 @@ class SessionManager:
         self.client_factory = client_factory
         self.clock = clock
 
+    def account(self, profile: Profile) -> str:
+        return vault_account(self.profiles.home, profile)
+
     def _locked(self, profile: Profile):
-        return self.profiles.locked(profile.account, timeout=LOCK_WAIT_SECONDS)
+        return self.profiles.locked(self.account(profile), timeout=LOCK_WAIT_SECONDS)
 
     def _load(self, profile: Profile) -> Session | None:
-        value = self.secrets.get(profile.account)
+        value = self.secrets.get(self.account(profile))
         if value is None:
             return None
         session = Session.from_dict(value)
@@ -73,7 +100,7 @@ class SessionManager:
                     previous = self._load(profile)
                 except CredentialError as error:
                     previous, unreadable = None, error
-                self.secrets.put(profile.account, session.to_dict())
+                self.secrets.put(self.account(profile), session.to_dict())
                 saved = True
         except BaseException:
             # Includes Ctrl+C while waiting for the lock: keep no unsaved grant alive.
@@ -145,7 +172,7 @@ class SessionManager:
                 # An unusable response, e.g. from an intermediary; the refresh token may still be valid.
                 return self._retry_later(profile, session, f"{error} Renewal will be retried; the stored sign-in was kept.")
             try:
-                self.secrets.put(profile.account, renewed.to_dict())
+                self.secrets.put(self.account(profile), renewed.to_dict())
             except CredentialError as error:
                 # The previous refresh token is spent; keep no unsaved grant alive.
                 try:
@@ -176,7 +203,7 @@ class SessionManager:
 
     def _save_state(self, profile: Profile, session: Session) -> Session:
         try:
-            self.secrets.put(profile.account, session.to_dict())
+            self.secrets.put(self.account(profile), session.to_dict())
         except CredentialError:
             pass  # The next call repeats the attempt and reaches the same state.
         return session
@@ -185,7 +212,7 @@ class SessionManager:
         with self._locked(profile):
             session = self._load(profile)
             if session is None:
-                return {"profile": profile.name, "gateway": profile.gateway, "team_id": profile.team_id, "state": "logged-out"}
+                return {"profile": profile.name, "gateway": profile.gateway, "team_id": team_id(profile), "state": "logged-out"}
             state = "re-login-required" if session.needs_login or session.blocked else (
                 "expired" if session.expires_at <= self.clock() else "ready"
             )
@@ -204,4 +231,33 @@ class SessionManager:
             if session is None:
                 raise CredentialError("This profile is already logged out.")
             self.client_factory(profile).revoke(session)
-            self.secrets.delete(profile.account)
+            self.secrets.delete(self.account(profile))
+
+
+class LiteLLMSSO:
+    """The litellm-sso auth kind: LiteLLM's native CLI sign-in with rotating refresh grants."""
+
+    def __init__(self, profile: Profile, store: ProfileStore, secrets: SecretStore, manager: SessionManager | None = None) -> None:
+        self.profile = profile
+        self.manager = manager or SessionManager(store, secrets)
+
+    def login(self, notify: Callable[[str], None], **options) -> Credential:
+        return self._credential(self.manager.login(self.profile, notify, **options))
+
+    def logout(self) -> None:
+        self.manager.logout(self.profile)
+
+    def status(self) -> dict:
+        return self.manager.status(self.profile)
+
+    def credential(self) -> Credential:
+        return self._credential(self.manager.session(self.profile))
+
+    def _credential(self, session: Session) -> Credential:
+        notice = None
+        if session.needs_login:
+            notice = (
+                f"Warning: the sign-in for '{self.profile.name}' can no longer be renewed; this token works until it "
+                f"expires. Run 'llm-credentials login --profile {self.profile.name}'."
+            )
+        return Credential(session.access_token, session.expires_at, session.user_id, notice)

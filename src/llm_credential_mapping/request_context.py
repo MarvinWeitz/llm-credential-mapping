@@ -4,7 +4,7 @@ from typing import Callable
 from .errors import CredentialError
 from .profiles import Profile, ProfileStore
 from .repositories import RepositoryStore
-from .sessions import SessionManager
+from .auth.litellm_sso import SessionManager  # Legacy, deleted with the Claude wrapper in plan step 4.
 from .storage import SecretStore
 
 

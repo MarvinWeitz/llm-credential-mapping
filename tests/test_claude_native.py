@@ -10,8 +10,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
 
+from llm_credential_mapping.auth.litellm_sso import vault_account
 from llm_credential_mapping.claude import ClaudeContext, wrapped_command
-from llm_credential_mapping.litellm import Session
+from llm_credential_mapping.auth.litellm_oauth import Session
 from test_sessions import make_session
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.storage import NativeKeyring
@@ -60,7 +61,7 @@ class NativeClaudeTests(unittest.TestCase):
                 calls.append((self.path, dict(self.headers), body))
                 if self.path.startswith("/v1/messages") and not rejected_first.is_set():
                     rejected_first.set()
-                    secrets.put(profile.account, replace(session, expires_at=0).to_dict())
+                    secrets.put(vault_account(home, profile), replace(session, expires_at=0).to_dict())
                     self.respond({"type": "error", "error": {"type": "authentication_error", "message": "fixture expiry"}}, 401)
                     return
                 message = {
@@ -100,14 +101,14 @@ class NativeClaudeTests(unittest.TestCase):
                 primary.mkdir(parents=True)
                 home = root / "credentials"
                 store = ProfileStore(home)
-                profile = Profile("native-fixture", f"http://127.0.0.1:{server.server_port}", "fixture-unit", True)
+                profile = Profile("native-fixture", f"http://127.0.0.1:{server.server_port}", {"team_id": "fixture-unit"}, allow_http=True)
                 store.add(profile)
                 secrets = NativeKeyring()
                 session = make_session(
                     profile, user_id="fixture-employee", client_id="fixture-client",
                     access_token="fixture-access", refresh_token="fixture-refresh",
                 )
-                secrets.put(profile.account, session.to_dict())
+                secrets.put(vault_account(home, profile), session.to_dict())
                 try:
                     context = ClaudeContext(
                         str(home), profile.name, profile.account, session.user_id,
@@ -171,11 +172,11 @@ class NativeClaudeTests(unittest.TestCase):
                     self.assertEqual(len(refreshes), 1)
                     self.assertEqual(refreshes[0]["grant_type"], "refresh_token")
                     self.assertEqual(refreshes[0]["refresh_token"], "fixture-refresh")
-                    self.assertEqual(secrets.get(profile.account)["refresh_token"], "fixture-rotated")
+                    self.assertEqual(secrets.get(vault_account(home, profile))["refresh_token"], "fixture-rotated")
                     self.assertNotIn("fixture-access", " ".join(command))
                     self.assertNotIn("fixture-renewed", " ".join(command))
                 finally:
-                    secrets.delete(profile.account)
+                    secrets.delete(vault_account(home, profile))
         finally:
             server.shutdown()
             server.server_close()

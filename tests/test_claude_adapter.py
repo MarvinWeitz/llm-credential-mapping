@@ -11,13 +11,14 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from llm_credential_mapping.auth.litellm_sso import vault_account
 from llm_credential_mapping.claude import (
     CONTEXT_VARIABLE, ClaudeConfiguration, ClaudeContext, check, helper_command, helper_token,
     load_configuration, project_directory, setup, verify_wrapper, wrapped_command, wrapper_main,
 )
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.litellm import Session
+from llm_credential_mapping.auth.litellm_oauth import Session
 from llm_credential_mapping.profiles import Profile, ProfileStore, atomic_write_json
 from llm_credential_mapping.repositories import RepositoryStore
 from llm_credential_mapping.workspaces import WorkspaceStore
@@ -30,14 +31,14 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         self.store = ProfileStore(self.home)
-        self.profile = Profile("unit", "https://gateway.example", "team-a")
+        self.profile = Profile("unit", "https://gateway.example", {"team_id": "team-a"})
         self.store.add(self.profile)
         self.repository = "github.com/company/repo"
         self.repositories = RepositoryStore(self.store)
         self.repositories.bind(self.profile.gateway, self.repository, "customer:A")
         self.secrets = MemoryStore()
         self.session = make_session(self.profile)
-        self.secrets.put(self.profile.account, self.session.to_dict())
+        self.secrets.put(vault_account(self.home, self.profile), self.session.to_dict())
         self.configuration = ClaudeConfiguration("unit", "model-alias")
         self.context = ClaudeContext(
             str(self.home), self.profile.name, self.profile.account, "employee",
@@ -191,13 +192,13 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def test_check_is_nonsecret_and_renews_an_expiring_login(self):
         self.save_configuration()
-        self.secrets.put(self.profile.account, replace(self.session, issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
+        self.secrets.put(vault_account(self.home, self.profile), replace(self.session, issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
         client = Mock()
         client.refresh.return_value = replace(self.session, access_token="renewed-secret", refresh_token="rotated-secret")
         with patch("llm_credential_mapping.claude.current_repository", return_value=self.repository), \
                 patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
                 patch("llm_credential_mapping.claude.verify_wrapper", return_value=Path(sys.executable)):
-            from llm_credential_mapping.sessions import SessionManager
+            from llm_credential_mapping.auth.litellm_sso import SessionManager
             manager = SessionManager(self.store, self.secrets, lambda profile: client)
             with patch("llm_credential_mapping.claude.SessionManager", return_value=manager):
                 result = check(self.store)
@@ -207,7 +208,7 @@ class ClaudeAdapterTests(unittest.TestCase):
         client.refresh.assert_called_once()
 
     def test_helper_does_not_reread_global_profile_model_or_repository_mapping(self):
-        b = Profile("another-unit", self.profile.gateway, "team-b")
+        b = Profile("another-unit", self.profile.gateway, {"team_id": "team-b"})
         self.store.add(b)
         self.store.select(b.name)
         self.repositories.bind(self.profile.gateway, self.repository, "customer:B", replace=True)
@@ -220,10 +221,10 @@ class ClaudeAdapterTests(unittest.TestCase):
         with patch.dict(os.environ, {CONTEXT_VARIABLE: self.context.encode()}), \
                 patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets):
             for change in ({"user_id": "other-employee"}, {"blocked": True}):
-                self.secrets.put(self.profile.account, replace(self.session, **change).to_dict())
+                self.secrets.put(vault_account(self.home, self.profile), replace(self.session, **change).to_dict())
                 with self.subTest(change=change), self.assertRaises(CredentialError):
                     helper_token()
-            self.secrets.put(self.profile.account, self.session.to_dict())
+            self.secrets.put(vault_account(self.home, self.profile), self.session.to_dict())
             foreign = replace(self.context, account="changed-account")
             with patch.dict(os.environ, {CONTEXT_VARIABLE: foreign.encode()}), self.assertRaises(CredentialError):
                 helper_token()
@@ -557,7 +558,7 @@ class ClaudeAdapterTests(unittest.TestCase):
                     patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets), \
                     contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 if exception:
-                    self.secrets.put(self.profile.account, replace(self.session, user_id="other-user").to_dict())
+                    self.secrets.put(vault_account(self.home, self.profile), replace(self.session, user_id="other-user").to_dict())
                 self.assertEqual(main(["claude", "token"]), 1 if exception else 0)
             self.assertEqual(stdout.getvalue(), "" if exception else "access-secret\n")
             self.assertNotIn("access-secret", stderr.getvalue())

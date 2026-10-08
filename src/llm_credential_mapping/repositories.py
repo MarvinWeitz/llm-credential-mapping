@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlsplit
 
 from .errors import CredentialError
 from .profiles import ProfileStore, atomic_write_json, gateway_origin
-from .tags import validate_tag
+from .customers import validate_customer
 
 
 def repository_identity(remote: str) -> str:
@@ -122,7 +122,7 @@ class RepositoryStore:
             self._validate_identity(gateway, repository)
             if key != self._key(gateway, repository):
                 raise CredentialError("Invalid repository binding identity.")
-            validate_tag(entry["customer"])
+            validate_customer(entry["customer"])
         return data
 
     def get(self, gateway: str, repository: str) -> str | None:
@@ -132,7 +132,7 @@ class RepositoryStore:
 
     def bind(self, gateway: str, repository: str, customer: str, *, replace: bool = False) -> None:
         self._validate_identity(gateway, repository)
-        validate_tag(customer)
+        validate_customer(customer)
         with self.profiles.locked("repositories"):
             data = self._read()
             key = self._key(gateway, repository)

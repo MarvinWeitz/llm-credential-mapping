@@ -3,21 +3,19 @@ import json
 import sys
 from functools import cached_property
 from pathlib import Path
-from typing import Callable
 
 from . import __version__
-from .agents import launch
+from .adapters import Api, Auth, Credential, Gateway, IntegrationContext
 from .claude import check as claude_check, helper_token, setup as claude_setup
+from .customers import Attribution, Tag, validate_customer
 from .errors import CredentialError
 from .copilot import CopilotStore, connection_key, setup as copilot_setup, validate_connection
 from .copilot_bridge import check as copilot_check, serve as copilot_serve
 from .editor_settings import editing, settings_file
-from .litellm import Session
 from .profiles import Profile, ProfileStore, default_home
+from .registry import AUTH, GATEWAYS, INTEGRATIONS, auth_for, gateway_for
 from .repositories import RepositoryStore, current_repository
-from .sessions import SessionManager
 from .storage import NativeKeyring
-from .tags import list_tags, validate_tag
 from .workspaces import WorkspaceStore
 
 
@@ -26,7 +24,7 @@ def notify(message: str) -> None:
 
 
 class Context:
-    """Per-invocation state: the configuration store and, lazily, the selected profile and its vault session."""
+    """Per-invocation state: the configuration store and, lazily, the selected profile and its adapters."""
 
     def __init__(self, store: ProfileStore, args: argparse.Namespace) -> None:
         self.store = store
@@ -37,44 +35,58 @@ class Context:
         return self.store.get(getattr(self.args, "profile", None))
 
     @cached_property
-    def sessions(self) -> SessionManager:
-        return SessionManager(self.store, NativeKeyring())
+    def auth(self) -> Auth:
+        return auth_for(self.profile, self.store, NativeKeyring())
 
-    def session(self) -> Session:
-        session = self.sessions.session(self.profile)
-        if session.needs_login:
-            notify(
-                f"Warning: the sign-in for '{self.profile.name}' can no longer be renewed; this token works until it "
-                f"expires. Run 'llm-credentials login --profile {self.profile.name}'."
-            )
-        return session
+    @cached_property
+    def gateway(self) -> Gateway:
+        return gateway_for(self.profile)
+
+    def credential(self) -> Credential:
+        credential = self.auth.credential()
+        if credential.notice:
+            notify(credential.notice)
+        return credential
 
     def token(self) -> str:
-        return self.session().access_token
+        return self.credential().secret
 
 
-def _pick_customer(profile: Profile, token: Callable[[], str], prefix: str | None) -> str:
+def launch(agent: str, context: IntegrationContext, attribution: Attribution, arguments: list[str], model: str | None) -> int:
+    return INTEGRATIONS[agent].launch(context, attribution, arguments, model)
+
+
+def _visible_customers(context: Context, prefix: str | None) -> list[Tag]:
+    if prefix is not None:
+        validate_customer(prefix)
+    customers = context.gateway.visible_customers(context.credential())
+    if customers is None:
+        raise CredentialError("This gateway offers no customer catalogue; pass --customer with an approved customer.")
+    return [customer for customer in customers if prefix is None or customer.name.startswith(prefix)]
+
+
+def _pick_customer(context: Context, prefix: str | None) -> str:
     if not sys.stdin.isatty():
         raise CredentialError("No customer selected. Use --customer TAG or bind this repository with 'repo bind'.")
-    tags = list_tags(profile, token(), prefix)
+    tags = _visible_customers(context, prefix)
     if not tags:
         raise CredentialError(
-            "No visible tags matched. /tag/list may contain only previously used tags. "
-            "Ask an administrator for an approved customer tag and pass --customer."
+            "No visible customers matched. The gateway may list only customers you used before. "
+            "Ask an administrator for an approved customer and pass --customer."
         )
-    print("Visible tags are not an authorization list. Choose the approved customer for this session:", file=sys.stderr)
+    print("Visible customers are not an authorization list. Choose the approved customer for this session:", file=sys.stderr)
     for index, tag in enumerate(tags, 1):
         description = f" - {json.dumps(tag.description)}" if tag.description else ""
         print(f"{index}. {json.dumps(tag.name)}{description}", file=sys.stderr)
-    print("Customer tag (number or exact name): ", end="", file=sys.stderr, flush=True)
+    print("Customer (number or exact name): ", end="", file=sys.stderr, flush=True)
     answer = sys.stdin.readline().strip()
     if len(answer) > 256:
-        raise CredentialError("Invalid customer selection; use a displayed tag name or number.")
+        raise CredentialError("Invalid customer selection; use a displayed name or number.")
     if answer.isascii() and answer.isdecimal() and 1 <= int(answer) <= len(tags):
-        return validate_tag(tags[int(answer) - 1].name)
+        return validate_customer(tags[int(answer) - 1].name)
     if any(tag.name == answer for tag in tags):
-        return validate_tag(answer)
-    raise CredentialError("Invalid customer selection; choose a displayed tag or pass --customer explicitly.")
+        return validate_customer(answer)
+    raise CredentialError("Invalid customer selection; choose a displayed customer or pass --customer explicitly.")
 
 
 # Profiles and sessions
@@ -82,16 +94,40 @@ def _pick_customer(profile: Profile, token: Callable[[], str], prefix: str | Non
 
 def profile_add(context: Context) -> None:
     args = context.args
-    profile = Profile(args.name, args.gateway, args.team_id, args.allow_insecure_localhost)
+    settings = {"team_id": args.team_id} if args.team_id is not None else {}
+    profile = Profile(
+        args.name, args.gateway, settings, args.gateway_type, args.auth, args.allow_insecure_localhost,
+    )
     context.store.add(profile)
-    print(f"Added profile '{profile.name}' (business-unit team {profile.team_id}).")
+    print(f"Added profile '{profile.name}' ({profile.gateway_type} gateway, {profile.auth_type} sign-in).")
 
 
 def profile_list(context: Context) -> None:
     active, profiles = context.store.list()
     for profile in profiles:
         marker = "*" if profile.name == active else " "
-        print(f"{marker} {profile.name}\t{profile.gateway}\t{profile.team_id}")
+        print(f"{marker} {profile.name}\t{profile.gateway}\t{profile.auth_type} {json.dumps(profile.auth, sort_keys=True)}")
+
+
+def profile_show(context: Context) -> None:
+    profile = context.store.get(context.args.name)
+    gateway = gateway_for(profile)
+    endpoints = {}
+    for api in Api:
+        try:
+            endpoints[api.value] = gateway.endpoint(api)
+        except CredentialError:
+            pass
+    value = {
+        "name": profile.name,
+        "gateway": {"type": profile.gateway_type, "url": profile.gateway},
+        "auth": {"type": profile.auth_type, **profile.auth},
+        "endpoints": endpoints,
+    }
+    if context.args.json:
+        print(json.dumps(value))
+        return
+    print(json.dumps(value, indent=2))
 
 
 def profile_use(context: Context) -> None:
@@ -103,47 +139,43 @@ def login(context: Context) -> None:
     timeout = context.args.timeout
     if not 1 <= timeout <= 900:
         raise CredentialError("--timeout must be between 1 and 900 seconds.")
-    profile = context.profile
-    session = context.sessions.login(profile, notify, no_browser=context.args.no_browser, timeout=timeout)
-    print(f"Signed in as {session.user_id} for '{profile.name}' (team {session.team_id}).")
+    credential = context.auth.login(notify, no_browser=context.args.no_browser, timeout=timeout)
+    print(f"Signed in as {credential.user} for '{context.profile.name}'.")
 
 
 def token(context: Context) -> None:
+    credential = context.credential()
     if not context.args.json:
-        print(context.token())
+        print(credential.secret)
         return
-    profile = context.profile
-    session = context.session()
     print(json.dumps({
-        "access_token": session.access_token,
-        "expires_at": session.expires_at,
-        "profile": profile.name,
-        "gateway": profile.gateway,
-        "team_id": session.team_id,
-        "user_id": session.user_id,
+        "access_token": credential.secret,
+        "expires_at": credential.expires_at,
+        "profile": context.profile.name,
+        "user": credential.user,
     }))
 
 
 def status(context: Context) -> None:
-    print(json.dumps(context.sessions.status(context.profile), indent=2))
+    print(json.dumps(context.auth.status(), indent=2))
 
 
 def logout(context: Context) -> None:
-    context.sessions.logout(context.profile)
+    context.auth.logout()
     print(f"Logged out of '{context.profile.name}'. Previously issued access tokens expire naturally.")
 
 
-# Tags, repositories and agents
+# Customers, repositories and agents
 
 
 def tags_list(context: Context) -> None:
-    tags = list_tags(context.profile, context.token(), context.args.prefix)
+    tags = _visible_customers(context, context.args.prefix)
     if context.args.json:
         print(json.dumps([{"name": tag.name, "description": tag.description} for tag in tags], indent=2))
         return
     for tag in tags:
         print(f"{json.dumps(tag.name)}\t{json.dumps(tag.description)}")
-    notify(f"{len(tags)} visible tag(s). Visibility is not customer authorization.")
+    notify(f"{len(tags)} visible customer(s). Visibility is not customer authorization.")
 
 
 def repo_list(context: Context) -> None:
@@ -154,8 +186,8 @@ def repo_bind(context: Context) -> None:
     args = context.args
     profile = context.profile
     repository = current_repository(args.directory.expanduser().resolve() if args.directory else None)
-    customer = validate_tag(args.customer) if args.customer is not None else _pick_customer(
-        profile, context.token, args.tag_prefix,
+    customer = validate_customer(args.customer) if args.customer is not None else _pick_customer(
+        context, args.tag_prefix,
     )
     RepositoryStore(context.store).bind(profile.gateway, repository, customer, replace=True)
     print(f"Bound {json.dumps(repository)} to {json.dumps(customer)}. Running agents are unchanged.")
@@ -172,20 +204,22 @@ def run(context: Context) -> int:
     args = context.args
     profile = context.profile
     if args.customer is not None:
-        customer = validate_tag(args.customer)
+        attribution = Attribution(validate_customer(args.customer), "explicit", "--customer")
     else:
         repository = current_repository()
         repositories = RepositoryStore(context.store)
         customer = repositories.get(profile.gateway, repository)
         if customer is None:
-            customer = _pick_customer(profile, context.token, args.tag_prefix)
+            customer = _pick_customer(context, args.tag_prefix)
             repositories.bind(profile.gateway, repository, customer)
             notify("Saved this repository's customer default.")
+        attribution = Attribution(customer, "local", f"repo bind for {repository}", repository)
     arguments = args.agent_args
     if arguments and arguments[0] == "--":
         arguments = arguments[1:]
-    notify(f"Customer {json.dumps(customer)} is pinned for this process (business unit {profile.team_id}).")
-    return launch(args.agent, profile, context.token(), arguments, args.model, customer)
+    notify(f"Customer {json.dumps(attribution.customer)} is pinned for this process (profile {profile.name}).")
+    integration = IntegrationContext(profile, context.gateway, context.token())
+    return launch(args.agent, integration, attribution, arguments, args.model)
 
 
 # Official Claude Code VS Code extension
@@ -328,26 +362,32 @@ def _profile_option(command: argparse.ArgumentParser) -> None:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="llm-credentials",
-        description="Sign in to a LiteLLM business unit and launch agents with session-local customer tags.",
+        description="Sign in to an LLM gateway and launch agents with session-local customer attribution.",
     )
     root.add_argument("--version", action="version", version=__version__)
     root.add_argument("--home", type=Path, help="Nonsecret configuration directory.")
     commands = root.add_subparsers(dest="command", required=True)
 
-    profile = commands.add_parser("profile", help="Manage gateway/business-unit profiles.")
+    profile = commands.add_parser("profile", help="Manage gateway and sign-in profiles.")
     profile_actions = profile.add_subparsers(dest="action", required=True)
     add = profile_actions.add_parser("add")
     add.add_argument("name")
-    add.add_argument("--gateway", required=True, help="Trusted LiteLLM public origin, not /v1.")
-    add.add_argument("--team-id", required=True, help="Exact LiteLLM team ID, not its display name.")
+    add.add_argument("--gateway", required=True, help="Trusted gateway public root URL, without an API path.")
+    add.add_argument("--gateway-type", choices=sorted(GATEWAYS), default="litellm", help="Gateway kind (default: litellm).")
+    add.add_argument("--auth", choices=sorted(AUTH), default="litellm-sso", help="Sign-in kind (default: litellm-sso).")
+    add.add_argument("--team-id", help="litellm-sso: exact LiteLLM team ID chosen at browser consent, not its display name.")
     add.add_argument("--allow-insecure-localhost", action="store_true", help="Development only.")
     add.set_defaults(handler=profile_add)
     profile_actions.add_parser("list").set_defaults(handler=profile_list)
+    show = profile_actions.add_parser("show", help="Show a profile and its gateway endpoints per API, without credentials.")
+    show.add_argument("name", nargs="?", help="Profile name; otherwise the selected default.")
+    show.add_argument("--json", action="store_true", help="Print one line of JSON for other tools.")
+    show.set_defaults(handler=profile_show)
     use = profile_actions.add_parser("use")
     use.add_argument("name")
     use.set_defaults(handler=profile_use)
 
-    command = commands.add_parser("login", help="Sign in through the gateway's SSO in a browser.")
+    command = commands.add_parser("login", help="Sign in with the profile's sign-in kind, e.g. SSO in a browser.")
     _profile_option(command)
     command.add_argument("--no-browser", action="store_true", help="Print the sign-in URL instead of opening it.")
     command.add_argument("--timeout", type=int, default=180, help="Browser callback wait in seconds.")
@@ -358,16 +398,16 @@ def parser() -> argparse.ArgumentParser:
     command.set_defaults(handler=token)
     for name, handler, text in (
         ("status", status, "Show the sign-in state without printing credentials."),
-        ("logout", logout, "Revoke the refresh grant and delete the local credential."),
+        ("logout", logout, "Revoke the sign-in where possible and delete the local credential."),
     ):
         command = commands.add_parser(name, help=text)
         _profile_option(command)
         command.set_defaults(handler=handler)
 
-    tags = commands.add_parser("tags", help="Discover visible gateway tags; this is not an authorization list.")
+    tags = commands.add_parser("tags", help="Discover customers the gateway lists; this is not an authorization list.")
     tag_list = tags.add_subparsers(dest="action", required=True).add_parser("list")
     _profile_option(tag_list)
-    tag_list.add_argument("--prefix", help="Only display tags starting with this exact prefix.")
+    tag_list.add_argument("--prefix", help="Only display customers starting with this exact prefix.")
     tag_list.add_argument("--json", action="store_true")
     tag_list.set_defaults(handler=tags_list)
 
@@ -379,16 +419,16 @@ def parser() -> argparse.ArgumentParser:
         if action != "list":
             command.add_argument("--directory", type=Path, help="Repository directory; otherwise current directory.")
         if action == "bind":
-            command.add_argument("--customer", help="Exact approved customer tag; otherwise choose from visible tags.")
-            command.add_argument("--tag-prefix", help="Filter the tag picker by this exact prefix.")
+            command.add_argument("--customer", help="Exact approved customer; otherwise choose from visible customers.")
+            command.add_argument("--tag-prefix", help="Filter the customer picker by this exact prefix.")
         command.set_defaults(handler=handler)
 
-    command = commands.add_parser("run", help="Launch an agent with the repository's customer tag.")
+    command = commands.add_parser("run", help="Launch an agent with the repository's customer attribution.")
     _profile_option(command)
-    command.add_argument("--customer", help="Exact customer tag for this process only; does not change the repo default.")
-    command.add_argument("--tag-prefix", help="Filter the tag picker for an unbound repository.")
-    command.add_argument("--model", help="LiteLLM model alias; required for OpenCode.")
-    command.add_argument("agent", choices=("claude", "codex", "opencode"))
+    command.add_argument("--customer", help="Exact customer for this process only; does not change the repo default.")
+    command.add_argument("--tag-prefix", help="Filter the customer picker for an unbound repository.")
+    command.add_argument("--model", help="Gateway model alias; required for OpenCode.")
+    command.add_argument("agent", choices=sorted(INTEGRATIONS))
     command.add_argument("agent_args", nargs=argparse.REMAINDER)
     command.set_defaults(handler=run)
 

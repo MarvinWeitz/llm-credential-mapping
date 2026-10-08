@@ -12,13 +12,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+from llm_credential_mapping.auth.litellm_sso import vault_account
 from llm_credential_mapping.copilot import CopilotConnection, CopilotStore, connection_key
 from llm_credential_mapping.copilot_bridge import CopilotBridge, check, serve
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.litellm import Session
+from llm_credential_mapping.auth.litellm_oauth import Session
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.repositories import RepositoryStore
-from llm_credential_mapping.sessions import SessionManager
+from llm_credential_mapping.auth.litellm_sso import SessionManager
 from test_sessions import MemoryStore, make_session
 
 
@@ -83,13 +84,13 @@ class CopilotBridgeTests(unittest.TestCase):
         self.gateway_thread.start()
         self.addCleanup(self.close_gateway)
         self.profiles = ProfileStore(self.home / "config")
-        self.profile = Profile("unit", f"http://127.0.0.1:{self.gateway.server_port}", "team", True)
+        self.profile = Profile("unit", f"http://127.0.0.1:{self.gateway.server_port}", {"team_id": "team"}, allow_http=True)
         self.profiles.add(self.profile)
         self.repository = "github.com/company/repo"
         RepositoryStore(self.profiles).bind(self.profile.gateway, self.repository, "customer:A")
         self.vault = MemoryStore()
         self.session = make_session(self.profile)
-        self.vault.put(self.profile.account, self.session.to_dict())
+        self.vault.put(vault_account(self.profiles.home, self.profile), self.session.to_dict())
         self.refreshes = []
         fixture = self
 
@@ -187,18 +188,18 @@ class CopilotBridgeTests(unittest.TestCase):
         self.assertIn(b"data: [DONE]", rest)
 
     def test_expired_grant_rotates_once_and_requests_never_receive_refresh_or_local_keys(self):
-        self.vault.put(self.profile.account, replace(self.session, issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
+        self.vault.put(vault_account(self.profiles.home, self.profile), replace(self.session, issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
         for _ in range(2):
             response = self.request()
             self.assertEqual(response.status, 200)
             response.read()
         self.assertEqual(self.refreshes, ["refresh-secret"])
         self.assertEqual([item[1]["authorization"] for item in self.requests], ["Bearer renewed-secret"] * 2)
-        self.assertEqual(self.vault.get(self.profile.account)["refresh_token"], "rotated-secret")
+        self.assertEqual(self.vault.get(vault_account(self.profiles.home, self.profile))["refresh_token"], "rotated-secret")
         self.assertNotIn(self.key, str(self.requests))
 
     def test_changed_employee_is_rejected_before_refresh_or_upstream_access(self):
-        self.vault.put(self.profile.account, replace(self.session, user_id="another", issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
+        self.vault.put(vault_account(self.profiles.home, self.profile), replace(self.session, user_id="another", issued_at=time.time() - 3599, expires_at=time.time() + 1).to_dict())
         response = self.request()
         self.assertEqual(response.status, 503)
         self.assertIn("employee changed", json.loads(response.read())["error"]["message"])
@@ -206,7 +207,7 @@ class CopilotBridgeTests(unittest.TestCase):
         self.assertEqual(self.refreshes, [])
 
     def test_global_profile_and_repository_rebind_do_not_retag_a_running_connection(self):
-        other = Profile("other", self.profile.gateway, "other-team", True)
+        other = Profile("other", self.profile.gateway, {"team_id": "other-team"}, allow_http=True)
         self.profiles.add(other)
         self.profiles.select(other.name)
         RepositoryStore(self.profiles).bind(self.profile.gateway, self.repository, "customer:B", replace=True)
@@ -440,7 +441,7 @@ class CopilotBridgeTests(unittest.TestCase):
         response.read()
         self.profiles.path.write_text(json.dumps({
             "version": 1, "active": "unit", "profiles": {
-                "unit": {"gateway": "https://changed.example", "team_id": "team", "allow_http": False},
+                "unit": {"gateway": {"type": "litellm", "url": "https://changed.example", "allow_http": False}, "auth": {"type": "litellm-sso", "team_id": "team"}},
             },
         }))
         response = self.request(headers_only=True)

@@ -2,26 +2,42 @@ import json
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from llm_credential_mapping.adapters import Api, Credential
+from llm_credential_mapping.customers import Attribution, Tag, validate_customer
 from llm_credential_mapping.errors import CredentialError
+from llm_credential_mapping.gateways.litellm import LiteLLMGateway, list_tags
 from llm_credential_mapping.profiles import Profile
-from llm_credential_mapping.tags import Tag, list_tags, validate_tag
 from llm_credential_mapping.transport import JsonTransport
 
 
 class TagTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile("unit", "https://gateway.example", "business-unit")
+        self.profile = Profile("unit", "https://gateway.example", {"team_id": "business-unit"})
 
     def test_exact_names_are_preserved_and_wire_constraints_are_checked(self):
         for name in ("customer:A", "Customer A", "a" * 256):
-            self.assertEqual(validate_tag(name), name)
+            self.assertEqual(validate_customer(name), name)
         for name in ("", None, [], "a" * 257, " a", "a ", "a,b", "a\nb", "a\tb", "\x00", "\x7f", "\u00e9"):
             with self.subTest(name=name), self.assertRaises(CredentialError):
-                validate_tag(name)
+                validate_customer(name)
 
-    def test_catalogue_uses_bearer_header_and_sorts_and_filters(self):
+    def test_gateway_maps_apis_and_attribution_to_litellm_conventions(self):
+        gateway = LiteLLMGateway(self.profile)
+        self.assertEqual(gateway.endpoint(Api.ANTHROPIC_MESSAGES), "https://gateway.example")
+        self.assertEqual(gateway.endpoint(Api.OPENAI_CHAT), "https://gateway.example/v1")
+        self.assertEqual(gateway.endpoint(Api.OPENAI_RESPONSES), "https://gateway.example/v1")
+        headers = gateway.attribution_headers(Attribution("customer:A", "explicit", "--customer"))
+        self.assertEqual(headers, {"x-litellm-tags": "customer:A"})
+        self.assertEqual(set(headers), set(gateway.attribution_header_names()))
+
+    def test_gateway_catalogue_uses_the_credential(self):
+        with patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A")]) as listed:
+            self.assertEqual(LiteLLMGateway(self.profile).visible_customers(Credential("secret")), [Tag("customer:A")])
+        listed.assert_called_once_with(self.profile, "secret")
+
+    def test_catalogue_uses_bearer_header_and_sorts(self):
         transport = Mock(spec=JsonTransport)
         transport.get_list.return_value = [
             {"name": "customer:B", "description": "B", "models": [], "spend": 12},
@@ -29,8 +45,8 @@ class TagTests(unittest.TestCase):
             {"name": "customer:A"},
         ]
         self.assertEqual(
-            list_tags(self.profile, "credential-secret", "customer:", transport=transport),
-            [Tag("customer:A"), Tag("customer:B", "B")],
+            list_tags(self.profile, "credential-secret", transport=transport),
+            [Tag("customer:A"), Tag("customer:B", "B"), Tag("user-agent")],
         )
         transport.get_list.assert_called_once_with(
             "https://gateway.example/tag/list", headers={"Authorization": "Bearer credential-secret"},
@@ -84,7 +100,7 @@ class TagHttpTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.close)
-        self.profile = Profile("unit", self.origin, "unit", True)
+        self.profile = Profile("unit", self.origin, {"team_id": "unit"}, allow_http=True)
 
     def close(self):
         self.server.shutdown()

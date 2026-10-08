@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.litellm import Discovery, LiteLLMClient, LoopbackCallback, Session
+from llm_credential_mapping.auth.litellm_oauth import Discovery, LiteLLMClient, LoopbackCallback, Session
 from llm_credential_mapping.profiles import Profile
 from llm_credential_mapping.transport import GatewayError, JsonTransport
 
@@ -36,7 +36,7 @@ def discovery(origin):
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile("a", "https://gateway.example", "team-a")
+        self.profile = Profile("a", "https://gateway.example", {"team_id": "team-a"})
         self.data = discovery(self.profile.gateway)
 
     def test_supported_discovery(self):
@@ -53,7 +53,7 @@ class DiscoveryTests(unittest.TestCase):
             self.profile.gateway, "team-a", "u", "c", "a", "r", 0, 1,
             self.profile.gateway + "/token", self.profile.gateway + "/revoke", self.profile.gateway,
         )
-        loopback = Profile("b", "http://127.0.0.1:8080", "team-a", True)
+        loopback = Profile("b", "http://127.0.0.1:8080", {"team_id": "team-a"}, allow_http=True)
         cases = [(self.profile, value) for value in (
             "http://gateway.example/token", "https://u@gateway.example/token",
             "https://u:p@gateway.example/token", "https://gateway.example/token?x=1",
@@ -202,11 +202,11 @@ class OAuthIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.fixture = OAuthFixture()
         self.addCleanup(self.fixture.close)
-        self.profile = Profile("a", self.fixture.origin, "team-a", True)
+        self.profile = Profile("a", self.fixture.origin, {"team_id": "team-a"}, allow_http=True)
         self.client = LiteLLMClient(self.profile)
 
     def login(self):
-        with patch("llm_credential_mapping.litellm.webbrowser.open", self.fixture.browser):
+        with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", self.fixture.browser):
             return self.client.login(lambda message: None, timeout=5)
 
     def test_actual_http_pkce_login_refresh_and_revocation(self):
@@ -254,7 +254,7 @@ class OAuthIntegrationTests(unittest.TestCase):
             self.client.refresh(session)
 
     def test_browser_failure_does_not_wait_or_exchange_code(self):
-        with patch("llm_credential_mapping.litellm.webbrowser.open", return_value=False):
+        with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", return_value=False):
             with self.assertRaises(CredentialError):
                 self.client.login(lambda message: None, timeout=5)
         self.assertEqual([path for path, body in self.fixture.posts], ["/register"])

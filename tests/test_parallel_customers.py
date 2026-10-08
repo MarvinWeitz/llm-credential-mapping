@@ -6,8 +6,16 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
-from llm_credential_mapping.agents import launch
+from llm_credential_mapping.adapters import IntegrationContext
+from llm_credential_mapping.customers import Attribution
+from llm_credential_mapping.integrations.claude import Claude
 from llm_credential_mapping.profiles import Profile
+from llm_credential_mapping.registry import gateway_for
+
+
+def launch(profile, token, args, customer):
+    context = IntegrationContext(profile, gateway_for(profile), token)
+    return Claude().launch(context, Attribution(customer, "explicit", "--customer"), args, None)
 
 
 class ParallelCustomerTests(unittest.TestCase):
@@ -39,7 +47,7 @@ class ParallelCustomerTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         origin = f"http://127.0.0.1:{server.server_port}"
-        profile = Profile("unit", origin, "business-unit", True)
+        profile = Profile("unit", origin, {"team_id": "business-unit"}, allow_http=True)
         script = (
             "import os; from urllib.request import Request, urlopen; "
             "headers = dict(line.split(': ', 1) for line in os.environ['ANTHROPIC_CUSTOM_HEADERS'].splitlines()); "
@@ -49,12 +57,12 @@ class ParallelCustomerTests(unittest.TestCase):
             "urlopen(Request(base + '/second', headers=headers), timeout=15).close()"
         )
         try:
-            with patch("llm_credential_mapping.agents.shutil.which", return_value=sys.executable), \
+            with patch("llm_credential_mapping.integrations.common.shutil.which", return_value=sys.executable), \
                     patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": "x-litellm-tags: parent"}), \
                     ThreadPoolExecutor(max_workers=2) as executor:
-                a = executor.submit(launch, "claude", profile, "shared-token", ["-c", script], None, "customer:A")
+                a = executor.submit(launch, profile, "shared-token", ["-c", script], "customer:A")
                 self.assertTrue(first_a.wait(10), "First process did not reach the fixture.")
-                b = executor.submit(launch, "claude", profile, "shared-token", ["-c", script], None, "customer:B")
+                b = executor.submit(launch, profile, "shared-token", ["-c", script], "customer:B")
                 self.assertEqual(b.result(timeout=20), 0)
                 self.assertEqual(a.result(timeout=20), 0)
                 self.assertEqual(os.environ["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: parent")

@@ -8,12 +8,13 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
 
+from llm_credential_mapping.auth.litellm_sso import vault_account
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.copilot import (
     CopilotStore, connection_key, setup, validate_connection,
 )
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.litellm import Session
+from llm_credential_mapping.auth.litellm_oauth import Session
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.repositories import RepositoryStore
 from test_sessions import MemoryStore, make_session
@@ -25,13 +26,13 @@ class CopilotTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name).resolve()
         self.profiles = ProfileStore(self.home / "config")
-        self.profile = Profile("unit", "https://gateway.example", "team")
+        self.profile = Profile("unit", "https://gateway.example", {"team_id": "team"})
         self.profiles.add(self.profile)
         self.repository = "github.com/company/repo"
         RepositoryStore(self.profiles).bind(self.profile.gateway, self.repository, "customer:A")
         self.vault = MemoryStore()
         self.session = make_session(self.profile)
-        self.vault.put(self.profile.account, self.session.to_dict())
+        self.vault.put(vault_account(self.profiles.home, self.profile), self.session.to_dict())
         self.connections = CopilotStore(self.profiles)
 
     def setup_connection(self, **options):
@@ -127,13 +128,13 @@ class CopilotTests(unittest.TestCase):
 
     def test_profile_and_employee_changes_are_not_silently_adopted(self):
         connection = self.setup_connection()
-        self.vault.put(self.profile.account, replace(self.session, user_id="another").to_dict())
+        self.vault.put(vault_account(self.profiles.home, self.profile), replace(self.session, user_id="another").to_dict())
         with patch("llm_credential_mapping.copilot.current_repository", return_value=self.repository):
             with self.assertRaisesRegex(CredentialError, "employee changed"):
                 validate_connection(self.profiles, connection, self.vault)
         self.profiles.path.write_text(json.dumps({
             "version": 1, "active": "unit", "profiles": {
-                "unit": {"gateway": "https://changed.example", "team_id": "team", "allow_http": False},
+                "unit": {"gateway": {"type": "litellm", "url": "https://changed.example", "allow_http": False}, "auth": {"type": "litellm-sso", "team_id": "team"}},
             },
         }))
         with patch("llm_credential_mapping.copilot.current_repository", return_value=self.repository):
@@ -169,7 +170,7 @@ class CopilotTests(unittest.TestCase):
                 self.assertRaises(CredentialError):
             self.connections.disable(connection.id)
         self.assertEqual(self.connections.path.read_bytes(), saved)
-        self.assertEqual(self.vault.get(self.profile.account), self.session.to_dict())
+        self.assertEqual(self.vault.get(vault_account(self.profiles.home, self.profile)), self.session.to_dict())
 
     def test_cli_setup_list_key_and_disable_distinguish_nonsecret_output_from_explicit_local_key(self):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -204,7 +205,7 @@ class CopilotTests(unittest.TestCase):
             self.assertEqual(main(["--home", str(self.profiles.home), "copilot", "disable"]), 0)
         self.assertFalse(self.connections.select().enabled)
         self.assertIn("normal GitHub Copilot", stderr.getvalue())
-        self.assertEqual(self.vault.get(self.profile.account), self.session.to_dict())
+        self.assertEqual(self.vault.get(vault_account(self.profiles.home, self.profile)), self.session.to_dict())
 
     def test_no_connection_and_unknown_identifier_are_visible_errors(self):
         with self.assertRaisesRegex(CredentialError, "setup"):

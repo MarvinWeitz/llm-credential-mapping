@@ -6,11 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from llm_credential_mapping.adapters import Credential
 from llm_credential_mapping.cli import main
+from llm_credential_mapping.customers import Tag
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.repositories import RepositoryStore
-from llm_credential_mapping.tags import Tag
 
 
 class CustomerCliTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class CustomerCliTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         self.store = ProfileStore(self.home)
-        self.profile = Profile("consulting", "https://gateway.example", "business-unit")
+        self.profile = Profile("consulting", "https://gateway.example", {"team_id": "business-unit"})
         self.store.add(self.profile)
         self.repository = "github.com/company/repo"
         self.stdout, self.stderr = io.StringIO(), io.StringIO()
@@ -28,21 +29,35 @@ class CustomerCliTests(unittest.TestCase):
         with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
             return main(["--home", str(self.home), *args])
 
-    def test_profile_alias_preserves_existing_profile_and_vault_identity(self):
+    def test_profile_commands_preserve_the_profile_and_its_identity(self):
         with patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
             self.assertEqual(self.call("profile", "list"), 0)
             self.assertEqual(self.call("profile", "use", "consulting"), 0)
+        self.assertEqual(self.store.get(), self.profile)
         self.assertEqual(self.store.get().account, self.profile.account)
+
+    def test_picker_filters_the_catalogue_by_prefix(self):
+        stdin = io.StringIO("1\n")
+        with patch("llm_credential_mapping.cli.current_repository", return_value=self.repository), \
+                patch("llm_credential_mapping.cli.NativeKeyring"), \
+                patch("llm_credential_mapping.cli.auth_for") as manager, \
+                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+                patch.object(stdin, "isatty", return_value=True), \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("other"), Tag("customer:B")]), \
+                patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
+            manager.return_value.credential.return_value = Credential("secret")
+            self.assertEqual(self.call("run", "--tag-prefix", "customer:", "claude"), 0)
+        self.assertEqual(launch.call_args.args[2].customer, "customer:B")
 
     def test_explicit_customer_needs_neither_git_nor_catalogue_and_is_not_saved(self):
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.SessionManager") as manager, \
+                patch("llm_credential_mapping.cli.auth_for") as manager, \
                 patch("llm_credential_mapping.cli.current_repository", side_effect=AssertionError), \
-                patch("llm_credential_mapping.cli.list_tags", side_effect=AssertionError), \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", side_effect=AssertionError), \
                 patch("llm_credential_mapping.cli.launch", return_value=7) as launch:
-            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
+            manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("run", "--profile", "consulting", "--customer", "customer:B", "claude"), 7)
-        self.assertEqual(launch.call_args.args[5], "customer:B")
+        self.assertEqual(launch.call_args.args[2].customer, "customer:B")
         self.assertFalse((self.home / "repositories.json").exists())
         self.assertIn("pinned", self.stderr.getvalue())
         self.assertNotIn("secret", self.stderr.getvalue())
@@ -52,27 +67,27 @@ class CustomerCliTests(unittest.TestCase):
         RepositoryStore(self.store).bind(self.profile.gateway, self.repository, "customer:A")
         with patch("llm_credential_mapping.cli.current_repository", return_value=self.repository), \
                 patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.SessionManager") as manager, \
-                patch("llm_credential_mapping.cli.list_tags", side_effect=AssertionError), \
+                patch("llm_credential_mapping.cli.auth_for") as manager, \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", side_effect=AssertionError), \
                 patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
-            manager.return_value.session.return_value = Mock(access_token="same-secret", needs_login=False)
+            manager.return_value.credential.return_value = Credential("same-secret")
             self.assertEqual(self.call("run", "claude"), 0)
-        self.assertEqual(launch.call_args.args[5], "customer:A")
+        self.assertEqual(launch.call_args.args[2].customer, "customer:A")
 
     def test_unknown_repo_interactive_selection_is_persisted_once(self):
         stdin = io.StringIO("2\n")
         with patch("llm_credential_mapping.cli.current_repository", return_value=self.repository), \
                 patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.SessionManager") as manager, \
+                patch("llm_credential_mapping.cli.auth_for") as manager, \
                 patch("llm_credential_mapping.cli.sys.stdin", stdin), \
                 patch.object(stdin, "isatty", return_value=True), \
-                patch("llm_credential_mapping.cli.list_tags", return_value=[Tag("customer:A"), Tag("customer:B")]) as catalogue, \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A"), Tag("customer:B")]) as catalogue, \
                 patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
-            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
+            manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("run", "--tag-prefix", "customer:", "claude"), 0)
-        self.assertEqual(launch.call_args.args[5], "customer:B")
+        self.assertEqual(launch.call_args.args[2].customer, "customer:B")
         self.assertEqual(RepositoryStore(self.store).get(self.profile.gateway, self.repository), "customer:B")
-        catalogue.assert_called_once_with(self.profile, "secret", "customer:")
+        catalogue.assert_called_once_with(self.profile, "secret")
 
     def test_noninteractive_unbound_repo_never_launches_or_reads_secrets(self):
         stdin = io.StringIO()
@@ -93,10 +108,10 @@ class CustomerCliTests(unittest.TestCase):
             with self.subTest(catalogue=catalogue, answer=answer), \
                     patch("llm_credential_mapping.cli.current_repository", return_value=self.repository), \
                     patch("llm_credential_mapping.cli.NativeKeyring"), \
-                    patch("llm_credential_mapping.cli.SessionManager"), \
+                    patch("llm_credential_mapping.cli.auth_for"), \
                     patch("llm_credential_mapping.cli.sys.stdin", stdin), \
                     patch.object(stdin, "isatty", return_value=True), \
-                    patch("llm_credential_mapping.cli.list_tags", return_value=catalogue), \
+                    patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=catalogue), \
                     patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
                 self.assertEqual(self.call("run", "claude"), 1)
             self.assertFalse((self.home / "repositories.json").exists())
@@ -105,10 +120,10 @@ class CustomerCliTests(unittest.TestCase):
         stdin = io.StringIO("1\n")
         with patch("llm_credential_mapping.cli.current_repository", return_value=self.repository), \
                 patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.SessionManager"), \
+                patch("llm_credential_mapping.cli.auth_for"), \
                 patch("llm_credential_mapping.cli.sys.stdin", stdin), \
                 patch.object(stdin, "isatty", return_value=True), \
-                patch("llm_credential_mapping.cli.list_tags", side_effect=CredentialError("Tag catalogue HTTP 403")), \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", side_effect=CredentialError("Tag catalogue HTTP 403")), \
                 patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
             self.assertEqual(self.call("run", "claude"), 1)
         self.assertIn("403", self.stderr.getvalue())
@@ -128,25 +143,25 @@ class CustomerCliTests(unittest.TestCase):
         repositories = RepositoryStore(self.store)
         repositories.bind(self.profile.gateway, self.repository, "customer:A")
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.SessionManager"), \
+                patch("llm_credential_mapping.cli.auth_for"), \
                 patch("llm_credential_mapping.cli.launch", return_value=0):
             self.assertEqual(self.call("run", "--customer", "customer:B", "claude"), 0)
         self.assertEqual(repositories.get(self.profile.gateway, self.repository), "customer:A")
 
     def test_tag_list_json_has_only_nonsecret_catalogue_fields(self):
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.SessionManager") as manager, \
-                patch("llm_credential_mapping.cli.list_tags", return_value=[Tag("customer:A", "Customer A")]) as catalogue:
-            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
+                patch("llm_credential_mapping.cli.auth_for") as manager, \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A", "Customer A")]) as catalogue:
+            manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("tags", "list", "--profile", "consulting", "--prefix", "customer:", "--json"), 0)
         self.assertEqual(json.loads(self.stdout.getvalue()), [{"name": "customer:A", "description": "Customer A"}])
-        catalogue.assert_called_once_with(self.profile, "secret", "customer:")
+        catalogue.assert_called_once_with(self.profile, "secret")
         self.assertEqual(self.stderr.getvalue(), "")
 
     def test_terminal_control_characters_in_tag_catalogue_are_escaped(self):
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.SessionManager"), \
-                patch("llm_credential_mapping.cli.list_tags", return_value=[Tag("customer:A", "\x1b[31msecret-looking\ntext")]):
+                patch("llm_credential_mapping.cli.auth_for"), \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A", "\x1b[31msecret-looking\ntext")]):
             self.assertEqual(self.call("tags", "list"), 0)
         self.assertNotIn("\x1b", self.stdout.getvalue())
         self.assertIn("\\u001b", self.stdout.getvalue())

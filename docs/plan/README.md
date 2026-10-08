@@ -229,6 +229,30 @@ no token. The review covered these lenses:
 - Regressions: every old CLI option still exists (compare with
   `git show ee72c6b:src/llm_credential_mapping/cli.py`); Windows/macOS file locking.
 
+**Step 2 done (2026-10-08), 298 tests passing on Windows.** Layout now:
+`adapters.py` (interfaces), `registry.py` (the three tables plus
+`validate_profile`, `auth_for`, `gateway_for`), `customers.py` (`Attribution`,
+`Tag`, `validate_customer`), `auth/litellm_oauth.py` (was `litellm.py`),
+`auth/litellm_sso.py` (was `sessions.py`, plus the `LiteLLMSSO` adapter and
+`vault_account`), `gateways/litellm.py` (was `tags.py`), `integrations/`
+(was `agents.py`). Differences from the sketch below:
+
+- The registries live in `registry.py`, not `adapters.py`: the adapters import
+  the interfaces, so one module would be an import cycle.
+- `Integration` has `command()` and `launch()` only; `setup`/`remove` come with
+  steps 4 and 5. `IntegrationContext` still carries a static `token` until those
+  steps switch the tools to the credential helper.
+- `Credential.notice` carries "sign in again soon" warnings, so the CLI prints
+  them without knowing the auth kind.
+- `Profile(name, gateway, auth_settings, gateway_type="litellm", auth_type="litellm-sso", allow_http=False)`;
+  `profiles.json` and the session record stay at version 1 (no users yet).
+- Legacy modules (`claude.py`, `copilot*.py`, `request_context.py`) still use
+  `auth.litellm_sso.SessionManager` directly; the architecture test exempts
+  them until steps 4 and 7 delete them. `README.md` is not updated yet (step 7).
+- Step 3 drafts: merge `docs/plan/drafts/customers.py` into the existing
+  `customers.py`, use `validate_customer` instead of `validate_tag`, and let the
+  LiteLLM gateway adapter add the spend-log metadata header.
+
 ## Step 2: adapter seams (no behavior change)
 
 Goal: put the [adapter interfaces](#adapters-both-ends-are-replaceable) in place
