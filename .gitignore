@@ -8,3 +8,7 @@ dist/
 .env.*
 .coverage
 htmlcov/
+node_modules/
+vscode-extension/out/
+*.vsix
+vscode-extension/.vscode-test/

@@ -341,6 +341,33 @@ in `tests/test_tools_native.py` with Codex 0.161.0 and OpenCode 1.18.34; set
   Tests that run `setup` now use `tests/isolation.py`, which points
   `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `XDG_CONFIG_HOME` at temporary folders.
 
+**Step 6 done (2026-10-08).** `vscode-extension/` (TypeScript, written from
+scratch rather than forked, so it contains no LiteLLM paths or headers; license
+`UNLICENSED` like the repository). It registers vendor `llm-credentials` with
+the stable `LanguageModelChatProvider` API (VS Code 1.104+) and uses only the
+CLI's JSON contracts: `profile show --json` (the `openai-chat` endpoint),
+`token --json` (cached until 60 s before expiry, at most 4 min; one retry
+after a 401) and `repo show --json --directory FOLDER` (cached 30 s).
+
+- Folder choice: the only folder; else the active editor's folder; else the
+  folder chosen in the status bar; else, if all folders share a customer, that
+  one; otherwise requests fail and the status bar asks for a choice.
+- Notifications offer "Sign in" (a terminal running `llm-credentials login`)
+  or "Assign customer" (a terminal running `repo bind --directory FOLDER`).
+- Models from `<openai-chat endpoint>/models`; token limits and image input
+  come from settings (not discovered). Requests stream
+  `<endpoint>/chat/completions` with tools, tool results, `tool_choice:
+  required` and (opt-in) images; redirects are refused.
+- Tests: `npm test` (14 unit tests, Node's runner) and `npm run test:host`,
+  which downloads VS Code (1.141.0 here) and runs a real extension host with a
+  fake CLI and gateway: models listed, text streamed, tool calls returned as
+  `LanguageModelToolCallPart`, credential and customer headers on the wire.
+  CI runs both (with `xvfb-run`) and packages the VSIX.
+- Not done: the optional command to set `claudeCode.disableLoginPrompt`
+  (setup claude prints the setting). Still to verify by hand: the model picker
+  and agent mode in real Copilot Chat, and the organization's "Bring Your Own
+  Language Model Key" policy.
+
 ## Step 2: adapter seams (no behavior change)
 
 Goal: put the [adapter interfaces](#adapters-both-ends-are-replaceable) in place
