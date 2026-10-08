@@ -132,6 +132,7 @@ class FakeAdapterTests(unittest.TestCase):
 
             completed = subprocess.CompletedProcess([], 0)
             with patch("llm_credential_mapping.cli.NativeKeyring"), \
+                    patch("llm_credential_mapping.cli.find_checkout", return_value=None), \
                     patch("llm_credential_mapping.integrations.common.shutil.which", return_value="claude"), \
                     patch("llm_credential_mapping.integrations.common.subprocess.run", return_value=completed) as run:
                 self.assertEqual(call(
@@ -145,7 +146,7 @@ class FakeAdapterTests(unittest.TestCase):
                     "access_token": "fixed-secret", "expires_at": None, "profile": "fake", "user": None,
                 })
                 self.assertEqual(call("tags", "list"), 1)
-                self.assertIn("no customer catalogue", stderr.getvalue())
+                self.assertIn("offer a customer catalogue", stderr.getvalue())
                 self.assertEqual(call("run", "--customer", "customer:A", "claude"), 0)
             env = run.call_args.kwargs["env"]
             self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://fake.example/anthropic")

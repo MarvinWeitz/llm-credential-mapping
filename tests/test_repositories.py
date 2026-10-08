@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.profiles import ProfileStore
-from llm_credential_mapping.repositories import RepositoryStore, current_repository, repository_identity
+from llm_credential_mapping.repositories import RepositoryStore, current_repository, find_checkout, repository_identity
 
 
 class RepositoryTests(unittest.TestCase):
@@ -20,18 +20,61 @@ class RepositoryTests(unittest.TestCase):
         self.gateway = "https://gateway.example"
         self.repository = "github.com/company/repo"
 
-    def test_transport_aliases_credentials_and_github_case_normalize(self):
+    def test_transport_aliases_credentials_case_and_ports_normalize(self):
         for remote in (
             "https://github.com/Company/Repo.git",
             "https://user:password@github.com:443/company/repo",
             "git@github.com:company/repo.git",
             "ssh://git@github.com:22/company/repo.git",
             "git://github.com:9418/company/repo.git",
+            "https://GitHub.com/COMPANY/REPO",
         ):
             with self.subTest(remote=remote):
                 self.assertEqual(repository_identity(remote), self.repository)
-        self.assertEqual(repository_identity("ssh://git@git.example:2222/Group/Repo.git"), "git.example:2222/Group/Repo")
+        self.assertEqual(repository_identity("ssh://git@git.example:2222/Group/Repo.git"), "git.example/group/repo")
+        self.assertEqual(repository_identity("https://GitLab.com/Group/Sub/Repo"), "gitlab.com/group/sub/repo")
         self.assertEqual(repository_identity("git@[::1]:group/repo.git"), "[::1]/group/repo")
+
+    def test_azure_devops_forms_share_one_identity(self):
+        for remote in (
+            "https://dev.azure.com/Org/Project/_git/Repo",
+            "https://org@dev.azure.com/org/project/_git/repo",
+            "git@ssh.dev.azure.com:v3/Org/Project/Repo",
+            "ssh://git@ssh.dev.azure.com/v3/org/project/repo",
+            "https://org.visualstudio.com/Project/_git/Repo",
+            "https://org.visualstudio.com/DefaultCollection/Project/_git/Repo",
+            "org@vs-ssh.visualstudio.com:v3/org/project/repo",
+        ):
+            with self.subTest(remote=remote):
+                self.assertEqual(repository_identity(remote), "dev.azure.com/org/project/repo")
+
+    def test_ssh_host_aliases_resolve_only_for_plain_host_names(self):
+        aliases = {"github-work": "github.com"}
+        seen = []
+
+        def resolve(host):
+            seen.append(host)
+            return aliases.get(host)
+
+        self.assertEqual(repository_identity("git@github-work:company/repo.git", resolve), self.repository)
+        self.assertEqual(repository_identity("ssh://git@github-work/company/repo", resolve), self.repository)
+        self.assertEqual(repository_identity("https://github-work/company/repo", resolve), "github-work/company/repo")
+        self.assertEqual(repository_identity("git@-oProxyCommand=x:company/repo", resolve), "-oproxycommand=x/company/repo")
+        self.assertEqual(seen, ["github-work", "github-work"])
+
+    def test_find_checkout_reads_origin_and_upstream_without_network(self):
+        root = self.home / "fork"
+        root.mkdir()
+        for args in (
+            ["init", "--quiet", str(root)],
+            ["-C", str(root), "remote", "add", "origin", "git@github.com:me/repo.git"],
+            ["-C", str(root), "remote", "add", "upstream", "https://github.com/Company/Repo"],
+        ):
+            subprocess.run(["git", *args], check=True, capture_output=True)
+        checkout = find_checkout(root, None)
+        self.assertEqual((checkout.origin, checkout.upstream), ("github.com/me/repo", self.repository))
+        self.assertEqual(checkout.identities, ("github.com/me/repo", self.repository))
+        self.assertIsNone(find_checkout(self.home, None))
 
     def test_local_ambiguous_and_injected_remote_values_are_rejected_without_echoing(self):
         for remote in (
@@ -70,6 +113,7 @@ class RepositoryTests(unittest.TestCase):
             ([subprocess.CompletedProcess([], 1, "", "fatal: secret-not-a-repo")], "working tree"),
             ([
                 subprocess.CompletedProcess([], 0, str(self.home), ""),
+                subprocess.CompletedProcess([], 1, "", "fatal: secret-no-remote"),
                 subprocess.CompletedProcess([], 1, "", "fatal: secret-no-remote"),
             ], "origin remote"),
             ([subprocess.CompletedProcess([], 128, "", "fatal: detected dubious ownership secret-path")], "dubious ownership"),

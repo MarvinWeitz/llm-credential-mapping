@@ -4,7 +4,7 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlsplit
@@ -51,11 +51,34 @@ def validate_profile_name(name: str) -> str:
     return name
 
 
+def validate_rules_location(value: str, allow_http: bool = False) -> str:
+    """Accept an HTTPS URL (HTTP only for opted-in loopback hosts) or an absolute local file path."""
+    if (
+        not isinstance(value, str) or not value or len(value) > 2048
+        or any(char.isspace() or ord(char) < 32 for char in value)
+    ):
+        raise CredentialError("Customer rules must be an HTTPS URL or an absolute file path.")
+    if "://" not in value:
+        if not Path(value).is_absolute():
+            raise CredentialError("Customer rules must be an HTTPS URL or an absolute file path.")
+        return value
+    try:
+        parsed = urlsplit(value)
+        has_credentials = parsed.username is not None or parsed.password is not None
+    except ValueError:
+        raise CredentialError("Customer rules URL is invalid.") from None
+    if has_credentials or parsed.fragment:
+        raise CredentialError("Customer rules URL must not contain credentials or a fragment.")
+    gateway_origin(f"{parsed.scheme}://{parsed.netloc}", allow_http)
+    return value
+
+
 @dataclass(frozen=True)
 class Profile:
     """A named profile: which gateway to use (kind and root URL) and how to authenticate (kind and settings).
 
     Kind-specific settings, such as a LiteLLM team ID, live in ``auth`` and are validated by that auth kind.
+    ``rules`` optionally locates central repository-to-customer rules; it is not part of the identity.
     """
 
     name: str
@@ -64,6 +87,7 @@ class Profile:
     gateway_type: str = "litellm"
     auth_type: str = "litellm-sso"
     allow_http: bool = False
+    rules: str | None = None
 
     def __post_init__(self) -> None:
         from .registry import validate_profile  # The registry's adapters import this module.
@@ -75,6 +99,8 @@ class Profile:
             raise CredentialError("Invalid authentication settings.")
         object.__setattr__(self, "gateway", gateway_origin(self.gateway, self.allow_http))
         object.__setattr__(self, "auth", validate_profile(self.gateway_type, self.auth_type, dict(self.auth)))
+        if self.rules is not None:
+            validate_rules_location(self.rules, self.allow_http)
 
     @property
     def account(self) -> str:
@@ -85,10 +111,13 @@ class Profile:
         return hashlib.sha256(value.encode()).hexdigest()
 
     def to_dict(self) -> dict:
-        return {
+        value = {
             "gateway": {"type": self.gateway_type, "url": self.gateway, "allow_http": self.allow_http},
             "auth": {"type": self.auth_type, **self.auth},
         }
+        if self.rules is not None:
+            value["rules"] = self.rules
+        return value
 
 
 def default_home() -> Path:
@@ -173,7 +202,7 @@ class ProfileStore:
     @staticmethod
     def _profile(name: str, item: object) -> Profile:
         if (
-            not isinstance(item, dict) or set(item) != {"gateway", "auth"}
+            not isinstance(item, dict) or set(item) - {"rules"} != {"gateway", "auth"}
             or not isinstance(item["gateway"], dict) or set(item["gateway"]) != {"type", "url", "allow_http"}
             or not isinstance(item["auth"], dict) or "type" not in item["auth"]
         ):
@@ -182,7 +211,7 @@ class ProfileStore:
         if not isinstance(gateway["url"], str) or not isinstance(gateway["type"], str) or not isinstance(auth["type"], str):
             raise CredentialError("Invalid gateway or authentication type in profile configuration.")
         auth_type = auth.pop("type")
-        return Profile(name, gateway["url"], auth, gateway["type"], auth_type, gateway["allow_http"])
+        return Profile(name, gateway["url"], auth, gateway["type"], auth_type, gateway["allow_http"], item.get("rules"))
 
     def _write(self, value: dict) -> None:
         atomic_write_json(self.path, value)
@@ -196,6 +225,17 @@ class ProfileStore:
             if data["active"] is None:
                 data["active"] = profile.name
             self._write(data)
+
+    def set_rules(self, name: str, rules: str | None) -> Profile:
+        """Change only where a profile's central customer rules come from; its sign-in is unaffected."""
+        with self.locked():
+            data = self._read()
+            if name not in data["profiles"]:
+                raise CredentialError("Unknown profile; use 'profile list'.")
+            profile = replace(self._profile(name, data["profiles"][name]), rules=rules)
+            data["profiles"][name] = profile.to_dict()
+            self._write(data)
+            return profile
 
     def select(self, name: str) -> None:
         with self.locked():

@@ -71,8 +71,8 @@ class AgentTests(unittest.TestCase):
                 self.assertEqual(os.environ[CUSTOMER_VARIABLE], "parent")
                 self.assertNotIn("same-secret", " ".join(args_a + args_b))
                 if agent == "claude":
-                    self.assertEqual(env_a["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:A")
-                    self.assertEqual(env_b["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:B")
+                    self.assertEqual(env_a["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {\"customer_source\":\"explicit\"}")
+                    self.assertEqual(env_b["ANTHROPIC_CUSTOM_HEADERS"], "x-litellm-tags: customer:B\nx-litellm-spend-logs-metadata: {\"customer_source\":\"explicit\"}")
                 elif agent == "codex":
                     variable = header_variable("x-litellm-tags")
                     self.assertIn(
@@ -83,13 +83,13 @@ class AgentTests(unittest.TestCase):
                 else:
                     for env, customer in ((env_a, "customer:A"), (env_b, "customer:B")):
                         options = json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"]["llm-credential-mapping"]["options"]
-                        self.assertEqual(options["headers"], {"x-litellm-tags": customer})
+                        self.assertEqual(options["headers"], {"x-litellm-tags": customer, "x-litellm-spend-logs-metadata": '{"customer_source":"explicit"}'})
 
     def test_claude_replaces_inherited_tags_but_preserves_other_headers(self):
         existing = "X-Trace: trace\nX-LiteLLM-Tags: old-customer\nx-litellm-tags: another"
         with patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": existing}):
             _, env = agent_command("claude", self.profile, "secret", [], customer="customer:A")
-            self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: trace\nx-litellm-tags: customer:A")
+            self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: trace\nx-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {\"customer_source\":\"explicit\"}")
             self.assertEqual(os.environ["ANTHROPIC_CUSTOM_HEADERS"], existing)
 
     def test_codex_customer_header_overrides_are_valid_toml(self):
@@ -250,6 +250,10 @@ class CliTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         self.stdout, self.stderr = io.StringIO(), io.StringIO()
+        # Launch outside any Git checkout, whatever directory the tests run in.
+        outside_git = patch("llm_credential_mapping.cli.find_checkout", return_value=None)
+        outside_git.start()
+        self.addCleanup(outside_git.stop)
 
     def call(self, *args):
         with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
@@ -307,6 +311,7 @@ class CliTests(unittest.TestCase):
             "name": "a",
             "gateway": {"type": "litellm", "url": "https://example.com"},
             "auth": {"type": "litellm-sso", "team_id": "t"},
+            "rules": None,
             "endpoints": {
                 "anthropic-messages": "https://example.com",
                 "openai-chat": "https://example.com/v1",

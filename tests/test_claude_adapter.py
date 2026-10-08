@@ -246,7 +246,9 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(settings["hooks"], existing["hooks"])
         self.assertEqual(settings["permissions"], existing["permissions"])
         self.assertEqual(settings["env"]["X_UNRELATED"], "preserved")
-        self.assertEqual(settings["env"]["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: trace\nx-litellm-tags: customer:A")
+        self.assertEqual(
+            settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()[:2], ["X-Trace: trace", "x-litellm-tags: customer:A"],
+        )
         for key in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK"):
             self.assertEqual(env[key], "")
             self.assertEqual(settings["env"][key], "")

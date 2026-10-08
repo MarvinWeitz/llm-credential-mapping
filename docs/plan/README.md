@@ -10,11 +10,8 @@ was inserted; the former steps 2–6 are now steps 3–7.
 
 Related files:
 
-- `docs/plan/drafts/` – unreviewed drafts for step 3
-  (`repositories.py`, `customers.py`). Copy them into
-  `src/llm_credential_mapping/` as a starting point; they have no tests yet.
-  They predate the adapter design: `Attribution.headers()` in `customers.py`
-  must move to the LiteLLM gateway adapter (see step 3).
+- The step 3 drafts (`docs/plan/drafts/`) were implemented and removed;
+  see `git show 6c5991f:docs/plan/drafts/` if needed.
 - `docs/plan/research/` – raw research notes with source references
   (LiteLLM, Claude Code, Codex, OpenCode, VS Code/Copilot). Line numbers in
   those notes are sometimes off; the claims were cross-checked by a second
@@ -249,9 +246,25 @@ no token. The review covered these lenses:
 - Legacy modules (`claude.py`, `copilot*.py`, `request_context.py`) still use
   `auth.litellm_sso.SessionManager` directly; the architecture test exempts
   them until steps 4 and 7 delete them. `README.md` is not updated yet (step 7).
-- Step 3 drafts: merge `docs/plan/drafts/customers.py` into the existing
-  `customers.py`, use `validate_customer` instead of `validate_tag`, and let the
-  LiteLLM gateway adapter add the spend-log metadata header.
+
+**Step 3 done (2026-10-08), 320 tests passing on Windows.** Implemented as
+described below, with these differences:
+
+- The `.llm-customer` search stops *at* the home directory instead of only
+  skipping it: folders above home (`C:\Users`, `/home`) are often shared, and a
+  file there must not assign customers to everyone's projects. Folders outside
+  home are searched up to the filesystem root.
+- Rules documents list catalogue entries as `{"id": ..., "name": ...}`, not
+  `{"tag": ...}`: the document is gateway-neutral.
+- The rules location is validated in `profiles.py` (`validate_rules_location`),
+  and `profile update NAME --rules X | --no-rules` keeps the vault account.
+- `run` and `repo show` resolve in the current directory; `repo show --json`
+  prints `customer`, `source`, `detail`, `repository` and `headers`.
+- `repo bind --shared` overwrites an existing `.llm-customer` and warns when a
+  personal or environment override still takes precedence there.
+- Open question: origin is matched against all rules before upstream, so in a
+  fork a catch-all rule (`github.com/**`) on the origin beats a specific rule
+  for the upstream. Revisit if central rules use catch-alls.
 
 ## Step 2: adapter seams (no behavior change)
 
@@ -341,7 +354,7 @@ header), `cli.py`, tests.
    - Document format v1:
      ```json
      {"version": 1,
-      "customers": [{"tag": "customer-acme", "name": "Acme"}],
+      "customers": [{"id": "customer-acme", "name": "Acme"}],
       "rules": [{"match": "github.com/acme-*/**", "customer": "customer-acme"}]}
      ```
      `**` spans segments, `*`/`?` stay within a segment, full match, lowercase.

@@ -28,9 +28,15 @@ class TagTests(unittest.TestCase):
         self.assertEqual(gateway.endpoint(Api.ANTHROPIC_MESSAGES), "https://gateway.example")
         self.assertEqual(gateway.endpoint(Api.OPENAI_CHAT), "https://gateway.example/v1")
         self.assertEqual(gateway.endpoint(Api.OPENAI_RESPONSES), "https://gateway.example/v1")
-        headers = gateway.attribution_headers(Attribution("customer:A", "explicit", "--customer"))
-        self.assertEqual(headers, {"x-litellm-tags": "customer:A"})
+        headers = gateway.attribution_headers(Attribution("customer:A", "rules", "rule", "github.com/acme/répo"))
+        self.assertEqual(headers, {
+            "x-litellm-tags": "customer:A",
+            "x-litellm-spend-logs-metadata": '{"customer_source":"rules","repository":"github.com/acme/r\\u00e9po"}',
+        })
+        self.assertTrue(all(value.isascii() for value in headers.values()))
         self.assertEqual(set(headers), set(gateway.attribution_header_names()))
+        headers = gateway.attribution_headers(Attribution("customer:A", "explicit", "--customer"))
+        self.assertEqual(headers["x-litellm-spend-logs-metadata"], '{"customer_source":"explicit"}')
 
     def test_gateway_catalogue_uses_the_credential(self):
         with patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A")]) as listed:

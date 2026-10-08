@@ -7,14 +7,16 @@ from pathlib import Path
 from . import __version__
 from .adapters import Api, Auth, Credential, Gateway, IntegrationContext
 from .claude import check as claude_check, helper_token, setup as claude_setup
-from .customers import Attribution, Tag, validate_customer
+from .customers import (
+    Attribution, Rules, RulesLoader, Tag, resolve_customer, unmapped_error, validate_customer, write_customer_file,
+)
 from .errors import CredentialError
 from .copilot import CopilotStore, connection_key, setup as copilot_setup, validate_connection
 from .copilot_bridge import check as copilot_check, serve as copilot_serve
 from .editor_settings import editing, settings_file
 from .profiles import Profile, ProfileStore, default_home
 from .registry import AUTH, GATEWAYS, INTEGRATIONS, auth_for, gateway_for
-from .repositories import RepositoryStore, current_repository
+from .repositories import Checkout, RepositoryStore, find_checkout
 from .storage import NativeKeyring
 from .workspaces import WorkspaceStore
 
@@ -51,24 +53,48 @@ class Context:
     def token(self) -> str:
         return self.credential().secret
 
+    @cached_property
+    def rules(self) -> Rules | None:
+        """The profile's central rules; a credential is only requested for rules on the gateway's own origin."""
+        return RulesLoader(self.store, self.profile, self.token)()
+
+    def resolve(self, directory: Path, checkout: Checkout | None, explicit: str | None = None) -> Attribution | None:
+        return resolve_customer(
+            self.store, self.profile, directory, checkout, explicit=explicit, rules=lambda: self.rules,
+        )
+
 
 def launch(agent: str, context: IntegrationContext, attribution: Attribution, arguments: list[str], model: str | None) -> int:
     return INTEGRATIONS[agent].launch(context, attribution, arguments, model)
 
 
-def _visible_customers(context: Context, prefix: str | None) -> list[Tag]:
+def _directory(args: argparse.Namespace) -> Path:
+    directory = getattr(args, "directory", None)
+    try:
+        return (directory.expanduser() if directory is not None else Path.cwd()).resolve()
+    except (OSError, RuntimeError):
+        raise CredentialError("Cannot resolve the directory.") from None
+
+
+def _catalogue(context: Context, prefix: str | None) -> list[Tag]:
+    """Customers to choose from: the central rules' catalogue when it has one, otherwise the gateway's list."""
     if prefix is not None:
         validate_customer(prefix)
-    customers = context.gateway.visible_customers(context.credential())
-    if customers is None:
-        raise CredentialError("This gateway offers no customer catalogue; pass --customer with an approved customer.")
+    if context.rules is not None and context.rules.customers:
+        customers = list(context.rules.customers)
+    else:
+        customers = context.gateway.visible_customers(context.credential())
+        if customers is None:
+            raise CredentialError(
+                "Neither central rules nor this gateway offer a customer catalogue; pass --customer with an approved customer."
+            )
     return [customer for customer in customers if prefix is None or customer.name.startswith(prefix)]
 
 
 def _pick_customer(context: Context, prefix: str | None) -> str:
     if not sys.stdin.isatty():
-        raise CredentialError("No customer selected. Use --customer TAG or bind this repository with 'repo bind'.")
-    tags = _visible_customers(context, prefix)
+        raise CredentialError("No customer selected. Use --customer NAME, or choose one in an interactive terminal.")
+    tags = _catalogue(context, prefix)
     if not tags:
         raise CredentialError(
             "No visible customers matched. The gateway may list only customers you used before. "
@@ -96,10 +122,17 @@ def profile_add(context: Context) -> None:
     args = context.args
     settings = {"team_id": args.team_id} if args.team_id is not None else {}
     profile = Profile(
-        args.name, args.gateway, settings, args.gateway_type, args.auth, args.allow_insecure_localhost,
+        args.name, args.gateway, settings, args.gateway_type, args.auth, args.allow_insecure_localhost, args.rules,
     )
     context.store.add(profile)
     print(f"Added profile '{profile.name}' ({profile.gateway_type} gateway, {profile.auth_type} sign-in).")
+
+
+def profile_update(context: Context) -> None:
+    args = context.args
+    profile = context.store.set_rules(args.name, None if args.no_rules else args.rules)
+    rules = json.dumps(profile.rules) if profile.rules is not None else "no central rules"
+    print(f"Profile '{profile.name}' now uses {rules}. The sign-in is unchanged.")
 
 
 def profile_list(context: Context) -> None:
@@ -122,6 +155,7 @@ def profile_show(context: Context) -> None:
         "name": profile.name,
         "gateway": {"type": profile.gateway_type, "url": profile.gateway},
         "auth": {"type": profile.auth_type, **profile.auth},
+        "rules": profile.rules,
         "endpoints": endpoints,
     }
     if context.args.json:
@@ -169,7 +203,7 @@ def logout(context: Context) -> None:
 
 
 def tags_list(context: Context) -> None:
-    tags = _visible_customers(context, context.args.prefix)
+    tags = _catalogue(context, context.args.prefix)
     if context.args.json:
         print(json.dumps([{"name": tag.name, "description": tag.description} for tag in tags], indent=2))
         return
@@ -182,42 +216,79 @@ def repo_list(context: Context) -> None:
     print(json.dumps(RepositoryStore(context.store).list(context.profile.gateway), indent=2))
 
 
+def _origin(checkout: Checkout | None) -> str:
+    if checkout is None or checkout.origin is None:
+        raise CredentialError(
+            "Personal overrides need a Git checkout with an HTTP/SSH origin remote. "
+            "Use 'repo bind --shared' to assign a folder with a .llm-customer file instead."
+        )
+    return checkout.origin
+
+
+def repo_show(context: Context) -> None:
+    directory = _directory(context.args)
+    checkout = find_checkout(directory)
+    attribution = context.resolve(directory, checkout)
+    if attribution is None:
+        raise unmapped_error(directory, checkout)
+    headers = context.gateway.attribution_headers(attribution)
+    if context.args.json:
+        print(json.dumps({**attribution.to_dict(), "headers": headers}))
+        return
+    print(f"Customer: {json.dumps(attribution.customer)}")
+    print(f"Source: {attribution.source} ({attribution.detail})")
+    print(f"Repository: {attribution.repository or 'none'}")
+
+
+def repo_list(context: Context) -> None:
+    print(json.dumps(RepositoryStore(context.store).list(context.profile.gateway), indent=2))
+
+
 def repo_bind(context: Context) -> None:
     args = context.args
-    profile = context.profile
-    repository = current_repository(args.directory.expanduser().resolve() if args.directory else None)
+    directory = _directory(args)
+    checkout = find_checkout(directory)
+    repository = None if args.shared else _origin(checkout)
     customer = validate_customer(args.customer) if args.customer is not None else _pick_customer(
         context, args.tag_prefix,
     )
-    RepositoryStore(context.store).bind(profile.gateway, repository, customer, replace=True)
-    print(f"Bound {json.dumps(repository)} to {json.dumps(customer)}. Running agents are unchanged.")
+    if args.shared:
+        path = write_customer_file(checkout.root if checkout is not None else directory, customer)
+        print(f"Wrote {path} for {json.dumps(customer)}. Commit it to share it with your team. Running agents are unchanged.")
+        resolved = context.resolve(directory, checkout)
+        if resolved is not None and resolved.source != "file":
+            notify(f"Note: your {resolved.source} assignment ({resolved.detail}) still takes precedence here.")
+        return
+    RepositoryStore(context.store).bind(context.profile.gateway, repository, customer, replace=True)
+    print(f"Bound {json.dumps(repository)} to {json.dumps(customer)} for you only. Running agents are unchanged.")
 
 
 def repo_unbind(context: Context) -> None:
-    args = context.args
-    repository = current_repository(args.directory.expanduser().resolve() if args.directory else None)
+    repository = _origin(find_checkout(_directory(context.args)))
     RepositoryStore(context.store).unbind(context.profile.gateway, repository)
-    print(f"Removed binding for {json.dumps(repository)}. Running agents are unchanged.")
+    print(f"Removed your override for {json.dumps(repository)}. Running agents are unchanged.")
 
 
 def run(context: Context) -> int:
     args = context.args
     profile = context.profile
-    if args.customer is not None:
-        attribution = Attribution(validate_customer(args.customer), "explicit", "--customer")
-    else:
-        repository = current_repository()
-        repositories = RepositoryStore(context.store)
-        customer = repositories.get(profile.gateway, repository)
-        if customer is None:
-            customer = _pick_customer(context, args.tag_prefix)
-            repositories.bind(profile.gateway, repository, customer)
-            notify("Saved this repository's customer default.")
-        attribution = Attribution(customer, "local", f"repo bind for {repository}", repository)
+    directory = _directory(args)
+    checkout = find_checkout(directory)
+    attribution = context.resolve(directory, checkout, args.customer)
+    if attribution is None:
+        if checkout is None or checkout.origin is None or not sys.stdin.isatty():
+            raise unmapped_error(directory, checkout)
+        customer = _pick_customer(context, args.tag_prefix)
+        RepositoryStore(context.store).bind(profile.gateway, checkout.origin, customer)
+        notify("Saved your personal customer override for this repository.")
+        attribution = Attribution(customer, "local", f"repo bind for {checkout.origin}", checkout.origin)
     arguments = args.agent_args
     if arguments and arguments[0] == "--":
         arguments = arguments[1:]
-    notify(f"Customer {json.dumps(attribution.customer)} is pinned for this process (profile {profile.name}).")
+    notify(
+        f"Customer {json.dumps(attribution.customer)} ({attribution.source}: {attribution.detail}) "
+        f"is pinned for this process (profile {profile.name})."
+    )
     integration = IntegrationContext(profile, context.gateway, context.token())
     return launch(args.agent, integration, attribution, arguments, args.model)
 
@@ -377,7 +448,14 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--auth", choices=sorted(AUTH), default="litellm-sso", help="Sign-in kind (default: litellm-sso).")
     add.add_argument("--team-id", help="litellm-sso: exact LiteLLM team ID chosen at browser consent, not its display name.")
     add.add_argument("--allow-insecure-localhost", action="store_true", help="Development only.")
+    add.add_argument("--rules", help="Central repository-to-customer rules: an HTTPS URL or an absolute file path.")
     add.set_defaults(handler=profile_add)
+    update = profile_actions.add_parser("update", help="Change a profile's central customer rules.")
+    update.add_argument("name")
+    rules = update.add_mutually_exclusive_group(required=True)
+    rules.add_argument("--rules", help="An HTTPS URL or an absolute file path.")
+    rules.add_argument("--no-rules", action="store_true", help="Stop using central rules.")
+    update.set_defaults(handler=profile_update)
     profile_actions.add_parser("list").set_defaults(handler=profile_list)
     show = profile_actions.add_parser("show", help="Show a profile and its gateway endpoints per API, without credentials.")
     show.add_argument("name", nargs="?", help="Profile name; otherwise the selected default.")
@@ -411,16 +489,27 @@ def parser() -> argparse.ArgumentParser:
     tag_list.add_argument("--json", action="store_true")
     tag_list.set_defaults(handler=tags_list)
 
-    repo = commands.add_parser("repo", help="Manage repository customer defaults.")
+    repo = commands.add_parser("repo", help="Show and assign the customer of a repository or folder.")
     repo_actions = repo.add_subparsers(dest="action", required=True)
-    for action, handler in (("bind", repo_bind), ("list", repo_list), ("unbind", repo_unbind)):
-        command = repo_actions.add_parser(action)
+    for action, handler, text in (
+        ("show", repo_show, "Show the customer for a directory and why; exit 1 when none is assigned."),
+        ("bind", repo_bind, "Assign a customer: a personal override, or with --shared a committed .llm-customer file."),
+        ("list", repo_list, "List your personal overrides."),
+        ("unbind", repo_unbind, "Remove your personal override for a repository."),
+    ):
+        command = repo_actions.add_parser(action, help=text)
         _profile_option(command)
         if action != "list":
-            command.add_argument("--directory", type=Path, help="Repository directory; otherwise current directory.")
+            command.add_argument("--directory", type=Path, help="Repository or folder; otherwise the current directory.")
+        if action == "show":
+            command.add_argument("--json", action="store_true", help="Print one line of JSON including the request headers.")
         if action == "bind":
-            command.add_argument("--customer", help="Exact approved customer; otherwise choose from visible customers.")
+            command.add_argument("--customer", help="Exact approved customer; otherwise choose from the catalogue.")
             command.add_argument("--tag-prefix", help="Filter the customer picker by this exact prefix.")
+            command.add_argument(
+                "--shared", action="store_true",
+                help="Write .llm-customer at the checkout root (or the directory outside Git) to commit for your team.",
+            )
         command.set_defaults(handler=handler)
 
     command = commands.add_parser("run", help="Launch an agent with the repository's customer attribution.")

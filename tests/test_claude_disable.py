@@ -235,7 +235,7 @@ class ClaudeDisableTests(unittest.TestCase):
             (credentials / name).write_bytes(snapshots[name])
         self.write(json.dumps(self.generated))
         with patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError), \
-                patch("llm_credential_mapping.cli.current_repository", side_effect=AssertionError), \
+                patch("llm_credential_mapping.cli.find_checkout", side_effect=AssertionError), \
                 patch("llm_credential_mapping.cli.helper_token", side_effect=AssertionError), \
                 patch("llm_credential_mapping.cli.claude_setup", side_effect=AssertionError):
             result, stdout, stderr = self.cli(self.target)
