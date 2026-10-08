@@ -219,7 +219,7 @@ class ClaudeAdapterTests(unittest.TestCase):
     def test_helper_rejects_employee_or_profile_changes_and_uncertain_refresh(self):
         with patch.dict(os.environ, {CONTEXT_VARIABLE: self.context.encode()}), \
                 patch("llm_credential_mapping.claude.NativeKeyring", return_value=self.secrets):
-            for change in ({"user_id": "other-employee"}, {"needs_login": True}):
+            for change in ({"user_id": "other-employee"}, {"blocked": True}):
                 self.secrets.put(self.profile.account, replace(self.session, **change).to_dict())
                 with self.subTest(change=change), self.assertRaises(CredentialError):
                     helper_token()

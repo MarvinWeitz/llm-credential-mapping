@@ -48,6 +48,25 @@ class DiscoveryTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(CredentialError):
                 Discovery.parse(value, self.profile)
 
+    def test_endpoints_must_keep_the_gateway_scheme_host_and_port(self):
+        stored = Session(
+            self.profile.gateway, "team-a", "u", "c", "a", "r", 0, 1,
+            self.profile.gateway + "/token", self.profile.gateway + "/revoke", self.profile.gateway,
+        )
+        loopback = Profile("b", "http://127.0.0.1:8080", "team-a", True)
+        cases = [(self.profile, value) for value in (
+            "http://gateway.example/token", "https://u@gateway.example/token",
+            "https://u:p@gateway.example/token", "https://gateway.example/token?x=1",
+            "https://gateway.example/token#f", "https://gateway.example:8443/token",
+            "https://[gateway.example/token", "https://gateway.example＃@evil.example/x",
+        )] + [(loopback, "http://127.0.0.1:9090/token")]
+        for profile, value in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(CredentialError):
+                    Discovery.parse({**discovery(profile.gateway), "token_endpoint": value}, profile)
+                with self.assertRaises(CredentialError):
+                    replace(stored, gateway=profile.gateway, token_endpoint=value).check_binding(profile)
+
     def test_bad_contract_and_pkce_are_rejected(self):
         for change in (
             {"contract_version": 2}, {"contract_version": True},

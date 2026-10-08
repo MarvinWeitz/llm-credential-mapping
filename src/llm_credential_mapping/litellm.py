@@ -65,16 +65,26 @@ class Discovery:
         return cls(**endpoints)
 
 
+class IdentityChanged(CredentialError):
+    """A renewal returned a grant for another employee or team; the session must not be used any more."""
+
+
 _SESSION_FIELDS = (
     "gateway", "team_id", "user_id", "client_id", "access_token", "refresh_token",
-    "issued_at", "expires_at", "token_endpoint", "revocation_endpoint", "resource", "needs_login",
+    "issued_at", "expires_at", "token_endpoint", "revocation_endpoint", "resource",
+    "needs_login", "blocked", "retry_after", "refresh_failures",
 )
 _ENDPOINT_FIELDS = ("token_endpoint", "revocation_endpoint", "resource")
 
 
 @dataclass(frozen=True)
 class Session:
-    """A single employee/team OAuth grant and the endpoints that renew or revoke it; credentials are excluded from repr."""
+    """A single employee/team OAuth grant and the endpoints that renew or revoke it; credentials are excluded from repr.
+
+    Renewal state: ``needs_login`` means the gateway refused the refresh grant, so no further renewal is
+    attempted while the access token is still released until it nearly expires. ``blocked`` means a renewal
+    changed identity; nothing is released. ``retry_after``/``refresh_failures`` back off temporary failures.
+    """
 
     gateway: str
     team_id: str
@@ -88,6 +98,9 @@ class Session:
     revocation_endpoint: str
     resource: str
     needs_login: bool = False
+    blocked: bool = False
+    retry_after: float | None = None
+    refresh_failures: int = 0
 
     @classmethod
     def from_response(cls, data: dict, profile: Profile, client_id: str, endpoints: "Discovery | Session") -> "Session":
@@ -126,29 +139,35 @@ class Session:
         return self.expires_at - self.issued_at
 
     def to_dict(self) -> dict:
-        return {"version": 2, **self.__dict__}
+        return {"version": 1, **self.__dict__}
 
     @classmethod
     def from_dict(cls, data: dict) -> "Session":
-        if set(data) != {"version", *_SESSION_FIELDS} or type(data["version"]) is not int or data["version"] != 2:
+        if set(data) != {"version", *_SESSION_FIELDS} or type(data["version"]) is not int or data["version"] != 1:
             raise CredentialError("Unsupported stored session; log in again.")
-        for name in _SESSION_FIELDS:
+        for name in _SESSION_FIELDS[:-4]:
             if name not in ("issued_at", "expires_at", "needs_login"):
                 required_text(data, name)
+
+        def number(value) -> bool:
+            return type(value) in (float, int) and math.isfinite(value)
+
         if (
-            any(type(data[name]) not in (float, int) or not math.isfinite(data[name]) for name in ("issued_at", "expires_at"))
+            not all(number(data[name]) for name in ("issued_at", "expires_at"))
             or data["issued_at"] > data["expires_at"]
-            or type(data["needs_login"]) is not bool
+            or any(type(data[name]) is not bool for name in ("needs_login", "blocked"))
+            or (data["retry_after"] is not None and not number(data["retry_after"]))
+            or type(data["refresh_failures"]) is not int or data["refresh_failures"] < 0
         ):
             raise CredentialError("Invalid stored session expiry/state; log in again.")
         return cls(**{name: data[name] for name in _SESSION_FIELDS})
 
 
 def _require_gateway_url(value: str, profile: Profile) -> None:
-    parsed = urlsplit(value)
     try:
+        parsed = urlsplit(value)
         origin = gateway_origin(f"{parsed.scheme}://{parsed.netloc}", profile.allow_http)
-    except CredentialError:
+    except (ValueError, CredentialError):
         raise CredentialError("Gateway endpoint is invalid.") from None
     if origin != profile.gateway or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise CredentialError("Gateway endpoint is outside the trusted gateway origin.")
@@ -310,8 +329,9 @@ class LiteLLMClient:
     def refresh(self, session: Session) -> Session:
         """Rotate the refresh grant at the endpoint stored at login; never rediscover or follow redirects.
 
-        Raise GatewayError for transport/HTTP failures (see GatewayError.retryable) and CredentialError
-        for an unusable response or a changed employee/team, after revoking that unexpected grant.
+        Raise GatewayError for transport/HTTP failures (see GatewayError.retryable), CredentialError
+        for an unusable response and IdentityChanged for a changed employee/team, after revoking that
+        unexpected grant.
         """
         response = self.transport.request(
             "POST",
@@ -333,10 +353,10 @@ class LiteLLMClient:
             try:
                 self.revoke(renewed)
             except CredentialError:
-                raise CredentialError(
+                raise IdentityChanged(
                     f"{error} Unexpected refresh grant could not be revoked; contact the gateway administrator."
                 ) from None
-            raise
+            raise IdentityChanged(str(error)) from None
         return renewed
 
     def revoke(self, session: Session) -> None:

@@ -207,9 +207,10 @@ Step 1 details (already implemented, 264 tests passing):
 - `cli.py`: one handler per subcommand, `--profile` only, `token --json`
   (prints access_token, expires_at, profile, gateway, team_id, user_id).
 
-**Pending:** the adversarial review of step 1 confirmed several issues; they
-are listed with scenarios and fixes in [`step1-review.md`](step1-review.md).
-Fix them first. Decided on 2026-10-08: the retry wait after a temporary failure
+**Step 1 review fixed (2026-10-08):** all seven issues in
+[`step1-review.md`](step1-review.md) are fixed with regression tests (280 tests
+passing on Windows). Not done, optional: an overall per-request deadline in
+`JsonTransport` and honoring `Retry-After`. Decided on 2026-10-08: the retry wait after a temporary failure
 (fix 3) and the "renewal refused, keep using the token until it nearly expires"
 state (fix 2) are stored as fields in the stored session itself, not in a
 separate file. Login and a successful renewal replace the session and so clear
@@ -252,10 +253,11 @@ Today LiteLLM leaks into the core: `Profile.team_id` (`profiles.py`),
    refresh, revoke); `sessions.py` → `auth/litellm_sso.py` (the `SessionManager`
    becomes the engine of the `litellm-sso` adapter). The team ID moves into the
    adapter's profile settings.
-5. **Profiles** (`profiles.json` version 2; greenfield, so existing local
+5. **Profiles** (`profiles.json` stays version 1: the tool has no users yet, so
+   formats are changed in place without version bumps; existing local
    profiles are re-added and signed in again):
    ```json
-   {"version": 2, "active": "consulting", "profiles": {"consulting": {
+   {"version": 1, "active": "consulting", "profiles": {"consulting": {
      "gateway": {"type": "litellm", "url": "https://llm.company.example", "allow_http": false},
      "auth": {"type": "litellm-sso", "team_id": "BUSINESS_UNIT_TEAM_ID"}}}}
    ```

@@ -12,6 +12,7 @@ from .errors import CredentialError
 from .copilot import CopilotStore, connection_key, setup as copilot_setup, validate_connection
 from .copilot_bridge import check as copilot_check, serve as copilot_serve
 from .editor_settings import editing, settings_file
+from .litellm import Session
 from .profiles import Profile, ProfileStore, default_home
 from .repositories import RepositoryStore, current_repository
 from .sessions import SessionManager
@@ -39,8 +40,17 @@ class Context:
     def sessions(self) -> SessionManager:
         return SessionManager(self.store, NativeKeyring())
 
+    def session(self) -> Session:
+        session = self.sessions.session(self.profile)
+        if session.needs_login:
+            notify(
+                f"Warning: the sign-in for '{self.profile.name}' can no longer be renewed; this token works until it "
+                f"expires. Run 'llm-credentials login --profile {self.profile.name}'."
+            )
+        return session
+
     def token(self) -> str:
-        return self.sessions.token(self.profile)
+        return self.session().access_token
 
 
 def _pick_customer(profile: Profile, token: Callable[[], str], prefix: str | None) -> str:
@@ -103,7 +113,7 @@ def token(context: Context) -> None:
         print(context.token())
         return
     profile = context.profile
-    session = context.sessions.session(profile)
+    session = context.session()
     print(json.dumps({
         "access_token": session.access_token,
         "expires_at": session.expires_at,

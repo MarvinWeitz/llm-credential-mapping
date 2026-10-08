@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from llm_credential_mapping.cli import main
 from llm_credential_mapping.errors import CredentialError
@@ -40,7 +40,7 @@ class CustomerCliTests(unittest.TestCase):
                 patch("llm_credential_mapping.cli.current_repository", side_effect=AssertionError), \
                 patch("llm_credential_mapping.cli.list_tags", side_effect=AssertionError), \
                 patch("llm_credential_mapping.cli.launch", return_value=7) as launch:
-            manager.return_value.token.return_value = "secret"
+            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
             self.assertEqual(self.call("run", "--profile", "consulting", "--customer", "customer:B", "claude"), 7)
         self.assertEqual(launch.call_args.args[5], "customer:B")
         self.assertFalse((self.home / "repositories.json").exists())
@@ -55,7 +55,7 @@ class CustomerCliTests(unittest.TestCase):
                 patch("llm_credential_mapping.cli.SessionManager") as manager, \
                 patch("llm_credential_mapping.cli.list_tags", side_effect=AssertionError), \
                 patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
-            manager.return_value.token.return_value = "same-secret"
+            manager.return_value.session.return_value = Mock(access_token="same-secret", needs_login=False)
             self.assertEqual(self.call("run", "claude"), 0)
         self.assertEqual(launch.call_args.args[5], "customer:A")
 
@@ -68,7 +68,7 @@ class CustomerCliTests(unittest.TestCase):
                 patch.object(stdin, "isatty", return_value=True), \
                 patch("llm_credential_mapping.cli.list_tags", return_value=[Tag("customer:A"), Tag("customer:B")]) as catalogue, \
                 patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
-            manager.return_value.token.return_value = "secret"
+            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
             self.assertEqual(self.call("run", "--tag-prefix", "customer:", "claude"), 0)
         self.assertEqual(launch.call_args.args[5], "customer:B")
         self.assertEqual(RepositoryStore(self.store).get(self.profile.gateway, self.repository), "customer:B")
@@ -137,7 +137,7 @@ class CustomerCliTests(unittest.TestCase):
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
                 patch("llm_credential_mapping.cli.SessionManager") as manager, \
                 patch("llm_credential_mapping.cli.list_tags", return_value=[Tag("customer:A", "Customer A")]) as catalogue:
-            manager.return_value.token.return_value = "secret"
+            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
             self.assertEqual(self.call("tags", "list", "--profile", "consulting", "--prefix", "customer:", "--json"), 0)
         self.assertEqual(json.loads(self.stdout.getvalue()), [{"name": "customer:A", "description": "Customer A"}])
         catalogue.assert_called_once_with(self.profile, "secret", "customer:")

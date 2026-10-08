@@ -6,6 +6,7 @@ import tempfile
 import tomllib
 import unittest
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -244,10 +245,22 @@ class CliTests(unittest.TestCase):
         store.add(Profile("a", "https://example.com", "a"))
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
                 patch("llm_credential_mapping.cli.SessionManager") as manager:
-            manager.return_value.token.return_value = "access-secret"
+            manager.return_value.session.return_value = Mock(access_token="access-secret", needs_login=False)
             self.assertEqual(self.call("token", "--profile", "a"), 0)
         self.assertEqual(self.stdout.getvalue(), "access-secret\n")
         self.assertEqual(self.stderr.getvalue(), "")
+
+    def test_token_that_can_no_longer_be_renewed_is_released_with_a_stderr_warning(self):
+        store = ProfileStore(self.home)
+        profile = Profile("a", "https://example.com", "a")
+        store.add(profile)
+        vault = MemoryStore()
+        vault.put(profile.account, replace(make_session(profile), needs_login=True).to_dict())
+        with patch("llm_credential_mapping.cli.NativeKeyring", return_value=vault):
+            self.assertEqual(self.call("token"), 0)
+        self.assertEqual(self.stdout.getvalue(), "access-secret\n")
+        self.assertIn("login --profile a", self.stderr.getvalue())
+        self.assertNotIn("access-secret", self.stderr.getvalue())
 
     def test_token_json_has_expiry_and_context_but_no_refresh_token(self):
         store = ProfileStore(self.home)
@@ -276,7 +289,7 @@ class CliTests(unittest.TestCase):
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
                 patch("llm_credential_mapping.cli.SessionManager") as manager, \
                 patch("llm_credential_mapping.cli.launch", return_value=9) as launched:
-            manager.return_value.token.return_value = "secret"
+            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
             self.assertEqual(self.call("run", "--profile", "a", "--customer", "customer:A", "claude", "--", "--resume"), 9)
             self.assertEqual(launched.call_args.args[3], ["--resume"])
             self.assertEqual(launched.call_args.args[5], "customer:A")
@@ -286,7 +299,7 @@ class CliTests(unittest.TestCase):
         with patch("llm_credential_mapping.cli.NativeKeyring"), \
                 patch("llm_credential_mapping.cli.SessionManager") as manager, \
                 patch("llm_credential_mapping.cli.launch", return_value=0) as launched:
-            manager.return_value.token.return_value = "secret"
+            manager.return_value.session.return_value = Mock(access_token="secret", needs_login=False)
             self.assertEqual(
                 self.call("run", "--profile", "a", "--customer", "customer:A", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
             )
