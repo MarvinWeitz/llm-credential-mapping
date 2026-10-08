@@ -76,6 +76,9 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(rules.match(("github.com/acme/web",))[0], "customer-other")
         self.assertIsNone(rules.match(("gitlab.com/acme-eu/web",)))
         self.assertEqual(rules.match(("gitlab.com/me/fork", "github.com/acme-eu/web"))[2], "github.com/acme-eu/web")
+        fork = rules.match(("github.com/me/fork", "github.com/acme-eu/web"))
+        self.assertEqual(fork[:2], ("customer-acme", "github.com/acme-*/**"), "rule order beats origin before upstream")
+        self.assertEqual(rules.match(("github.com/me/fork", "gitlab.com/x/y"))[0], "customer-other")
         single = Rules.parse({"version": 1, "rules": [{"match": "GitHub.com/a?c/*", "customer": "c"}]}, "test")
         self.assertIsNotNone(single.match(("github.com/abc/repo",)))
         self.assertIsNone(single.match(("github.com/abc/repo/x",)))
@@ -206,8 +209,7 @@ class ResolverTests(unittest.TestCase):
         self.directory = self.root / "home" / "repo"
         self.directory.mkdir(parents=True)
         self.checkout = Checkout(self.directory, "github.com/me/fork", "github.com/acme-eu/web")
-        # Without a catch-all rule, so a fork's origin falls through to its upstream.
-        self.rules = Rules.parse({**DOCUMENT, "rules": DOCUMENT["rules"][:1]}, "test")
+        self.rules = Rules.parse(DOCUMENT, "test")
 
     def resolve(self, checkout=None, explicit=None, environ=None, rules=None):
         return resolve_customer(

@@ -177,9 +177,13 @@ class Rules:
         return cls(tuple(rules), tuple(customers), source)
 
     def match(self, identities: tuple[str, ...]) -> tuple[str, str, str] | None:
-        """Return (customer, pattern, identity) for the first rule matching origin, then upstream."""
-        for identity in identities:
-            for pattern, customer in self.rules:
+        """Return (customer, pattern, identity) for the first rule matching origin or upstream.
+
+        Rule order decides: list specific rules before catch-alls. A fork therefore gets the rule for
+        its upstream even when a later catch-all would match its own origin.
+        """
+        for pattern, customer in self.rules:
+            for identity in identities:
                 if _glob(pattern).fullmatch(identity):
                     return customer, pattern, identity
         return None

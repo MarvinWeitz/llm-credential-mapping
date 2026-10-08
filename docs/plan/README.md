@@ -262,9 +262,10 @@ described below, with these differences:
   prints `customer`, `source`, `detail`, `repository` and `headers`.
 - `repo bind --shared` overwrites an existing `.llm-customer` and warns when a
   personal or environment override still takes precedence there.
-- Open question: origin is matched against all rules before upstream, so in a
-  fork a catch-all rule (`github.com/**`) on the origin beats a specific rule
-  for the upstream. Revisit if central rules use catch-alls.
+- Rule order decides (changed from "origin against all rules before
+  upstream"): each rule is tried against origin, then upstream, before the
+  next rule. Admins list specific rules before catch-alls, so a fork gets its
+  upstream's specific rule even when a later catch-all matches its origin.
 
 ## Step 2: adapter seams (no behavior change)
 
@@ -358,7 +359,7 @@ header), `cli.py`, tests.
       "rules": [{"match": "github.com/acme-*/**", "customer": "customer-acme"}]}
      ```
      `**` spans segments, `*`/`?` stay within a segment, full match, lowercase.
-     Origin is tried against all rules before upstream.
+     First matching rule wins; each rule is tried against origin, then upstream.
    - URLs cached in `<home>/rules-cache/<sha256(url)>.json` for 1 h with ETag;
      on fetch failure use the stale cache; bearer token sent only when the
      URL has the gateway's origin.
