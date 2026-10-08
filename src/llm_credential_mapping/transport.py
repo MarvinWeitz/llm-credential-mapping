@@ -30,8 +30,10 @@ class GatewayError(CredentialError):
 class JsonTransport:
     """Fetch JSON with verified TLS, bounded responses and no redirects or automatic retries."""
 
-    def request(self, method: str, url: str, payload: dict | None = None, *, form=False) -> dict:
-        value = self._request(method, url, payload, form=form)
+    def request(
+        self, method: str, url: str, payload: dict | None = None, *, form=False, headers: dict[str, str] | None = None,
+    ) -> dict:
+        value = self._request(method, url, payload, form=form, headers=headers)
         if not isinstance(value, dict):
             raise CredentialError("Gateway returned an unexpected JSON structure.")
         return value

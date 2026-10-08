@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 from llm_credential_mapping import registry
 from llm_credential_mapping.adapters import Api, Credential, IntegrationContext
@@ -81,7 +83,9 @@ class FakeAdapterTests(unittest.TestCase):
             adapter.start()
             self.addCleanup(adapter.stop)
         self.profile = Profile("fake", "https://fake.example", {}, "fake", "fixed")
-        self.context = IntegrationContext(self.profile, FakeGateway(self.profile), "fixed-secret")
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        self.context = IntegrationContext(self.profile, FakeGateway(self.profile), "fixed-secret", Path(home.name))
         self.attribution = Attribution("customer:A", "explicit", "--customer")
 
     def command(self, agent, args=(), model="alias"):
@@ -96,17 +100,19 @@ class FakeAdapterTests(unittest.TestCase):
 
     def test_codex_maps_every_attribution_header_to_its_variable(self):
         args, env = self.command("codex")
-        provider = "model_providers.llm-credential-mapping."
+        provider = "model_providers.llm-credentials."
         self.assertIn(provider + 'base_url="https://fake.example/openai/responses"', args)
         for name, value in (("x-test-customer", "customer:A"), ("x-test-source", "explicit")):
             self.assertIn(f'{provider}env_http_headers.{name}="{header_variable(name)}"', args)
             self.assertEqual(env[header_variable(name)], value)
 
-    def test_opencode_sends_the_gateway_headers_to_its_chat_endpoint(self):
+    def test_opencode_plugin_targets_the_gateway_chat_endpoint(self):
         _, env = self.command("opencode")
-        options = json.loads(env["OPENCODE_CONFIG_CONTENT"])["provider"]["llm-credential-mapping"]["options"]
-        self.assertEqual(options["baseURL"], "https://fake.example/openai/chat")
-        self.assertEqual(options["headers"], {"x-test-customer": "customer:A", "x-test-source": "explicit"})
+        config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual(config["provider"]["llm-credentials"]["options"]["baseURL"], "https://fake.example/openai/chat")
+        plugin = Path(url2pathname(urlsplit(config["plugin"][-1]).path)).read_text(encoding="utf-8")
+        self.assertIn('"baseURL": "https://fake.example/openai/chat"', plugin)
+        self.assertNotIn("litellm", plugin.lower())
 
     def test_missing_api_fails_clearly(self):
         with patch.dict(FakeGateway.apis, clear=True), self.assertRaises(CredentialError) as error:

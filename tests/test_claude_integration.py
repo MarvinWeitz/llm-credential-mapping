@@ -16,6 +16,7 @@ from llm_credential_mapping.integrations.claude import Claude, settings_path
 from llm_credential_mapping.integrations.common import shell_command
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.registry import gateway_for
+from isolation import isolate_tool_configuration
 
 ATTRIBUTION = Attribution("customer:A", "file", "/repo/.llm-customer", "github.com/acme/web")
 HEADERS = 'x-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {"customer_source":"file","repository":"github.com/acme/web"}'
@@ -26,12 +27,10 @@ class ClaudeTestCase(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        self.config = self.root / "claude-config"
+        isolate_tool_configuration(self)
+        self.config = Path(os.environ["CLAUDE_CONFIG_DIR"])
         self.home = self.root / "credentials"
         self.home.mkdir()
-        environment = patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.config)})
-        environment.start()
-        self.addCleanup(environment.stop)
         for name in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "LLM_CREDENTIALS_CUSTOMER"):
             os.environ.pop(name, None)
         self.profile = Profile("unit", "https://gateway.example", {"team_id": "t"})
@@ -222,14 +221,16 @@ class CliTests(ClaudeTestCase):
         with patch("llm_credential_mapping.cli.find_checkout", side_effect=RuntimeError("boom")):
             self.assertIn("could not check", self.guard())
 
-    def test_setup_needs_a_sign_in_and_other_tools_point_to_run(self):
-        with patch("llm_credential_mapping.cli.auth_for") as auth:
-            auth.return_value.credential.return_value = Credential("secret")
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+    def test_setup_needs_a_sign_in_and_can_be_removed(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with patch("llm_credential_mapping.cli.NativeKeyring"), patch("llm_credential_mapping.cli.auth_for") as auth:
+                auth.return_value.credential.side_effect = CredentialError("No login for 'unit'")
+                self.assertEqual(main(["--home", str(self.home), "setup", "claude"]), 1)
+                auth.return_value.credential.side_effect = None
+                auth.return_value.credential.return_value = Credential("secret")
                 self.assertEqual(main(["--home", str(self.home), "setup", "claude", "--model", "alias"]), 0)
-                self.assertEqual(main(["--home", str(self.home), "setup", "codex"]), 1)
-                self.assertEqual(main(["--home", str(self.home), "setup", "claude", "--remove"]), 0)
+            self.assertEqual(main(["--home", str(self.home), "setup", "claude", "--remove"]), 0)
+        self.assertIn("No login", stderr.getvalue())
         self.assertIn("disableLoginPrompt", stdout.getvalue())
-        self.assertIn("run codex", stderr.getvalue())
         self.assertNotIn("apiKeyHelper", self.read())

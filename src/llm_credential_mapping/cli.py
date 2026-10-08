@@ -15,8 +15,10 @@ from .copilot import CopilotStore, connection_key, setup as copilot_setup, valid
 from .copilot_bridge import check as copilot_check, serve as copilot_serve
 from .profiles import Profile, ProfileStore, default_home
 from .integrations.claude import Claude
+from .integrations.common import header_variable
 from .registry import AUTH, GATEWAYS, INTEGRATIONS, auth_for, gateway_for
 from .repositories import Checkout, RepositoryStore, find_checkout
+from .shells import SHELLS, assignments, hook
 from .storage import NativeKeyring
 
 
@@ -180,6 +182,17 @@ def login(context: Context) -> None:
 
 
 def token(context: Context) -> None:
+    if context.args.require_attribution_env:
+        # For tools that send attribution headers from environment variables (Codex): no customer, no credential.
+        missing = [
+            header_variable(name) for name in context.gateway.attribution_header_names()
+            if not os.environ.get(header_variable(name), "").strip()
+        ]
+        if missing:
+            raise CredentialError(
+                f"No customer for this session ({', '.join(missing)} not set). Add the hook from "
+                "'llm-credentials shell-init SHELL' to your shell profile, or start the tool with 'llm-credentials run'."
+            )
     credential = context.credential()
     if not context.args.json:
         print(credential.secret)
@@ -214,8 +227,26 @@ def tags_list(context: Context) -> None:
     notify(f"{len(tags)} visible customer(s). Visibility is not customer authorization.")
 
 
-def repo_list(context: Context) -> None:
-    print(json.dumps(RepositoryStore(context.store).list(context.profile.gateway), indent=2))
+def _print_environment(context: Context, shell: str, directory: Path, checkout: Checkout | None) -> None:
+    """Statements setting the attribution header variables for this directory, or unsetting them; never fails the shell."""
+    values: dict[str, str | None] = {
+        header_variable(name): None for name in context.gateway.attribution_header_names()
+    }
+    try:
+        attribution = context.resolve(directory, checkout)
+        if attribution is not None:
+            for name, value in context.gateway.attribution_headers(attribution).items():
+                values[header_variable(name)] = value
+    except CredentialError as error:
+        notify(f"llm-credentials: {error}")
+    print(assignments(shell, values))
+
+
+def shell_init(context: Context) -> None:
+    argv = [*_integration_context(context).cli_command("repo", "show", "--env", context.args.shell)]
+    if context.args.profile:
+        argv += ["--profile", context.args.profile]
+    print(hook(context.args.shell, argv))
 
 
 def _origin(checkout: Checkout | None) -> str:
@@ -230,6 +261,9 @@ def _origin(checkout: Checkout | None) -> str:
 def repo_show(context: Context) -> None:
     directory = _directory(context.args)
     checkout = find_checkout(directory)
+    if context.args.env:
+        _print_environment(context, context.args.env, directory, checkout)
+        return
     attribution = context.resolve(directory, checkout)
     if attribution is None:
         raise unmapped_error(directory, checkout)
@@ -311,8 +345,9 @@ def setup_tool(context: Context) -> None:
     if args.remove:
         notes = integration.remove(_integration_context(context))
     else:
-        context.credential()  # Fail now, not in the tool, when the profile is not signed in.
-        notes = integration.setup(_integration_context(context), args.model, args.replace)
+        # Fail now, not later in the tool, when the profile is not signed in; some tools list models with it.
+        token = context.token()
+        notes = integration.setup(_integration_context(context, token), args.model, args.replace)
     for note in notes:
         print(note)
 
@@ -459,7 +494,15 @@ def parser() -> argparse.ArgumentParser:
     command = commands.add_parser("token", help="Print a current access token for credential helpers.")
     _profile_option(command)
     command.add_argument("--json", action="store_true", help="Print the token with its expiry and nonsecret context.")
+    command.add_argument(
+        "--require-attribution-env", action="store_true",
+        help="Refuse unless the attribution header variables are set (for tools reading them from the environment).",
+    )
     command.set_defaults(handler=token)
+    command = commands.add_parser("shell-init", help="Print a shell profile hook that sets the customer per directory.")
+    command.add_argument("shell", choices=SHELLS)
+    _profile_option(command)
+    command.set_defaults(handler=shell_init)
     for name, handler, text in (
         ("status", status, "Show the sign-in state without printing credentials."),
         ("logout", logout, "Revoke the sign-in where possible and delete the local credential."),
@@ -488,7 +531,12 @@ def parser() -> argparse.ArgumentParser:
         if action != "list":
             command.add_argument("--directory", type=Path, help="Repository or folder; otherwise the current directory.")
         if action == "show":
-            command.add_argument("--json", action="store_true", help="Print one line of JSON including the request headers.")
+            output = command.add_mutually_exclusive_group()
+            output.add_argument("--json", action="store_true", help="Print one line of JSON including the request headers.")
+            output.add_argument(
+                "--env", choices=SHELLS,
+                help="Print statements setting the attribution header variables (unsetting them when unassigned).",
+            )
         if action == "bind":
             command.add_argument("--customer", help="Exact approved customer; otherwise choose from the catalogue.")
             command.add_argument("--tag-prefix", help="Filter the customer picker by this exact prefix.")

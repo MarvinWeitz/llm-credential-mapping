@@ -55,18 +55,6 @@ def header_variable(name: str) -> str:
     return "LLM_CREDENTIALS_HEADER_" + re.sub(r"[^A-Z0-9]", "_", name.upper())
 
 
-class LaunchOnly:
-    """For tools whose user-level setup does not exist yet; they can still be launched with ``run``."""
-
-    name = ""
-
-    def setup(self, context: IntegrationContext, model: str | None = None, replace: bool = False) -> list[str]:
-        raise CredentialError(f"Setup for {self.name} is not available yet; use 'llm-credentials run {self.name}'.")
-
-    def remove(self, context: IntegrationContext) -> list[str]:
-        return self.setup(context)
-
-
 def run(name: str, command: list[str], env: dict[str, str]) -> int:
     """Start the installed tool with a child-only environment and return its exit status."""
     executable = shutil.which(command[0])

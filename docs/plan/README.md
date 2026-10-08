@@ -305,6 +305,42 @@ and their tests. `request_context.py` stays for the Copilot bridge (step 7).
   multi-root workspaces. `README.md` still describes the removed wrapper
   (rewrite in step 7).
 
+**Step 5 done (2026-10-08), 254 tests passing on Windows** (plus 6 live tests
+in `tests/test_tools_native.py` with Codex 0.161.0 and OpenCode 1.18.34; set
+`LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY` / `..._OPENCODE_BINARY`).
+
+- Codex: `setup codex` writes two marker-delimited blocks into
+  `${CODEX_HOME:-~/.codex}/config.toml` (refuses another `model_provider`,
+  keeps an existing `model`); `run codex` passes the same provider with `-c`
+  and no token in the environment. Provider id is `llm-credentials` for all
+  tools. **Verified on the wire: when the token command fails, Codex sends the
+  request without any Authorization header** (not a hard stop); the gateway
+  rejects it, so nothing untagged is billed, but the prompt text reaches the
+  gateway. A gateway-side tag requirement remains the real safety net.
+- `token --require-attribution-env`, `repo show --env SHELL` and
+  `shell-init bash|zsh|fish|pwsh` (new `shells.py`) set only the nonsecret
+  `LLM_CREDENTIALS_HEADER_*` variables per directory. Bash and Windows
+  PowerShell hooks are tested in real shells; PowerShell reads multi-line
+  functions correctly only from a script file (as a profile is).
+- OpenCode v1: a generated plugin (`<home>/opencode/llm-credentials-PROFILE.js`)
+  hooks `chat.headers`. Verified with 1.18.34: plugins load from a `file://`
+  URL in `plugin`; the hook input has `model.providerID` and
+  `provider.options.baseURL` (the plugin refuses other base URLs); setting
+  `Authorization` replaces the provider's placeholder key cleanly; throwing in
+  the hook stops the request before anything is sent; outside Git `worktree`
+  is `/`, so the plugin resolves `directory`. `setup opencode` writes
+  `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` (models from the
+  gateway's OpenAI model list, or `--model`); `run opencode` uses the same
+  plugin via `OPENCODE_CONFIG_CONTENT`, passing `--customer` as
+  `LLM_CREDENTIALS_CUSTOMER` to the plugin's resolver.
+- OpenCode v2 (different plugin API, not installed here): `setup` refuses;
+  `run` keeps the previous launch-time token with fixed headers.
+- Not covered: the Codex IDE extension (no per-repository environment).
+- Test isolation: a test once ran `setup codex` against the real
+  `~/.codex/config.toml` (created it; removed again, nothing else existed).
+  Tests that run `setup` now use `tests/isolation.py`, which points
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `XDG_CONFIG_HOME` at temporary folders.
+
 ## Step 2: adapter seams (no behavior change)
 
 Goal: put the [adapter interfaces](#adapters-both-ends-are-replaceable) in place
