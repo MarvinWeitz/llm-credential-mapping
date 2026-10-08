@@ -237,9 +237,12 @@ class SessionManager:
 class LiteLLMSSO:
     """The litellm-sso auth kind: LiteLLM's native CLI sign-in with rotating refresh grants."""
 
-    def __init__(self, profile: Profile, store: ProfileStore, secrets: SecretStore, manager: SessionManager | None = None) -> None:
+    def __init__(
+        self, profile: Profile, store: ProfileStore, secrets: Callable[[], SecretStore],
+        manager: SessionManager | None = None,
+    ) -> None:
         self.profile = profile
-        self.manager = manager or SessionManager(store, secrets)
+        self.manager = manager or SessionManager(store, secrets())
 
     def login(self, notify: Callable[[str], None], **options) -> Credential:
         return self._credential(self.manager.login(self.profile, notify, **options))

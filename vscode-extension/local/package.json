@@ -1,0 +1,37 @@
+{
+  "name": "llm-credentials-local",
+  "displayName": "LLM Credentials: local sign-in",
+  "description": "Relays your local llm-credentials sign-in into dev containers and other remote windows; nothing is stored there.",
+  "version": "0.1.0",
+  "publisher": "llm-credentials",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onCommand:llmCredentials.local.request",
+    "onCommand:llmCredentials.local.signIn"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "llmCredentials.local.signIn",
+        "title": "Sign in on this computer",
+        "category": "LLM Credentials"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "node ../node_modules/typescript/bin/tsc -p .",
+    "test": "node ../node_modules/typescript/bin/tsc -p . && node --test \"out/test/*.test.js\"",
+    "package": "node ../node_modules/typescript/bin/tsc -p . && node ../node_modules/@vscode/vsce/vsce package --no-dependencies --allow-missing-repository --skip-license --out llm-credentials-local.vsix"
+  }
+}

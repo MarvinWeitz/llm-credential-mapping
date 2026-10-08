@@ -7,3 +7,4 @@ tsconfig.json
 *.vsix
 test-host/**
 .vscode-test/**
+local/**

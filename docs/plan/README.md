@@ -368,6 +368,39 @@ after a 401) and `repo show --json --directory FOLDER` (cached 30 s).
   and agent mode in real Copilot Chat, and the organization's "Bring Your Own
   Language Model Key" policy.
 
+**Dev container support done (2026-10-08), before step 7.** Decision: forward
+the local sign-in instead of storing credentials in containers (agents run
+there with shell access; a stored refresh grant would be 14 days of renewable
+access). The refresh grant stays in the local OS vault; containers only get
+short-lived access tokens on request. No service, no network port.
+
+- CLI: auth kind `forwarded` (`auth/forwarded.py`, any gateway kind): asks a
+  Unix socket (`$LLM_CREDENTIALS_AGENT`, else
+  `$XDG_RUNTIME_DIR/llm-credentials/agent.sock`, else
+  `/tmp/llm-credentials-<uid>/agent.sock`) with one JSON line
+  `{"version":1,"operation":"token"|"profile","profile":NAME}`. `login`/`logout`
+  point to the local machine. `profile add ... --auth forwarded
+  [--host-profile NAME]`. Auth kinds now get a vault *factory*, so commands in
+  containers never open an OS vault (there is none).
+- Main extension (`vscode-extension/src/agent.ts`): in remote windows it serves
+  that socket (directory must be ours and private, socket 0600; a second window
+  on the same container waits and takes over), sets `LLM_CREDENTIALS_AGENT` for
+  terminals, relays each request with `vscode.commands.executeCommand`, and
+  creates a `forwarded` profile from the local one when the container has none.
+  `llmCredentials.command` is now machine-scoped, so the local value does not
+  leak into containers.
+- Companion `vscode-extension/local/` ("LLM Credentials: local sign-in",
+  `extensionKind: ui`): commands `llmCredentials.local.request` (token or
+  nonsecret profile description, via the local CLI) and
+  `llmCredentials.local.signIn` (runs `login` locally with a progress note).
+- The CLI must be installed in the container (`pip install`); packaging it as
+  a Dev Container feature is done by the user, outside this repository.
+- Tests: Python client against a socket pair; relay server on a Windows named
+  pipe and on a Unix socket; the real pair (Node relay + Python CLI) in
+  `test/interop.test.ts` on Linux (CI; also run in Docker on Windows). The
+  two-extension relay through a real dev container window still needs a manual
+  check.
+
 ## Step 2: adapter seams (no behavior change)
 
 Goal: put the [adapter interfaces](#adapters-both-ends-are-replaceable) in place

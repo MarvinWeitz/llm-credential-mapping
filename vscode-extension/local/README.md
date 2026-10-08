@@ -1,0 +1,16 @@
+# LLM Credentials: local sign-in
+
+Install this in your **local** VS Code (it always runs on your own computer, also for dev
+container and SSH windows). It lets the LLM Credentials extension in a remote window use the
+sign-in of your local `llm-credentials` CLI:
+
+- the remote side only ever receives short-lived access tokens, on request;
+- the refresh grant stays in your local OS vault;
+- no background service, no network port: requests travel through VS Code itself.
+
+Settings (in your local user settings): `llmCredentials.command`, how to run the local CLI,
+e.g. `["C:\\path\\to\\venv\\Scripts\\python.exe", "-m", "llm_credential_mapping"]`; and
+`llmCredentials.profile`, the local profile (empty for the default).
+
+"LLM Credentials: Sign in on this computer" runs `llm-credentials login` locally; remote
+windows offer it when the local sign-in is missing or expired.

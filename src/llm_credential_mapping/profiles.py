@@ -3,6 +3,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -150,7 +151,15 @@ def atomic_write_text(
             os.fsync(output.fileno())
         if permissions is not None:
             os.chmod(filename, permissions)
-        os.replace(filename, path)
+        for attempt in range(10):
+            try:
+                os.replace(filename, path)
+                break
+            except PermissionError:
+                # Windows: virus scanners and the indexer briefly hold files open; give them a moment.
+                if os.name != "nt" or attempt == 9:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     finally:
         if filename and os.path.exists(filename):
             os.unlink(filename)

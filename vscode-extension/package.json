@@ -52,8 +52,8 @@
           "default": [
             "llm-credentials"
           ],
-          "scope": "machine-overridable",
-          "markdownDescription": "How to run the `llm-credentials` CLI, e.g. `[\"/path/to/venv/bin/llm-credentials\"]` or `[\"python\", \"-m\", \"llm_credential_mapping\"]`."
+          "scope": "machine",
+          "markdownDescription": "How to run the `llm-credentials` CLI on this machine (remote windows use the remote machine's own value), e.g. `[\"/path/to/venv/bin/llm-credentials\"]` or `[\"python\", \"-m\", \"llm_credential_mapping\"]`."
         },
         "llmCredentials.profile": {
           "type": "string",

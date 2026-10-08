@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .adapters import Auth, Gateway, Integration
-from .auth import litellm_sso
+from .auth import forwarded, litellm_sso
 from .errors import CredentialError
 from .gateways.litellm import LiteLLMGateway
 from .integrations.claude import Claude
@@ -16,15 +16,19 @@ from .storage import SecretStore
 
 @dataclass(frozen=True)
 class AuthKind:
-    """``settings`` validates and normalizes a profile's settings; ``gateways`` limits usable gateway kinds (None: any)."""
+    """``settings`` validates and normalizes a profile's settings; ``gateways`` limits usable gateway kinds (None: any).
 
-    create: Callable[[Profile, ProfileStore, SecretStore], Auth]
+    ``create`` receives a factory for the OS vault, so kinds that store nothing never open one.
+    """
+
+    create: Callable[[Profile, ProfileStore, Callable[[], SecretStore]], Auth]
     settings: Callable[[dict], dict]
     gateways: frozenset[str] | None = None
 
 
 AUTH: dict[str, AuthKind] = {
     "litellm-sso": AuthKind(litellm_sso.LiteLLMSSO, litellm_sso.settings, frozenset({"litellm"})),
+    "forwarded": AuthKind(forwarded.Forwarded, forwarded.settings),
 }
 GATEWAYS: dict[str, Callable[[Profile], Gateway]] = {
     "litellm": LiteLLMGateway,
@@ -48,7 +52,7 @@ def validate_profile(gateway_type: str, auth_type: str, settings: dict) -> dict:
     return kind.settings(settings)
 
 
-def auth_for(profile: Profile, store: ProfileStore, secrets: SecretStore) -> Auth:
+def auth_for(profile: Profile, store: ProfileStore, secrets: Callable[[], SecretStore]) -> Auth:
     return AUTH[profile.auth_type].create(profile, store, secrets)
 
 

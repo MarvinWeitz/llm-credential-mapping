@@ -42,7 +42,7 @@ class Context:
 
     @cached_property
     def auth(self) -> Auth:
-        return auth_for(self.profile, self.store, NativeKeyring())
+        return auth_for(self.profile, self.store, NativeKeyring)  # Only kinds that store credentials open the vault.
 
     @cached_property
     def gateway(self) -> Gateway:
@@ -124,7 +124,10 @@ def _pick_customer(context: Context, prefix: str | None) -> str:
 
 def profile_add(context: Context) -> None:
     args = context.args
-    settings = {"team_id": args.team_id} if args.team_id is not None else {}
+    # Each auth kind validates its own settings and rejects ones it does not use.
+    settings = {
+        name: value for name, value in (("team_id", args.team_id), ("host_profile", args.host_profile)) if value is not None
+    }
     profile = Profile(
         args.name, args.gateway, settings, args.gateway_type, args.auth, args.allow_insecure_localhost, args.rules,
     )
@@ -468,6 +471,10 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--gateway-type", choices=sorted(GATEWAYS), default="litellm", help="Gateway kind (default: litellm).")
     add.add_argument("--auth", choices=sorted(AUTH), default="litellm-sso", help="Sign-in kind (default: litellm-sso).")
     add.add_argument("--team-id", help="litellm-sso: exact LiteLLM team ID chosen at browser consent, not its display name.")
+    add.add_argument(
+        "--host-profile",
+        help="forwarded: the profile on your local machine whose sign-in VS Code relays (default: its selected profile).",
+    )
     add.add_argument("--allow-insecure-localhost", action="store_true", help="Development only.")
     add.add_argument("--rules", help="Central repository-to-customer rules: an HTTPS URL or an absolute file path.")
     add.set_defaults(handler=profile_add)
