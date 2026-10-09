@@ -368,6 +368,32 @@ after a 401) and `repo show --json --directory FOLDER` (cached 30 s).
   and agent mode in real Copilot Chat, and the organization's "Bring Your Own
   Language Model Key" policy.
 
+**Step 7 done (2026-10-09): all steps complete.** Removed the Copilot foreground bridge
+(`copilot.py`, `copilot_bridge.py`, `request_context.py`, their tests and CLI commands) and
+`repositories.current_repository`; the architecture test now has no legacy exemptions.
+README rewritten (quickstart, one section per tool, Dev Containers); the technical
+description with reasons is in `docs/architecture.md`, extension points in
+`docs/adapters.md`. Not done: ruff in CI (optional).
+
+Review against the goals:
+
+1. Interaction: once per machine (`profile add`, `login`, `setup` per tool, the Codex shell
+   hook, the VS Code extensions); per repository nothing when a central rule or committed
+   `.llm-customer` applies, otherwise one `repo bind`.
+2. Tools: Claude Code CLI, Codex and OpenCode v1 verified live; Copilot Chat verified by the
+   user locally and in a Dev Container; Dev Containers verified by the user. Not verified:
+   the Claude Code VS Code extension UI, macOS, SSH/WSL, Claude/Codex/OpenCode inside a
+   container. Not supported: Codex IDE extension, Copilot inline completions, Copilot CLI,
+   OpenCode v2 setup.
+3. SSO only: no `sk-` keys; every tool renews short-lived credentials through the CLI; the
+   refresh grant never leaves the local vault, also for containers.
+4. Replaceable ends: gateway, auth and tool adapters behind `registry.py`, guarded by
+   `tests/test_architecture.py` and exercised by fake adapters.
+
+Remaining follow-ups: gateway-side customer enforcement (the real safety net), personal
+assignments that survive container rebuilds, OpenCode v2 plugin, opt-in file store for
+machines without a vault, the Dev Container feature (user), and the items under Follow-ups.
+
 **Dev container support done (2026-10-08), before step 7.** Decision: forward
 the local sign-in instead of storing credentials in containers (agents run
 there with shell access; a stored refresh grant would be 14 days of renewable

@@ -147,23 +147,6 @@ def find_checkout(
     return Checkout(Path(toplevel.stdout.strip()), *identities)
 
 
-def current_repository(directory: Path | None = None) -> str:
-    # Used by the legacy editor adapters (deleted in plan steps 4 and 7); new code uses find_checkout.
-    """Identify the current Git repository by origin, including from subdirectories; never contact the remote."""
-    checkout = find_checkout(directory)
-    if checkout is None:
-        raise CredentialError(
-            "Git cannot identify a working tree in the lookup directory. "
-            "Check 'git rev-parse --show-toplevel' there, or use --customer."
-        )
-    if checkout.origin is None:
-        raise CredentialError(
-            "This repository has no usable HTTP/SSH origin remote. "
-            "Check 'git remote get-url origin', or use --customer or a .llm-customer file."
-        )
-    return checkout.origin
-
-
 class RepositoryStore:
     """Per-developer customer overrides keyed by gateway and normalized repository identity."""
 

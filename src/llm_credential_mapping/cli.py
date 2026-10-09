@@ -11,8 +11,6 @@ from .customers import (
     Attribution, Rules, RulesLoader, Tag, resolve_customer, unmapped_error, validate_customer, write_customer_file,
 )
 from .errors import CredentialError
-from .copilot import CopilotStore, connection_key, setup as copilot_setup, validate_connection
-from .copilot_bridge import check as copilot_check, serve as copilot_serve
 from .profiles import Profile, ProfileStore, default_home
 from .integrations.claude import Claude
 from .integrations.common import header_variable
@@ -392,64 +390,6 @@ def _refresh_claude(context: Context, directory: Path, checkout: Checkout | None
             notify(f"Updated {path}; running Claude sessions use the new customer from their next prompt.")
 
 
-# Copilot Chat foreground bridge
-
-
-def copilot_setup_command(context: Context) -> None:
-    args = context.args
-    connection = copilot_setup(
-        context.store, args.profile, args.model, args.directory, port=args.port,
-        max_input_tokens=args.max_input_tokens, max_output_tokens=args.max_output_tokens, vision=args.vision,
-    )
-    print(json.dumps(connection.model_settings(), indent=2))
-    notify(
-        f"Saved connection {connection.id}. Group name: {json.dumps(connection.group_name)}. "
-        "In Chat: Manage Language Models, add Custom Endpoint and enter the LOCAL key from 'copilot key'. "
-        "Choose Chat Completions. Merge only these apiType/models fields into the new group; "
-        "KEEP its VS Code-generated apiKey secret reference, name and vendor. "
-        "No editor files were changed. Run 'copilot serve' in this extension-host terminal, "
-        "then select this repository/customer model explicitly. Token limits are conservative defaults; "
-        "configure them to match the gateway model. No automatic active-workspace selection."
-    )
-
-
-def copilot_list(context: Context) -> None:
-    print(json.dumps([
-        {"connection": connection.id, **connection.__dict__}
-        for connection in CopilotStore(context.store).list()
-    ], indent=2))
-
-
-def copilot_key(context: Context) -> None:
-    connection = CopilotStore(context.store).select(context.args.connection)
-    _, manager = validate_connection(context.store, connection)
-    print(connection_key(connection, manager.secrets))
-    notify(
-        "This is a LOCAL bridge credential, not a LiteLLM access/refresh token. "
-        "Enter it only in this connection's native VS Code API key prompt; do not share or commit it."
-    )
-
-
-def copilot_serve_command(context: Context) -> None:
-    copilot_serve(context.store, context.args.connection, notify)
-
-
-def copilot_check_command(context: Context) -> None:
-    print(json.dumps(copilot_check(context.store, context.args.connection), indent=2))
-
-
-def copilot_disable(context: Context) -> None:
-    connection = CopilotStore(context.store).disable(context.args.connection)
-    print(f"Disabled Copilot connection {connection.id}.")
-    notify(
-        "New requests are blocked and its foreground bridge stops; in-flight requests may be interrupted. "
-        "Check the outcome before retrying interrupted generations or tool calls. "
-        "Select a normal GitHub Copilot model in the picker and start a new conversation. "
-        "Native UI registration, local key, LiteLLM logins and mappings were retained; "
-        "remove the group manually in Manage Language Models if desired. Rerun setup/serve to reconnect."
-    )
-
-
 def _profile_option(command: argparse.ArgumentParser) -> None:
     command.add_argument("--profile", help="Authentication profile; otherwise the selected default.")
 
@@ -577,27 +517,6 @@ def parser() -> argparse.ArgumentParser:
     _profile_option(guard)
     guard.set_defaults(handler=claude_guard)
 
-    copilot = commands.add_parser("copilot", help="Prototype: connect Copilot Chat through a pinned foreground bridge.")
-    copilot_actions = copilot.add_subparsers(dest="action", required=True)
-    copilot_setup_parser = copilot_actions.add_parser("setup", help="Save a bound connection and print fields for native UI setup.")
-    _profile_option(copilot_setup_parser)
-    copilot_setup_parser.add_argument("--model", required=True, help="Exact LiteLLM model alias; agents require tool calling.")
-    copilot_setup_parser.add_argument("--directory", type=Path, help="Git checkout to pin; otherwise current directory.")
-    copilot_setup_parser.add_argument("--port", type=int, default=8743, help="Private loopback port; default 8743.")
-    copilot_setup_parser.add_argument("--max-input-tokens", type=int, default=32000, help="Conservative advertised input limit.")
-    copilot_setup_parser.add_argument("--max-output-tokens", type=int, default=4096, help="Advertised and enforced output limit.")
-    copilot_setup_parser.add_argument("--vision", action="store_true", help="Declare image support only if the model supports it.")
-    copilot_setup_parser.set_defaults(handler=copilot_setup_command)
-    copilot_actions.add_parser("list", help="List saved nonsecret connections.").set_defaults(handler=copilot_list)
-    for action, handler, text in (
-        ("key", copilot_key, "Print only the local connection key for VS Code's API key prompt; treat it as a secret."),
-        ("serve", copilot_serve_command, "Run the foreground bridge in this extension-host terminal; Ctrl+C stops it."),
-        ("disable", copilot_disable, "Block the saved connection and stop its foreground bridge; retain vault logins and UI registration."),
-        ("check", copilot_check_command, "Verify bridge readiness without printing either local or gateway credentials."),
-    ):
-        command = copilot_actions.add_parser(action, help=text)
-        command.add_argument("--connection", help="Exact ID from copilot list; optional only when one connection exists.")
-        command.set_defaults(handler=handler)
     return root
 
 

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.profiles import ProfileStore
-from llm_credential_mapping.repositories import RepositoryStore, current_repository, find_checkout, repository_identity
+from llm_credential_mapping.repositories import RepositoryStore, find_checkout, repository_identity
 
 
 class RepositoryTests(unittest.TestCase):
@@ -97,34 +97,28 @@ class RepositoryTests(unittest.TestCase):
         )
         child = root / "nested"
         child.mkdir()
-        self.assertEqual(current_repository(child), self.repository)
+        checkout = find_checkout(child, None)
+        self.assertEqual((checkout.root.resolve(), checkout.origin, checkout.upstream), (root.resolve(), self.repository, None))
 
-    def test_missing_git_or_origin_is_actionable_and_redacted(self):
+    def test_missing_git_no_checkout_or_no_origin_are_not_errors(self):
         with patch("llm_credential_mapping.repositories.subprocess.run", side_effect=FileNotFoundError("secret")):
-            with self.assertRaises(CredentialError) as error:
-                current_repository(self.home)
-            self.assertIn("--customer", str(error.exception))
-            self.assertNotIn("secret", str(error.exception))
-        with self.assertRaises(CredentialError):
-            current_repository(self.home)
-
-    def test_git_errors_identify_the_stage_without_exposing_raw_stderr(self):
-        cases = [
-            ([subprocess.CompletedProcess([], 1, "", "fatal: secret-not-a-repo")], "working tree"),
-            ([
-                subprocess.CompletedProcess([], 0, str(self.home), ""),
-                subprocess.CompletedProcess([], 1, "", "fatal: secret-no-remote"),
-                subprocess.CompletedProcess([], 1, "", "fatal: secret-no-remote"),
-            ], "origin remote"),
-            ([subprocess.CompletedProcess([], 128, "", "fatal: detected dubious ownership secret-path")], "dubious ownership"),
+            self.assertIsNone(find_checkout(self.home, None))
+        results = [
+            subprocess.CompletedProcess([], 0, str(self.home), ""),
+            subprocess.CompletedProcess([], 1, "", "fatal: secret-no-remote"),
+            subprocess.CompletedProcess([], 0, "file:///secret/local", ""),
         ]
-        for results, expected in cases:
-            with self.subTest(expected=expected), \
-                    patch("llm_credential_mapping.repositories.subprocess.run", side_effect=results):
-                with self.assertRaises(CredentialError) as error:
-                    current_repository(self.home)
-                self.assertIn(expected, str(error.exception))
-                self.assertNotIn("secret", str(error.exception))
+        with patch("llm_credential_mapping.repositories.subprocess.run", side_effect=results):
+            checkout = find_checkout(self.home, None)
+        self.assertEqual((checkout.origin, checkout.upstream), (None, None))
+
+    def test_dubious_ownership_is_an_error_without_raw_stderr(self):
+        result = subprocess.CompletedProcess([], 128, "", "fatal: detected dubious ownership secret-path")
+        with patch("llm_credential_mapping.repositories.subprocess.run", return_value=result):
+            with self.assertRaises(CredentialError) as error:
+                find_checkout(self.home, None)
+        self.assertIn("dubious ownership", str(error.exception))
+        self.assertNotIn("secret", str(error.exception))
 
     def test_binding_persists_per_gateway_and_explicit_changes_are_required(self):
         self.assertIsNone(self.store.get(self.gateway, self.repository))

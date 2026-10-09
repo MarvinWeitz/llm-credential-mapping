@@ -6,17 +6,15 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "llm_credential_mapping"
 ADAPTER_PACKAGES = ("auth", "gateways")
-# The legacy Copilot bridge uses LiteLLM directly; deleted in plan step 7.
-LEGACY = {"copilot.py", "copilot_bridge.py", "request_context.py"}
 
 VENDOR_STRINGS = ("x-litellm", "/tag/list", "/v1", "litellm-cli-auth")
 
 
 def neutral_modules():
-    """Core and integration modules, i.e. everything outside the adapter packages and legacy modules."""
+    """Core and integration modules, i.e. everything outside the adapter packages."""
     for path in sorted(PACKAGE.rglob("*.py")):
         relative = path.relative_to(PACKAGE)
-        if relative.parts[0] in ADAPTER_PACKAGES or (len(relative.parts) == 1 and relative.name in LEGACY):
+        if relative.parts[0] in ADAPTER_PACKAGES:
             continue
         yield relative, ast.parse(path.read_text(encoding="utf-8"))
 
