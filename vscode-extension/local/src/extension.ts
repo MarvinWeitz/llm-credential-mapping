@@ -4,15 +4,26 @@ import { execFile } from "node:child_process";
 import * as vscode from "vscode";
 import { answer, RunError, type Run } from "./handler";
 
-function runner(timeout = 60000): Run {
+/**
+ * The local CLI. `llmCredentials.localCommand` is application-scoped, so it is read from the local user settings in
+ * every window; the main extension's machine-scoped `llmCredentials.command` is hidden in remote windows.
+ */
+function localCommand(): string[] {
   const settings = vscode.workspace.getConfiguration("llmCredentials");
-  const command = settings.get<string[]>("command", ["llm-credentials"]);
+  const local = settings.get<string[]>("localCommand", []);
+  if (Array.isArray(local) && local.length) return local;
+  const command = settings.inspect<string[]>("command")?.globalValue;
+  return Array.isArray(command) && command.length ? command : ["llm-credentials"];
+}
+
+function runner(timeout = 60000): Run {
+  const command = localCommand();
   return (args) => new Promise((resolve, reject) => {
     execFile(command[0], [...command.slice(1), ...args], { windowsHide: true, maxBuffer: 4 << 20, timeout }, (error, stdout, stderr) => {
       if (!error) return resolve(stdout);
       const notFound = (error as NodeJS.ErrnoException).code === "ENOENT";
       reject(new RunError(notFound
-        ? `Cannot run ${command[0]} on this computer; set llmCredentials.command in your local user settings.`
+        ? `Cannot run ${command[0]} on this computer; set llmCredentials.localCommand in your user settings.`
         : String(stderr || error.message).replace(/^Error: /, "").trim()));
     });
   });
