@@ -2,7 +2,7 @@
   "name": "llm-credentials-local",
   "displayName": "LLM Credentials: local sign-in",
   "description": "Relays your local llm-credentials sign-in into dev containers and other remote windows; nothing is stored there.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "llm-credentials",
   "private": true,
   "license": "UNLICENSED",

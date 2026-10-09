@@ -2,7 +2,7 @@
   "name": "llm-credentials-vscode",
   "displayName": "LLM Credentials for Copilot Chat",
   "description": "Gateway models in Copilot Chat with your llm-credentials sign-in and each workspace's customer.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "llm-credentials",
   "private": true,
   "license": "UNLICENSED",
