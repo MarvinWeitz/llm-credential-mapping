@@ -21,6 +21,7 @@ from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.registry import gateway_for
 from llm_credential_mapping.shells import SHELLS, assignments, hook
 from isolation import isolate_tool_configuration
+from live import unavailable
 
 TAG = header_variable("x-litellm-tags")
 METADATA = header_variable("x-litellm-spend-logs-metadata")
@@ -183,10 +184,14 @@ class ShellTests(unittest.TestCase):
     def run_shell(self, name, script):
         executable = self.shell(name)
         if executable is None:
-            self.skipTest(f"{name} is not installed")
+            unavailable(self, name, f"{name} is not installed")
         environment = {**os.environ, "LLM_CREDENTIALS_TEST_B": "stale"}
         with tempfile.TemporaryDirectory() as directory:
-            command = [executable, "-c", script]
+            # No user startup files: they could change the environment under test.
+            command = {
+                "zsh": [executable, "-f", "-c", script],
+                "fish": [executable, "--no-config", "-c", script],
+            }.get(name, [executable, "-c", script])
             if name == "pwsh":
                 # Like a profile: PowerShell reads multi-line functions correctly only from a script file.
                 path = Path(directory) / "script.ps1"
@@ -197,6 +202,8 @@ class ShellTests(unittest.TestCase):
     def test_assignments_survive_quotes_and_unset_stale_values(self):
         printers = {
             "bash": 'printf "%s|%s" "$LLM_CREDENTIALS_TEST_A" "${LLM_CREDENTIALS_TEST_B-unset}"',
+            "zsh": 'printf "%s|%s" "$LLM_CREDENTIALS_TEST_A" "${LLM_CREDENTIALS_TEST_B-unset}"',
+            "fish": 'printf "%s|" "$LLM_CREDENTIALS_TEST_A"; set -q LLM_CREDENTIALS_TEST_B; and printf set; or printf unset',
             "pwsh": '[Console]::Write($env:LLM_CREDENTIALS_TEST_A + "|" + $(if ($env:LLM_CREDENTIALS_TEST_B) { "set" } else { "unset" }))',
         }
         for name, printer in printers.items():
@@ -218,6 +225,9 @@ class ShellTests(unittest.TestCase):
             for name, cd, printer_line in (
                 ("bash", f"cd {json.dumps(folder.as_posix())} && __llm_credentials_hook", 'printf "%s" "$LLM_CREDENTIALS_TEST_A"'),
                 ("pwsh", f"Set-Location -LiteralPath '{folder}'; prompt | Out-Null", "[Console]::Write($env:LLM_CREDENTIALS_TEST_A)"),
+                # zsh (chpwd) and fish (PWD variable event) run the hook on cd, also in scripts.
+                ("zsh", f"cd {json.dumps(folder.as_posix())}", 'printf "%s" "$LLM_CREDENTIALS_TEST_A"'),
+                ("fish", f"cd {json.dumps(folder.as_posix())}", 'printf "%s" "$LLM_CREDENTIALS_TEST_A"'),
             ):
                 with self.subTest(shell=name):
                     argv = [sys.executable, str(printer), name]

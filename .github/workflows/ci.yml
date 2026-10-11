@@ -25,6 +25,72 @@ jobs:
       - run: python -m pip wheel --no-cache-dir --no-deps --wheel-dir dist .
       - run: llm-credentials --help
 
+  # The whole suite with the real agents (pinned in ci/agents) and shells. Everything listed in
+  # LLM_CREDENTIAL_MAPPING_REQUIRE must be present: a missing tool fails instead of skipping.
+  live:
+    name: live (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            require: claude,codex,opencode,bash,zsh,fish,pwsh
+          - os: macos-latest
+            require: claude,codex,opencode,bash,zsh,fish,pwsh
+          - os: windows-latest
+            require: claude,codex,opencode,bash,pwsh
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+      - if: runner.os == 'macOS'
+        run: brew install fish
+      - run: python -m pip install -e .
+      # With install scripts: Claude Code and OpenCode put their native binary in place on install.
+      - run: npm ci --no-audit --no-fund
+        working-directory: ci/agents
+      - run: node ci/agents/locate.mjs >> "$GITHUB_ENV"
+        shell: bash
+      - run: python -m unittest discover -s tests -v
+        env:
+          LLM_CREDENTIAL_MAPPING_REQUIRE: ${{ matrix.require }}
+
+  # The real OS credential vault: sign-in, renewal and logout against a fake gateway, and sessions
+  # split across vault entries. Writes only uniquely named test entries.
+  vault:
+    name: vault (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      LLM_CREDENTIAL_MAPPING_TEST_VAULT: "1"
+      LLM_CREDENTIAL_MAPPING_REQUIRE: vault
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e .
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gnome-keyring dbus
+      # Linux: a Secret Service in a private D-Bus session, unlocked like a desktop login would.
+      - if: runner.os == 'Linux'
+        run: >-
+          dbus-run-session -- bash -c
+          'printf ci | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+          && python -m unittest discover -s tests -p "test_vault_native.py" -v'
+      - if: runner.os != 'Linux'
+        run: python -m unittest discover -s tests -p "test_vault_native.py" -v
+
   vscode-extension:
     runs-on: ubuntu-latest
     defaults:

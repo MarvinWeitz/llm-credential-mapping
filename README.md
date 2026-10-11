@@ -177,10 +177,21 @@ cd vscode-extension && npm test && npm run test:host     # extension unit tests;
 cd vscode-extension/local && npm test
 ```
 
-Optional live tests with the real tools against a local fake gateway are enabled by
-`LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY`, `LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY` and
-`LLM_CREDENTIAL_MAPPING_TEST_OPENCODE_BINARY`. CI runs the Python suite on Windows, macOS and
-Linux, and builds and tests both extensions. How it works and why:
+Live tests run the real tools against a local fake gateway (no model calls, no secrets). Install
+the pinned versions and point the tests at them:
+
+```bash
+cd ci/agents && npm ci && cd ../..
+export $(node ci/agents/locate.mjs)    # sets LLM_CREDENTIAL_MAPPING_TEST_{CLAUDE,CODEX,OPENCODE}_BINARY
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+`LLM_CREDENTIAL_MAPPING_TEST_VAULT=1` also runs `tests/test_vault_native.py` against your real OS vault (uniquely named test entries, removed afterwards).
+
+Locally, missing tools and shells skip their tests. CI sets `LLM_CREDENTIAL_MAPPING_REQUIRE`
+(e.g. `claude,codex,opencode,bash,zsh,fish,pwsh`) so they fail instead. CI runs the Python suite
+on Windows, macOS and Linux, the live tests with all three agents and the shell hooks (bash,
+zsh, fish, PowerShell) on each of them, and builds and tests both extensions. How it works and why:
 [docs/architecture.md](docs/architecture.md); extending it: [docs/adapters.md](docs/adapters.md).
 This is an independent project, not an official LiteLLM client, and has no open-source
 license assigned yet.

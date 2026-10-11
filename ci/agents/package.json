@@ -1,0 +1,10 @@
+{
+  "name": "llm-credentials-ci-agents",
+  "private": true,
+  "description": "Pinned AI coding agents for the live CI tests. Update the versions here and run npm install to refresh the lockfile.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.292",
+    "@openai/codex": "0.161.0",
+    "opencode-ai": "1.18.34"
+  }
+}

@@ -98,6 +98,9 @@ class OAuthFixture:
         self.challenge = None
         self.team = "team-a"
         self.user = "employee"
+        # Issued by /token for both grants; tests may set long values (e.g. to exceed a vault entry).
+        self.access_token = "fixture-access"
+        self.refresh_token = "fixture-refresh"
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -158,8 +161,8 @@ class OAuthFixture:
                             return
                     self.respond({
                         "token_type": "Bearer",
-                        "access_token": "fixture-access",
-                        "refresh_token": "fixture-refresh",
+                        "access_token": fixture.access_token,
+                        "refresh_token": fixture.refresh_token,
                         "expires_in": 3600,
                         "user_id": fixture.user,
                         "team_id": fixture.team,
