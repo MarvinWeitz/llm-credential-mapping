@@ -31,7 +31,7 @@ CUSTOMER = "customer:container"
 class DevContainerTests(unittest.TestCase):
     def setUp(self):
         self.gateway = os.environ["LLMC_GATEWAY"]
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)  # Codex clones plugins in the background.
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
         self.repo = self.root / "repo"
