@@ -38,8 +38,11 @@ async function main() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-credentials-host-"));
   const workspace = path.join(root, "workspace");
-  fs.mkdirSync(path.join(workspace, ".vscode"), { recursive: true });
-  fs.writeFileSync(path.join(workspace, ".vscode", "settings.json"), JSON.stringify({
+  fs.mkdirSync(workspace, { recursive: true });
+  // llmCredentials.command is machine-scoped: VS Code ignores it in workspace settings, so set it for the user.
+  const userSettings = path.join(root, "user-data", "User");
+  fs.mkdirSync(userSettings, { recursive: true });
+  fs.writeFileSync(path.join(userSettings, "settings.json"), JSON.stringify({
     "llmCredentials.command": [process.execPath, path.join(__dirname, "fake-cli.js")],
   }));
   const results = path.join(root, "results.txt");
