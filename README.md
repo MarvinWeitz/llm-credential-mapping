@@ -186,6 +186,8 @@ export $(node ci/agents/locate.mjs)    # sets LLM_CREDENTIAL_MAPPING_TEST_{CLAUD
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+`LLM_CREDENTIAL_MAPPING_TEST_VAULT=1` also runs `tests/test_vault_native.py` against your real OS vault (uniquely named test entries, removed afterwards).
+
 Locally, missing tools and shells skip their tests. CI sets `LLM_CREDENTIAL_MAPPING_REQUIRE`
 (e.g. `claude,codex,opencode,bash,zsh,fish,pwsh`) so they fail instead. CI runs the Python suite
 on Windows, macOS and Linux, the live tests with all three agents and the shell hooks (bash,
