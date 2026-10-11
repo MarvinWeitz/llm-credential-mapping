@@ -91,6 +91,25 @@ jobs:
       - if: runner.os != 'Linux'
         run: python -m unittest discover -s tests -p "test_vault_native.py" -v
 
+  # A real dev container (Dev Container CLI, Linux runner): the host signs in with its OS vault and runs the
+  # companion's handler; inside, the relay, the CLI's forwarded sign-in and the pinned agents.
+  devcontainer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - run: sudo apt-get update && sudo apt-get install -y gnome-keyring dbus
+      - run: python -m pip install -e .
+      # The relay and the companion's handler run from the compiled extensions.
+      - run: npm ci --ignore-scripts && npx tsc -p . && node node_modules/typescript/bin/tsc -p local
+        working-directory: vscode-extension
+      - run: dbus-run-session -- bash ci/devcontainer/host.sh
+
   # Both extensions on all three systems: unit tests, the relay against the real CLI (Linux, macOS),
   # and a real VS Code extension host with a fake CLI and gateway. Packaged once, on Linux.
   vscode-extension:
