@@ -25,6 +25,7 @@ from llm_credential_mapping.integrations.claude import Claude, settings_path
 from llm_credential_mapping.integrations.common import shell_command
 from llm_credential_mapping.profiles import ProfileStore
 from llm_credential_mapping.registry import gateway_for
+from live import binary_tests
 
 HELPER = """
 import sys
@@ -105,7 +106,7 @@ class FakeGateway:
         self.thread.join(timeout=5)
 
 
-@unittest.skipUnless(os.environ.get("LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY"), "Set LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY")
+@binary_tests("claude", "LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY")
 class NativeClaudeTests(unittest.TestCase):
     def setUp(self):
         self.binary = Path(os.environ["LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY"])
@@ -189,7 +190,11 @@ class NativeClaudeTests(unittest.TestCase):
         argv, env = Claude().command(
             context, Attribution("customer:cli", "explicit", "--customer"), ["-p", "Say OK", "--output-format", "json"], None,
         )
-        env = {**env, **self.environment}
+        # Apply only what the launcher changed, on top of the isolated environment: variables inherited
+        # from a surrounding Claude session (CLAUDE_CODE_REMOTE, ...) would change how Claude reads settings.
+        changed = {key: value for key, value in env.items() if os.environ.get(key) != value}
+        removed = set(os.environ) - set(env)
+        env = {key: value for key, value in {**self.environment, **changed}.items() if key not in removed}
         self.gateway.calls.clear()
         result = subprocess.run(
             [str(self.binary), *argv[1:]], cwd=self.repo, env=env, capture_output=True, text=True, timeout=180, check=False,

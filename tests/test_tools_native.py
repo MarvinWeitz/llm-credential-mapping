@@ -29,6 +29,7 @@ from llm_credential_mapping.integrations.opencode import OpenCode
 from llm_credential_mapping.profiles import ProfileStore
 from llm_credential_mapping.registry import gateway_for
 from llm_credential_mapping.shells import assignments
+from live import binary_tests
 
 STUB = """
 import json, os, subprocess, sys
@@ -163,7 +164,7 @@ class NativeToolCase(unittest.TestCase):
             self.assertIn("customer_source", headers["x-litellm-spend-logs-metadata"])
 
 
-@unittest.skipUnless(os.environ.get("LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY"), "Set LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY")
+@binary_tests("codex", "LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY")
 class NativeCodexTests(NativeToolCase):
     def setUp(self):
         super().setUp()
@@ -210,7 +211,7 @@ class NativeCodexTests(NativeToolCase):
         self.assert_tagged(output, "customer:cli")
 
 
-@unittest.skipUnless(os.environ.get("LLM_CREDENTIAL_MAPPING_TEST_OPENCODE_BINARY"), "Set LLM_CREDENTIAL_MAPPING_TEST_OPENCODE_BINARY")
+@binary_tests("opencode", "LLM_CREDENTIAL_MAPPING_TEST_OPENCODE_BINARY")
 class NativeOpenCodeTests(NativeToolCase):
     def setUp(self):
         super().setUp()
