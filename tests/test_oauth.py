@@ -5,15 +5,16 @@ import socket
 import threading
 import time
 import unittest
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
 from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.litellm import Discovery, LiteLLMClient, LoopbackCallback, Session
+from llm_credential_mapping.auth.litellm_oauth import Discovery, LiteLLMClient, LoopbackCallback, Session
 from llm_credential_mapping.profiles import Profile
-from llm_credential_mapping.transport import JsonTransport
+from llm_credential_mapping.transport import GatewayError, JsonTransport
 
 
 def discovery(origin):
@@ -35,7 +36,7 @@ def discovery(origin):
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile("a", "https://gateway.example", "team-a")
+        self.profile = Profile("a", "https://gateway.example", {"team_id": "team-a"})
         self.data = discovery(self.profile.gateway)
 
     def test_supported_discovery(self):
@@ -46,6 +47,25 @@ class DiscoveryTests(unittest.TestCase):
             value = {**self.data, field: "https://attacker.example/token"}
             with self.subTest(field=field), self.assertRaises(CredentialError):
                 Discovery.parse(value, self.profile)
+
+    def test_endpoints_must_keep_the_gateway_scheme_host_and_port(self):
+        stored = Session(
+            self.profile.gateway, "team-a", "u", "c", "a", "r", 0, 1,
+            self.profile.gateway + "/token", self.profile.gateway + "/revoke", self.profile.gateway,
+        )
+        loopback = Profile("b", "http://127.0.0.1:8080", {"team_id": "team-a"}, allow_http=True)
+        cases = [(self.profile, value) for value in (
+            "http://gateway.example/token", "https://u@gateway.example/token",
+            "https://u:p@gateway.example/token", "https://gateway.example/token?x=1",
+            "https://gateway.example/token#f", "https://gateway.example:8443/token",
+            "https://[gateway.example/token", "https://gateway.example＃@evil.example/x",
+        )] + [(loopback, "http://127.0.0.1:9090/token")]
+        for profile, value in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(CredentialError):
+                    Discovery.parse({**discovery(profile.gateway), "token_endpoint": value}, profile)
+                with self.assertRaises(CredentialError):
+                    replace(stored, gateway=profile.gateway, token_endpoint=value).check_binding(profile)
 
     def test_bad_contract_and_pkce_are_rejected(self):
         for change in (
@@ -67,12 +87,14 @@ class DiscoveryTests(unittest.TestCase):
             {"expires_in": float("inf")}, {"token_type": "Other"}, {"access_token": "a\nb"},
         ):
             with self.subTest(change=change), self.assertRaises(CredentialError):
-                Session.from_response({**base, **change}, self.profile, "client")
+                Session.from_response({**base, **change}, self.profile, "client", Discovery.parse(self.data, self.profile))
 
 
 class OAuthFixture:
     def __init__(self):
         self.posts = []
+        self.gets = []
+        self.token_status = 200
         self.challenge = None
         self.team = "team-a"
         self.user = "employee"
@@ -91,6 +113,7 @@ class OAuthFixture:
                 self.wfile.write(raw)
 
             def do_GET(self):
+                fixture.gets.append(self.path)
                 if self.path == "/.well-known/litellm-cli-auth":
                     self.respond(discovery(fixture.origin))
                 elif self.path == "/redirect":
@@ -120,6 +143,9 @@ class OAuthFixture:
                         "redirect_uris": body["redirect_uris"],
                     })
                 elif self.path == "/token":
+                    if fixture.token_status != 200:
+                        self.respond({"error": "temporarily_unavailable"}, fixture.token_status)
+                        return
                     if body["resource"] != fixture.origin:
                         self.respond({"error": "wrong-resource"}, 400)
                         return
@@ -176,23 +202,43 @@ class OAuthIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.fixture = OAuthFixture()
         self.addCleanup(self.fixture.close)
-        self.profile = Profile("a", self.fixture.origin, "team-a", True)
+        self.profile = Profile("a", self.fixture.origin, {"team_id": "team-a"}, allow_http=True)
         self.client = LiteLLMClient(self.profile)
 
     def login(self):
-        with patch("llm_credential_mapping.litellm.webbrowser.open", self.fixture.browser):
+        with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", self.fixture.browser):
             return self.client.login(lambda message: None, timeout=5)
 
     def test_actual_http_pkce_login_refresh_and_revocation(self):
         session = self.login()
         self.assertEqual(session.user_id, "employee")
+        self.assertEqual(session.token_endpoint, self.fixture.origin + "/token")
+        self.assertEqual(session.lifetime, 3600)
         session.check_binding(self.profile)
         new = self.client.refresh(session)
         self.assertEqual(new.user_id, session.user_id)
+        self.assertEqual(new.revocation_endpoint, session.revocation_endpoint)
         self.client.revoke(new)
         paths = [path for path, body in self.fixture.posts]
         self.assertEqual(paths, ["/register", "/token", "/token", "/revoke"])
         self.assertEqual(self.fixture.posts[2][1]["grant_type"], "refresh_token")
+
+    def test_refresh_and_revoke_use_stored_endpoints_without_discovery(self):
+        session = self.login()
+        self.fixture.gets.clear()
+        self.client.revoke(self.client.refresh(session))
+        self.assertEqual(self.fixture.gets, [])
+
+    def test_refresh_failures_report_whether_a_retry_can_succeed(self):
+        session = self.login()
+        for status, retryable in ((503, True), (500, True), (429, True), (400, False), (401, False)):
+            self.fixture.token_status = status
+            with self.subTest(status=status), self.assertRaises(GatewayError) as result:
+                self.client.refresh(session)
+            self.assertEqual((result.exception.status, result.exception.retryable), (status, retryable))
+        with self.assertRaises(GatewayError) as result:
+            self.client.refresh(replace(session, token_endpoint="http://127.0.0.1:9/token"))
+        self.assertTrue(result.exception.retryable)
 
     def test_refresh_cannot_switch_employee(self):
         session = self.login()
@@ -208,7 +254,7 @@ class OAuthIntegrationTests(unittest.TestCase):
             self.client.refresh(session)
 
     def test_browser_failure_does_not_wait_or_exchange_code(self):
-        with patch("llm_credential_mapping.litellm.webbrowser.open", return_value=False):
+        with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", return_value=False):
             with self.assertRaises(CredentialError):
                 self.client.login(lambda message: None, timeout=5)
         self.assertEqual([path for path, body in self.fixture.posts], ["/register"])

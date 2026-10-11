@@ -35,16 +35,37 @@ class ProfileTests(unittest.TestCase):
                 gateway_origin(url, True)
 
     def test_invalid_names_and_teams(self):
-        for name in ("", "../project", "two projects", "a" * 65):
+        for name in ("", "../profile", "two profiles", "a" * 65):
             with self.subTest(name=name), self.assertRaises(CredentialError):
-                Profile(name, "https://example.com", "team-a")
+                Profile(name, "https://example.com", {"team_id": "team-a"})
         for team in ("", " team-a", "team-a\n"):
             with self.subTest(team=team), self.assertRaises(CredentialError):
-                Profile("a", "https://example.com", team)
+                Profile("a", "https://example.com", {"team_id": team})
 
-    def test_first_project_is_default_and_selection_persists(self):
-        a = Profile("a", "https://example.com", "team-a")
-        b = Profile("b", "https://example.com", "team-b")
+    def test_gateway_and_sign_in_kinds_and_their_settings_are_validated(self):
+        for args in (
+            ({"team_id": "t"}, "unknown", "litellm-sso"),
+            ({"team_id": "t"}, "litellm", "unknown"),
+            ({}, "litellm", "litellm-sso"),
+            ({"team_id": "t", "extra": "x"}, "litellm", "litellm-sso"),
+            ({"team_id": 7}, "litellm", "litellm-sso"),
+            ("t", "litellm", "litellm-sso"),
+        ):
+            with self.subTest(args=args), self.assertRaises(CredentialError):
+                Profile("a", "https://example.com", *args)
+
+    def test_account_changes_with_gateway_or_sign_in_settings(self):
+        a = Profile("a", "https://example.com", {"team_id": "team-a"})
+        self.assertEqual(a.account, Profile("a", "https://EXAMPLE.com/", {"team_id": "team-a"}).account)
+        for other in (
+            Profile("a", "https://other.example", {"team_id": "team-a"}),
+            Profile("a", "https://example.com", {"team_id": "team-b"}),
+        ):
+            self.assertNotEqual(a.account, other.account)
+
+    def test_first_profile_is_default_and_selection_persists(self):
+        a = Profile("a", "https://example.com", {"team_id": "team-a"})
+        b = Profile("b", "https://example.com", {"team_id": "team-b"})
         self.store.add(a)
         self.store.add(b)
         self.assertEqual(self.store.get(), a)
@@ -55,12 +76,12 @@ class ProfileTests(unittest.TestCase):
         self.assertNotEqual(a.account, b.account)
 
     def test_existing_profile_cannot_be_redirected(self):
-        self.store.add(Profile("a", "https://example.com", "a"))
+        self.store.add(Profile("a", "https://example.com", {"team_id": "a"}))
         with self.assertRaises(CredentialError):
-            self.store.add(Profile("a", "https://attacker.example", "b"))
+            self.store.add(Profile("a", "https://attacker.example", {"team_id": "b"}))
         self.assertEqual(self.store.get().gateway, "https://example.com")
 
-    def test_missing_or_unknown_project_is_an_error(self):
+    def test_missing_or_unknown_profile_is_an_error(self):
         with self.assertRaises(CredentialError):
             self.store.get()
         with self.assertRaises(CredentialError):
@@ -68,11 +89,11 @@ class ProfileTests(unittest.TestCase):
 
     def test_invalid_config_is_not_silently_replaced(self):
         for value in (
-            {"version": 2, "active": None, "projects": {}},
-            {"version": True, "active": None, "projects": {}},
-            {"version": 1, "active": [], "projects": {}},
-            {"version": 1, "active": "missing", "projects": {}},
-            {"version": 1, "active": None, "projects": {"a": {"gateway": "https://example.com"}}},
+            {"version": 2, "active": None, "profiles": {}},
+            {"version": True, "active": None, "profiles": {}},
+            {"version": 1, "active": [], "profiles": {}},
+            {"version": 1, "active": "missing", "profiles": {}},
+            {"version": 1, "active": None, "profiles": {"a": {"gateway": "https://example.com"}}},
         ):
             self.store.path.write_text(json.dumps(value), encoding="utf-8")
             with self.subTest(value=value), self.assertRaises(CredentialError):

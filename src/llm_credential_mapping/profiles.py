@@ -3,8 +3,9 @@ import json
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlsplit
@@ -45,34 +46,79 @@ def gateway_origin(value: str, allow_http: bool = False) -> str:
     return f"{parsed.scheme}://{host}{suffix}"
 
 
+def validate_profile_name(name: str) -> str:
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+        raise CredentialError("Profile name must be 1-64 letters, digits, dots, _ or -.")
+    return name
+
+
+def validate_rules_location(value: str, allow_http: bool = False) -> str:
+    """Accept an HTTPS URL (HTTP only for opted-in loopback hosts) or an absolute local file path."""
+    if (
+        not isinstance(value, str) or not value or len(value) > 2048
+        or any(char.isspace() or ord(char) < 32 for char in value)
+    ):
+        raise CredentialError("Customer rules must be an HTTPS URL or an absolute file path.")
+    if "://" not in value:
+        if not Path(value).is_absolute():
+            raise CredentialError("Customer rules must be an HTTPS URL or an absolute file path.")
+        return value
+    try:
+        parsed = urlsplit(value)
+        has_credentials = parsed.username is not None or parsed.password is not None
+    except ValueError:
+        raise CredentialError("Customer rules URL is invalid.") from None
+    if has_credentials or parsed.fragment:
+        raise CredentialError("Customer rules URL must not contain credentials or a fragment.")
+    gateway_origin(f"{parsed.scheme}://{parsed.netloc}", allow_http)
+    return value
+
+
 @dataclass(frozen=True)
 class Profile:
-    """A named authentication profile bound to a gateway and business-unit team ID."""
+    """A named profile: which gateway to use (kind and root URL) and how to authenticate (kind and settings).
+
+    Kind-specific settings, such as a LiteLLM team ID, live in ``auth`` and are validated by that auth kind.
+    ``rules`` optionally locates central repository-to-customer rules; it is not part of the identity.
+    """
 
     name: str
     gateway: str
-    team_id: str
+    auth: dict
+    gateway_type: str = "litellm"
+    auth_type: str = "litellm-sso"
     allow_http: bool = False
+    rules: str | None = None
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.name):
-            raise CredentialError("Project name must be 1-64 letters, digits, dots, _ or -.")
-        if (
-            not isinstance(self.team_id, str)
-            or not self.team_id.strip()
-            or self.team_id != self.team_id.strip()
-            or len(self.team_id) > 256
-            or any(ord(char) < 32 for char in self.team_id)
-        ):
-            raise CredentialError("Provide the exact, nonempty LiteLLM team ID.")
+        from .registry import validate_profile  # The registry's adapters import this module.
+
+        validate_profile_name(self.name)
         if type(self.allow_http) is not bool:
             raise CredentialError("Invalid loopback HTTP setting.")
+        if not isinstance(self.auth, dict) or not all(isinstance(key, str) for key in self.auth):
+            raise CredentialError("Invalid authentication settings.")
         object.__setattr__(self, "gateway", gateway_origin(self.gateway, self.allow_http))
+        object.__setattr__(self, "auth", validate_profile(self.gateway_type, self.auth_type, dict(self.auth)))
+        if self.rules is not None:
+            validate_rules_location(self.rules, self.allow_http)
 
     @property
     def account(self) -> str:
-        value = json.dumps([self.name, self.gateway, self.team_id])
+        """A stable identity for this exact configuration; any change of gateway or auth gives a new one."""
+        value = json.dumps(
+            [self.name, self.gateway_type, self.gateway, self.auth_type, self.auth], sort_keys=True,
+        )
         return hashlib.sha256(value.encode()).hexdigest()
+
+    def to_dict(self) -> dict:
+        value = {
+            "gateway": {"type": self.gateway_type, "url": self.gateway, "allow_http": self.allow_http},
+            "auth": {"type": self.auth_type, **self.auth},
+        }
+        if self.rules is not None:
+            value["rules"] = self.rules
+        return value
 
 
 def default_home() -> Path:
@@ -105,24 +151,32 @@ def atomic_write_text(
             os.fsync(output.fileno())
         if permissions is not None:
             os.chmod(filename, permissions)
-        os.replace(filename, path)
+        for attempt in range(10):
+            try:
+                os.replace(filename, path)
+                break
+            except PermissionError:
+                # Windows: virus scanners and the indexer briefly hold files open; give them a moment.
+                if os.name != "nt" or attempt == 9:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     finally:
         if filename and os.path.exists(filename):
             os.unlink(filename)
 
 
 class ProfileStore:
-    """Persist nonsecret project settings atomically in the user's configuration directory."""
+    """Persist nonsecret profile settings atomically in the user's configuration directory."""
 
     def __init__(self, home: Path) -> None:
         self.home = home
-        self.path = home / "projects.json"
+        self.path = home / "profiles.json"
 
     @contextmanager
-    def locked(self, name: str = "profiles") -> Iterator[None]:
+    def locked(self, name: str = "profiles", *, timeout: float = 10) -> Iterator[None]:
         try:
             self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
-            with FileLock(str(self.home / f"{name}.lock"), timeout=10):
+            with FileLock(str(self.home / f"{name}.lock"), timeout=timeout):
                 yield
         except Timeout:
             raise CredentialError("Another credential operation is busy; try again.") from None
@@ -131,36 +185,42 @@ class ProfileStore:
 
     def _read(self) -> dict:
         if not self.path.exists():
-            return {"version": 1, "active": None, "projects": {}}
+            return {"version": 1, "active": None, "profiles": {}}
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            raise CredentialError("Cannot read projects.json; repair the nonsecret configuration.") from None
+            raise CredentialError("Cannot read profiles.json; repair the nonsecret configuration.") from None
         if (
             not isinstance(value, dict)
             or type(value.get("version")) is not int
             or value["version"] != 1
-            or not isinstance(value.get("projects"), dict)
+            or not isinstance(value.get("profiles"), dict)
             or (
                 value.get("active") is not None
                 and (
                     not isinstance(value["active"], str)
-                    or value["active"] not in value["projects"]
+                    or value["active"] not in value["profiles"]
                 )
             )
         ):
-            raise CredentialError("Unsupported or invalid projects.json.")
-        for name, item in value["projects"].items():
+            raise CredentialError("Unsupported or invalid profiles.json.")
+        for name, item in value["profiles"].items():
             self._profile(name, item)
         return value
 
     @staticmethod
     def _profile(name: str, item: object) -> Profile:
-        if not isinstance(item, dict) or set(item) != {"gateway", "team_id", "allow_http"}:
-            raise CredentialError("Invalid project configuration.")
-        if not isinstance(item["gateway"], str):
-            raise CredentialError("Invalid gateway in project configuration.")
-        return Profile(name, item["gateway"], item["team_id"], item["allow_http"])
+        if (
+            not isinstance(item, dict) or set(item) - {"rules"} != {"gateway", "auth"}
+            or not isinstance(item["gateway"], dict) or set(item["gateway"]) != {"type", "url", "allow_http"}
+            or not isinstance(item["auth"], dict) or "type" not in item["auth"]
+        ):
+            raise CredentialError("Invalid profile configuration.")
+        gateway, auth = item["gateway"], dict(item["auth"])
+        if not isinstance(gateway["url"], str) or not isinstance(gateway["type"], str) or not isinstance(auth["type"], str):
+            raise CredentialError("Invalid gateway or authentication type in profile configuration.")
+        auth_type = auth.pop("type")
+        return Profile(name, gateway["url"], auth, gateway["type"], auth_type, gateway["allow_http"], item.get("rules"))
 
     def _write(self, value: dict) -> None:
         atomic_write_json(self.path, value)
@@ -168,22 +228,29 @@ class ProfileStore:
     def add(self, profile: Profile) -> None:
         with self.locked():
             data = self._read()
-            if profile.name in data["projects"]:
-                raise CredentialError("Project already exists; choose a different name.")
-            data["projects"][profile.name] = {
-                "gateway": profile.gateway,
-                "team_id": profile.team_id,
-                "allow_http": profile.allow_http,
-            }
+            if profile.name in data["profiles"]:
+                raise CredentialError("Profile already exists; choose a different name.")
+            data["profiles"][profile.name] = profile.to_dict()
             if data["active"] is None:
                 data["active"] = profile.name
             self._write(data)
 
+    def set_rules(self, name: str, rules: str | None) -> Profile:
+        """Change only where a profile's central customer rules come from; its sign-in is unaffected."""
+        with self.locked():
+            data = self._read()
+            if name not in data["profiles"]:
+                raise CredentialError("Unknown profile; use 'profile list'.")
+            profile = replace(self._profile(name, data["profiles"][name]), rules=rules)
+            data["profiles"][name] = profile.to_dict()
+            self._write(data)
+            return profile
+
     def select(self, name: str) -> None:
         with self.locked():
             data = self._read()
-            if name not in data["projects"]:
-                raise CredentialError("Unknown project; use 'project list'.")
+            if name not in data["profiles"]:
+                raise CredentialError("Unknown profile; use 'profile list'.")
             data["active"] = name
             self._write(data)
 
@@ -191,13 +258,13 @@ class ProfileStore:
         with self.locked():
             data = self._read()
             name = name or data["active"]
-            if name not in data["projects"]:
-                raise CredentialError("Select a configured project with --project or 'project use'.")
-            return self._profile(name, data["projects"][name])
+            if name not in data["profiles"]:
+                raise CredentialError("Select a configured profile with --profile or 'profile use'.")
+            return self._profile(name, data["profiles"][name])
 
     def list(self) -> tuple[str | None, list[Profile]]:
         with self.locked():
             data = self._read()
             return data["active"], [
-                self._profile(name, item) for name, item in sorted(data["projects"].items())
+                self._profile(name, item) for name, item in sorted(data["profiles"].items())
             ]
