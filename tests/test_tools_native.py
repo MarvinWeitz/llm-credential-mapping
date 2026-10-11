@@ -41,8 +41,9 @@ if "token" not in args:
 if "--require-attribution-env" in args and not all(os.environ.get(name) for name in REQUIRED):
     sys.stderr.write("No customer for this session")
     sys.exit(1)
-calls = int(counter.read_text()) + 1 if counter.exists() else 1
-counter.write_text(str(calls))
+with counter.open("a") as calls_file:  # Tools ask concurrently: an append never reads a half-written file.
+    calls_file.write("x")
+calls = counter.stat().st_size
 print(json.dumps({"access_token": f"token-{calls}", "expires_at": None}) if "--json" in args else f"token-{calls}")
 """
 
