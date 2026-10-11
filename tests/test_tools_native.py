@@ -149,8 +149,11 @@ class NativeToolCase(unittest.TestCase):
 
     def run_tool(self, argv, directory, environment=None):
         self.gateway.calls.clear()
+        # Like a shell: PWD matches the working directory. OpenCode takes its directory from $PWD,
+        # so the test runner's own PWD would otherwise leak in.
+        env = {**self.environment, **(environment or {}), "PWD": str(directory)}
         result = subprocess.run(
-            argv, cwd=directory, env={**self.environment, **(environment or {})}, capture_output=True, text=True,
+            argv, cwd=directory, env=env, capture_output=True, text=True,
             timeout=300, check=False,
         )
         return result.stdout + result.stderr

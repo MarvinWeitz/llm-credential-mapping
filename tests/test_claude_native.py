@@ -151,7 +151,7 @@ class NativeClaudeTests(unittest.TestCase):
     def claude(self, directory):
         self.gateway.calls.clear()
         result = subprocess.run(
-            [str(self.binary), "-p", "Say OK", "--output-format", "json"], cwd=directory, env=self.environment,
+            [str(self.binary), "-p", "Say OK", "--output-format", "json"], cwd=directory, env={**self.environment, "PWD": str(directory)},
             capture_output=True, text=True, timeout=180, check=False,
         )
         return result.stdout + result.stderr
@@ -197,7 +197,7 @@ class NativeClaudeTests(unittest.TestCase):
         env = {key: value for key, value in {**self.environment, **changed}.items() if key not in removed}
         self.gateway.calls.clear()
         result = subprocess.run(
-            [str(self.binary), *argv[1:]], cwd=self.repo, env=env, capture_output=True, text=True, timeout=180, check=False,
+            [str(self.binary), *argv[1:]], cwd=self.repo, env={**env, "PWD": str(self.repo)}, capture_output=True, text=True, timeout=180, check=False,
         )
         output = result.stdout + result.stderr
         self.assertIn("FIXTURE_OK", output)
