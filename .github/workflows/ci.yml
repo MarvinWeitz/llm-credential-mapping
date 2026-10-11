@@ -91,11 +91,27 @@ jobs:
       - if: runner.os != 'Linux'
         run: python -m unittest discover -s tests -p "test_vault_native.py" -v
 
+  # Both extensions on all three systems: unit tests, the relay against the real CLI (Linux, macOS),
+  # and a real VS Code extension host with a fake CLI and gateway. Packaged once, on Linux.
   vscode-extension:
-    runs-on: ubuntu-latest
+    name: vscode-extension (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            require: relay
+          - os: macos-latest
+            require: relay
+          - os: windows-latest
+            require: ""
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: vscode-extension
+        shell: bash
+    env:
+      LLM_CREDENTIAL_MAPPING_REQUIRE: ${{ matrix.require }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -110,7 +126,14 @@ jobs:
       - run: npm test
         env:
           LLM_CREDENTIALS_TEST_PYTHON: python
-      - run: xvfb-run -a npm run test:host
-      - run: npm run package
-      - run: npm test && npm run package
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:host
+      - if: runner.os != 'Linux'
+        run: npm run test:host
+      - if: runner.os == 'Linux'
+        run: npm run package
+      - run: npm test
+        working-directory: vscode-extension/local
+      - if: runner.os == 'Linux'
+        run: npm run package
         working-directory: vscode-extension/local
