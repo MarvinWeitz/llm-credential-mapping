@@ -28,11 +28,14 @@ from llm_credential_mapping.registry import gateway_for
 from live import binary_tests
 
 HELPER = """
-import sys
+import os, sys
 from pathlib import Path
 counter = Path(sys.argv[1])
 calls = int(counter.read_text()) + 1 if counter.exists() else 1
-counter.write_text(str(calls))
+# Replaced in one step, so a concurrent call never reads a half-written number.
+partial = counter.with_name(f"{counter.name}.{os.getpid()}")
+partial.write_text(str(calls))
+os.replace(partial, counter)
 print(f"token-{calls}")
 """
 
