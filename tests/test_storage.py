@@ -52,6 +52,19 @@ class StorageTests(unittest.TestCase):
                 self.store.get("a")
             self.assertIn("OS vault", str(result.exception))
 
+    def test_damaged_root_can_be_replaced_and_deleted(self):
+        for value in ("{truncated", '{"_llm_credential_mapping_vault": {"version": 2}}', "[1]"):
+            with self.subTest(value=value):
+                self.entries[self.store._service("a")] = value
+                with self.assertLogs("llm_credential_mapping.storage", "WARNING"):
+                    self.store.put("a", {"token": "x" * 3000})
+                self.assertEqual(self.store.get("a"), {"token": "x" * 3000})
+                self.store.delete("a")
+                self.entries[self.store._service("a")] = value
+                with self.assertLogs("llm_credential_mapping.storage", "WARNING"):
+                    self.store.delete("a")
+                self.assertEqual(self.entries, {})
+
     def test_native_backend_failures_are_redacted(self):
         for error in (KeyringError("synthetic-secret"), OSError("synthetic-secret")):
             for method, call in (

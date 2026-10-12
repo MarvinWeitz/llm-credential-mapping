@@ -92,9 +92,7 @@ class NativeKeyring:
         if len(raw) > self.MAX_CHARS:
             raise CredentialError("Session is too large for the supported OS-vault format.")
         root = self._service(account)
-        previous = self._read(root, account)
-        old_manifest = self._manifest(self._object(previous)) if previous is not None else None
-        old_services = self._fragment_services(account, old_manifest) if old_manifest else []
+        old_services = self._stored_fragments(account, self._read(root, account))
         if len(raw) <= self.ENTRY_CHARS:
             self._write(root, account, raw)
         else:
@@ -127,11 +125,9 @@ class NativeKeyring:
 
     def delete(self, account: str) -> None:
         root = self._service(account)
-        raw = self._read(root, account)
-        manifest = self._manifest(self._object(raw)) if raw is not None else None
+        services = self._stored_fragments(account, self._read(root, account))
         self._remove(root, account)
-        if manifest is not None:
-            self._cleanup(self._fragment_services(account, manifest), account)
+        self._cleanup(services, account)
 
     def _read(self, service: str, account: str) -> str | None:
         try:
@@ -163,6 +159,19 @@ class NativeKeyring:
                     "Could not remove an unused OS-vault fragment. Remove obsolete entries "
                     "under llm-credential-mapping from the vault manually."
                 )
+
+    def _stored_fragments(self, account: str, raw: str | None) -> list[str]:
+        """Fragments named by a root entry about to be replaced or removed; a damaged root names none we trust."""
+        if raw is None:
+            return []
+        try:
+            manifest = self._manifest(self._object(raw))
+        except CredentialError:
+            logging.getLogger(__name__).warning(
+                "Replaced a damaged OS-vault entry; obsolete entries under llm-credential-mapping may remain in the vault."
+            )
+            return []
+        return self._fragment_services(account, manifest) if manifest else []
 
     def _object(self, raw: str) -> dict:
         try:
