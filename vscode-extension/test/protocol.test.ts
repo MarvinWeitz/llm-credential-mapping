@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Role, StreamDecoder, ToolMode, estimateTokens, toOpenAIMessages, toOpenAITools } from "../src/protocol";
+import { IMAGE_TOKENS, Role, StreamDecoder, ToolMode, estimateTokens, toOpenAIMessages, toOpenAITools } from "../src/protocol";
 
 const text = (value: string) => ({ value });
 
@@ -68,7 +68,28 @@ test("stream errors and invalid tool arguments are reported", () => {
   assert.throws(() => decoder.flush(), /invalid arguments for tool t/);
 });
 
+test("parallel tool calls that share an index but have different ids stay separate", () => {
+  const decoder = new StreamDecoder();
+  const delta = (call: object) => `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] })}\n`;
+  const events = [
+    delta({ index: 0, id: "call_a", function: { name: "read", arguments: '{"p":' } }),
+    delta({ index: 0, function: { arguments: "1}" } }),
+    delta({ index: 0, id: "call_b", function: { name: "grep", arguments: '{"q":2}' } }),
+    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n',
+  ].flatMap((chunk) => decoder.push(chunk));
+  assert.deepEqual(events, [
+    { kind: "toolCall", callId: "call_a", name: "read", input: { p: 1 } },
+    { kind: "toolCall", callId: "call_b", name: "grep", input: { q: 2 } },
+  ]);
+});
+
 test("token estimates grow with the content", () => {
   assert.equal(estimateTokens("abcd"), 1);
   assert.ok(estimateTokens({ role: Role.User, content: [text("x".repeat(400))] }) > 100);
+});
+
+test("images count as a fixed amount, not as the length of their base64 data", () => {
+  const question = { role: Role.User, content: [text("what is this")] };
+  const screenshot = { role: Role.User, content: [text("what is this"), { mimeType: "image/png", data: new Uint8Array(400 * 1024) }] };
+  assert.equal(estimateTokens(screenshot), estimateTokens(question) + IMAGE_TOKENS);
 });
