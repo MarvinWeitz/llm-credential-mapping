@@ -52,6 +52,8 @@ llm-credentials repo show
 The gateway address is its root URL (no `/v1`); the team ID is the exact ID from the gateway,
 not its display name. Your sign-in renews itself; sign in again only after logging out, a
 long pause or a change of team membership.
+The gateway must be served at its host root with LiteLLM's `PROXY_BASE_URL` set to that URL
+(see [Gateway requirements](docs/architecture.md#gateway-requirements)).
 
 ## Customers
 

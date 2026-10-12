@@ -137,7 +137,8 @@ one refresh token concurrently.
 
 Windows Credential Manager limits entries to 2,560 bytes, so larger sessions are split into
 fragments; a small manifest pointing at a complete, hashed generation is written last, so a
-crash never leaves a half-written session readable. There is no plaintext fallback: without
+crash never leaves a half-written session readable. macOS Keychain replaces an entry by deleting it and
+adding the new one; if the add fails, the previous entry is written back. There is no plaintext fallback: without
 a supported vault the command fails (containers use the relay instead, section 6).
 
 ### Renewal
@@ -153,8 +154,11 @@ a supported vault the command fails (containers use the relay instead, section 6
   refresh token and set a retry time: 30 s, doubling to 15 minutes, never later than one
   attempt before the token becomes unusable. Concurrent callers therefore share one failed
   attempt instead of each blocking on the network.
-- A refused refresh grant (4xx) stops renewal but keeps releasing the current access token
-  until 60 s before expiry; `status` reports `re-login-required` and the CLI prints a warning
+- Other client errors (e.g. `invalid_target` after a base-URL change, or an ingress 403/404)
+  are retried the same way and reported as a gateway configuration problem, with the
+  gateway's OAuth `error` and sanitized `error_description`.
+- A refused refresh grant (`invalid_grant` or `invalid_client`) stops renewal but keeps
+  releasing the current access token until 60 s before expiry; `status` reports `re-login-required` and the CLI prints a warning
   on stderr. A renewal that changes user or team blocks the session at once.
 - A token with 60 s or less left is never handed out; validity is measured after any slow
   network attempt.
@@ -450,7 +454,9 @@ for one-off launches and overrides.
   with a valid sign-in; enforcing allowed customers needs a gateway-side policy (for LiteLLM
   an `async_pre_call_hook` validating the tag against the user's or team's allowed customers).
 - Access tokens of LiteLLM's native SSO cannot be revoked; `logout` revokes the refresh grant,
-  and existing access tokens expire on their own.
+  and existing access tokens expire on their own. If revocation fails (gateway down, rotated
+  keys), `logout` still deletes the local credential and warns that the grant may stay valid
+  until it expires.
 
 ## 10. Testing
 
@@ -467,3 +473,29 @@ for one-off launches and overrides.
 
 Tests that run `setup` point every tool's configuration at temporary folders
 (`tests/isolation.py`), so they never touch a developer's real configuration.
+
+## Gateway requirements
+
+Settings the LiteLLM gateway needs that no client change can replace.
+
+### Sign-in (auth)
+
+- **Served at the host root, with `PROXY_BASE_URL` set to the public URL.** LiteLLM builds the
+  discovery issuer, resource and every endpoint from `PROXY_BASE_URL`; without it, from trusted
+  `X-Forwarded-*` headers (`general_settings.use_x_forwarded_for` plus `mcp_trusted_proxy_ranges`
+  covering the ingress), otherwise from the request as uvicorn sees it, which behind a
+  TLS-terminating ingress is `http://…` or an internal `host:port`. `login` then fails before
+  the browser opens and names the advertised issuer. A mismatch also sends `/authorize` and
+  `/token` down LiteLLM's MCP path (`invalid_target` on renewal). A gateway under a path prefix
+  (`SERVER_ROOT_PATH`) is not supported. Check before the first login:
+  `curl https://<gateway>/.well-known/litellm-cli-auth` must report `"issuer": "https://<gateway>"`.
+- **Redis on a gateway with several workers or replicas** (`litellm_settings.cache` with a Redis
+  cache, or `general_settings.coordination_redis`). LiteLLM enforces refresh-token single use
+  and revocation through a claim cache that is otherwise per worker: a revoked (`logout`,
+  re-login) or rotated refresh token stays usable on the other workers for up to its 14-day
+  lifetime, and the gateway still answers `logout` with success.
+- **Stable salt and master key.** The registered client ID is sealed with them; after a
+  rotation the gateway refuses every renewal and revocation, and every user must log in again (`logout`
+  still deletes the local credential).
+- **Every user in at least one team.** A user without a team gets a sign-in without a team,
+  which `login` rejects and revokes.

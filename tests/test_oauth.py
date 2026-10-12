@@ -48,6 +48,16 @@ class DiscoveryTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(CredentialError):
                 Discovery.parse(value, self.profile)
 
+    def test_mismatched_issuer_names_what_the_gateway_advertised_and_proxy_base_url(self):
+        for issuer in ("http://gateway.example", "http://10.0.0.5:4000", "https://gateway.example/litellm"):
+            gateway = discovery(issuer)
+            with self.subTest(issuer=issuer), self.assertRaises(CredentialError) as result:
+                Discovery.parse(gateway, self.profile)
+            message = str(result.exception)
+            self.assertIn(f"issuer '{issuer}'", message)
+            self.assertIn("PROXY_BASE_URL=https://gateway.example", message)
+            self.assertIn("host root", message)
+
     def test_endpoints_must_keep_the_gateway_scheme_host_and_port(self):
         stored = Session(
             self.profile.gateway, "team-a", "u", "c", "a", "r", 0, 1,
@@ -95,6 +105,7 @@ class OAuthFixture:
         self.posts = []
         self.gets = []
         self.token_status = 200
+        self.token_error = {"error": "temporarily_unavailable"}
         self.challenge = None
         self.team = "team-a"
         self.user = "employee"
@@ -147,7 +158,7 @@ class OAuthFixture:
                     })
                 elif self.path == "/token":
                     if fixture.token_status != 200:
-                        self.respond({"error": "temporarily_unavailable"}, fixture.token_status)
+                        self.respond(fixture.token_error, fixture.token_status)
                         return
                     if body["resource"] != fixture.origin:
                         self.respond({"error": "wrong-resource"}, 400)
@@ -256,6 +267,20 @@ class OAuthIntegrationTests(unittest.TestCase):
         with self.assertRaises(CredentialError):
             self.client.refresh(session)
 
+    def test_teamless_login_is_explained_and_its_grant_revoked(self):
+        self.fixture.team = None
+        with self.assertRaises(CredentialError) as result:
+            self.login()
+        self.assertIn("not a member of any team", str(result.exception))
+        self.assertIn("team-a", str(result.exception))
+        self.assertEqual(self.fixture.posts[-1], ("/revoke", {"token": "fixture-refresh", "client_id": "client"}))
+
+    def test_rejected_login_response_revokes_its_grant(self):
+        self.fixture.access_token = "bad\naccess"
+        with self.assertRaises(CredentialError):
+            self.login()
+        self.assertEqual([path for path, body in self.fixture.posts], ["/register", "/token", "/revoke"])
+
     def test_browser_failure_does_not_wait_or_exchange_code(self):
         with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", return_value=False):
             with self.assertRaises(CredentialError):
@@ -272,6 +297,27 @@ class OAuthIntegrationTests(unittest.TestCase):
             JsonTransport().request("GET", self.fixture.origin + "/error")
         self.assertIn("401", str(result.exception))
         self.assertNotIn("SHOULD-NOT-BE-PRINTED", str(result.exception))
+
+    def test_oauth_errors_are_reported_sanitized_and_without_request_secrets(self):
+        session = self.login()
+        self.fixture.token_status = 400
+        cases = (
+            ({"error": "invalid_target", "error_description": "resource does not match"},
+             "(invalid_target: resource does not match)"),
+            ({"error": "invalid_grant", "error_description": "bad\x1b[31m\u202e" + "x" * 500}, "(invalid_grant: bad[31m"),
+            ({"error": "invalid_grant", "error_description": "token fixture-refresh is spent"}, "(invalid_grant)."),
+            ({"error": {"message": "proxy error"}}, "HTTP 400."),
+        )
+        for body, expected in cases:
+            self.fixture.token_error = body
+            with self.subTest(body=body), self.assertRaises(GatewayError) as result:
+                self.client.refresh(session)
+            message = str(result.exception)
+            self.assertIn(expected, message)
+            self.assertNotIn("fixture-refresh", message)
+            self.assertNotIn("\x1b", message)
+            self.assertLess(len(message), 320)
+            self.assertEqual(result.exception.oauth_error, body["error"] if isinstance(body["error"], str) else None)
 
     def test_non_object_and_large_responses_are_rejected(self):
         for path in ("/array", "/large"):

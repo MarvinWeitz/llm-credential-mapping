@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from ..errors import CredentialError
 from ..profiles import Profile, gateway_origin
-from ..transport import JsonTransport
+from ..transport import JsonTransport, printable
 
 
 def team_id(profile: Profile) -> str:
@@ -58,14 +58,11 @@ class Discovery:
             if not required.issubset(values):
                 raise CredentialError(f"Gateway does not support required {key}.")
         endpoints = {}
-        for key in (
-            "issuer", "authorization_endpoint", "registration_endpoint",
-            "token_endpoint", "revocation_endpoint", "resource",
-        ):
+        for key in ("issuer", "resource"):
+            endpoints[key] = _require_gateway_root(required_text(data, key), key, profile)
+        for key in ("authorization_endpoint", "registration_endpoint", "token_endpoint", "revocation_endpoint"):
             value = required_text(data, key)
             _require_gateway_url(value, profile)
-            if key in ("issuer", "resource") and gateway_origin(value, profile.allow_http) != profile.gateway:
-                raise CredentialError("Gateway issuer/resource does not match the configured origin.")
             endpoints[key] = value
         return cls(**endpoints)
 
@@ -166,6 +163,21 @@ class Session:
         ):
             raise CredentialError("Invalid stored session expiry/state; log in again.")
         return cls(**{name: data[name] for name in _SESSION_FIELDS})
+
+
+def _require_gateway_root(value: str, key: str, profile: Profile) -> str:
+    """The issuer and resource name the gateway itself; LiteLLM derives them from PROXY_BASE_URL or the request."""
+    try:
+        origin = gateway_origin(value, profile.allow_http)
+    except CredentialError:
+        origin = None
+    if origin != profile.gateway:
+        raise CredentialError(
+            f"Gateway advertises {key} '{printable(value, 200)}', not the configured {profile.gateway}. "
+            f"The gateway must be served at the host root with PROXY_BASE_URL={profile.gateway} "
+            "(or trusted X-Forwarded-* headers); ask the gateway administrator."
+        )
+    return value
 
 
 def _require_gateway_url(value: str, profile: Profile) -> None:
@@ -327,7 +339,18 @@ class LiteLLMClient:
                 },
                 form=True,
             )
-            return Session.from_response(response, self.profile, client_id, discovery)
+            try:
+                if response.get("team_id") is None:
+                    # LiteLLM issues a grant without a team to a user who belongs to none.
+                    raise CredentialError(
+                        f"Your LiteLLM user is not a member of any team. Ask the gateway administrator to add you "
+                        f"to team '{team_id(self.profile)}', then log in again and choose it at consent."
+                    )
+                return Session.from_response(response, self.profile, client_id, discovery)
+            except CredentialError:
+                # The gateway already issued this grant; keep no unsaved grant alive.
+                self._revoke_unparsed(response, client_id, discovery, notify)
+                raise
         finally:
             callback.close()
 
@@ -365,9 +388,17 @@ class LiteLLMClient:
         return renewed
 
     def revoke(self, session: Session) -> None:
-        self.transport.request(
-            "POST",
-            session.revocation_endpoint,
-            {"token": session.refresh_token, "client_id": session.client_id},
-            form=True,
-        )
+        self._revoke(session.revocation_endpoint, session.refresh_token, session.client_id)
+
+    def _revoke(self, endpoint: str, refresh_token: str, client_id: str) -> None:
+        self.transport.request("POST", endpoint, {"token": refresh_token, "client_id": client_id}, form=True)
+
+    def _revoke_unparsed(self, response: dict, client_id: str, discovery: Discovery, notify: Callable[[str], None]) -> None:
+        """Revoke a grant from a token response that was rejected before it became a Session."""
+        refresh_token = response.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            return
+        try:
+            self._revoke(discovery.revocation_endpoint, refresh_token, client_id)
+        except CredentialError:
+            notify("Warning: the unsaved grant could not be revoked; its access token expires naturally.")
