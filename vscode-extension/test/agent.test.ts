@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { Busy, agentPath, parseRequest, serve, stillServing, type AgentRequest } from "../src/agent";
+import { remoteProfileArgs } from "../src/cli";
 
 const windows = process.platform === "win32";
 
@@ -119,4 +120,18 @@ test("a directory others can enter is refused", { skip: windows }, async () => {
   fs.mkdirSync(path.dirname(socket), { recursive: true });
   fs.chmodSync(path.dirname(socket), 0o777);
   await assert.rejects(serve(socket, async () => ({})), /must belong to you and be private/);
+});
+
+test("the container profile copies the local gateway and central rules given as a URL", () => {
+  const gateway = { type: "litellm", url: "https://g.example" };
+  const rules = "https://g.example/customer-rules.json";
+  assert.deepEqual(remoteProfileArgs({ name: "work", gateway, rules }), {
+    args: ["profile", "add", "work", "--gateway", "https://g.example", "--gateway-type", "litellm",
+      "--auth", "forwarded", "--host-profile", "work", "--rules", rules],
+    skippedRules: null,
+  });
+  const file = remoteProfileArgs({ name: "work", gateway, rules: "/home/me/rules.json" });
+  assert.equal(file.args.includes("--rules"), false); // Not in the container.
+  assert.equal(file.skippedRules, "/home/me/rules.json");
+  assert.equal(remoteProfileArgs({ name: "work", gateway, rules: null }).skippedRules, null);
 });

@@ -40,7 +40,7 @@ export async function answer(request: unknown, run: Run, allowed: string[]): Pro
     }
     const shown = JSON.parse(await run(["profile", "show", ...(profile ? [profile] : []), "--json"]));
     check(shown.name);
-    return { ok: true, result: { name: shown.name, gateway: shown.gateway, endpoints: shown.endpoints } };
+    return { ok: true, result: { name: shown.name, gateway: shown.gateway, endpoints: shown.endpoints, rules: shown.rules ?? null } };
   } catch (error) {
     const message = error instanceof RunError ? error.message : "The local llm-credentials CLI gave an unreadable answer.";
     return { ok: false, error: message, login: /\blogin\b/.test(message), profile };

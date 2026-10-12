@@ -21,7 +21,14 @@ test("profile requests return the nonsecret description, using the first allowed
     return JSON.stringify({ name: "work", gateway: { type: "litellm", url: "https://g.example" }, auth: { type: "litellm-sso", team_id: "t" }, endpoints: {} });
   }, ["work", "other"]);
   assert.deepEqual(calls, [["profile", "show", "work", "--json"]]);
-  assert.deepEqual(result, { ok: true, result: { name: "work", gateway: { type: "litellm", url: "https://g.example" }, endpoints: {} } });
+  assert.deepEqual(result, { ok: true, result: { name: "work", gateway: { type: "litellm", url: "https://g.example" }, endpoints: {}, rules: null } });
+});
+
+test("profile requests pass on the central customer rules, which the container profile needs too", async () => {
+  const rules = "https://g.example/customer-rules.json";
+  const result = await answer({ operation: "profile", profile: "" }, async () =>
+    JSON.stringify({ name: "work", gateway: { type: "litellm", url: "https://g.example" }, endpoints: {}, rules }), []);
+  assert.equal(result.ok && (result.result as { rules: unknown }).rules, rules);
 });
 
 test("only the allowed local profiles are relayed, by default only the local default one", async () => {

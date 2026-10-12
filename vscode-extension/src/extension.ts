@@ -68,13 +68,14 @@ async function ensureRemoteProfile(command: string[], profileName: string, outpu
     }
   }
   try {
-    const local = await askLocal({ operation: "profile", profile: profileName }) as { name: string; gateway: { type: string; url: string } };
-    await run([
-      "profile", "add", local.name, "--gateway", local.gateway.url, "--gateway-type", local.gateway.type,
-      "--auth", "forwarded", "--host-profile", local.name,
-      ...(local.gateway.url.startsWith("http:") ? ["--allow-insecure-localhost"] : []),
-    ]);
+    const local = await askLocal({ operation: "profile", profile: profileName }) as cli.LocalProfile;
+    const { args, skippedRules } = cli.remoteProfileArgs(local);
+    await run(args);
     output.appendLine(`Created profile '${local.name}' here; it uses the sign-in of your local machine.`);
+    if (skippedRules) {
+      output.appendLine(`Its central customer rules (${skippedRules}) are a local file; set them here with `
+        + `'llm-credentials profile update ${local.name} --rules URL_OR_PATH'.`);
+    }
   } catch (error) {
     output.appendLine(`Could not create a profile from the local one: ${(error as Error).message}`);
   }

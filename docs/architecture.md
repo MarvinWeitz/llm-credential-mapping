@@ -306,7 +306,9 @@ sequenceDiagram
 
 On start in a remote window the main extension asks the container CLI for a profile. If
 there is none, it fetches the local profile (`operation: "profile"`) and runs
-`profile add NAME --gateway URL --gateway-type TYPE --auth forwarded --host-profile NAME`.
+`profile add NAME --gateway URL --gateway-type TYPE --auth forwarded --host-profile NAME`,
+plus `--rules URL` when the local profile has central customer rules at a URL (rules in a
+local file do not exist in the container; the output channel says how to set them there).
 The `forwarded` auth kind stores nothing: `credential()` asks the socket, `login`/`logout`
 point to the local machine. Because auth kinds receive a vault *factory*, commands in the
 container never try to open an OS vault.
