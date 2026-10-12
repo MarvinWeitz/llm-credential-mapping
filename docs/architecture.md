@@ -470,3 +470,29 @@ for one-off launches and overrides.
 
 Tests that run `setup` point every tool's configuration at temporary folders
 (`tests/isolation.py`), so they never touch a developer's real configuration.
+
+## Gateway requirements
+
+Settings the LiteLLM gateway needs that no client change can replace.
+
+### Sign-in (auth)
+
+- **Served at the host root, with `PROXY_BASE_URL` set to the public URL.** LiteLLM builds the
+  discovery issuer, resource and every endpoint from `PROXY_BASE_URL`; without it, from trusted
+  `X-Forwarded-*` headers (`general_settings.use_x_forwarded_for` plus `mcp_trusted_proxy_ranges`
+  covering the ingress), otherwise from the request as uvicorn sees it, which behind a
+  TLS-terminating ingress is `http://…` or an internal `host:port`. `login` then fails before
+  the browser opens and names the advertised issuer. A mismatch also sends `/authorize` and
+  `/token` down LiteLLM's MCP path (`invalid_target` on renewal). A gateway under a path prefix
+  (`SERVER_ROOT_PATH`) is not supported. Check before the first login:
+  `curl https://<gateway>/.well-known/litellm-cli-auth` must report `"issuer": "https://<gateway>"`.
+- **Redis on a gateway with several workers or replicas** (`litellm_settings.cache` with a Redis
+  cache, or `general_settings.coordination_redis`). LiteLLM enforces refresh-token single use
+  and revocation through a claim cache that is otherwise per worker: a revoked (`logout`,
+  re-login) or rotated refresh token stays usable on the other workers for up to its 14-day
+  lifetime, and the gateway still answers `logout` with success.
+- **Stable salt and master key.** The registered client ID is sealed with them; after a
+  rotation the gateway refuses every renewal and revocation, and every user must log in again (`logout`
+  still deletes the local credential).
+- **Every user in at least one team.** A user without a team gets a sign-in without a team,
+  which `login` rejects and revokes.
