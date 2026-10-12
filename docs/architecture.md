@@ -279,7 +279,9 @@ sequenceDiagram
   extension, Codex) find the same default path.
 - **Privacy:** the extension creates the directory with mode 0700 and refuses to listen if it
   belongs to someone else or is accessible to others; the socket is 0600. Only the container
-  user can ask for tokens.
+  user can ask for tokens. The CLI in turn refuses a socket that is not its own or that sits
+  in a directory others can write to (or a symlinked one), so another user who creates
+  `/tmp/llm-credentials-<uid>` first cannot hand it tokens of their own.
 - **Messages:** one JSON line per connection,
   `{"version": 1, "operation": "token" | "profile", "profile": NAME}`, answered by
   `{"ok": true, "result": {...}}` or `{"ok": false, "error": "..."}`. Unknown versions,
