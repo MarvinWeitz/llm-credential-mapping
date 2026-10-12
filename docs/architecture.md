@@ -183,7 +183,9 @@ Repository identity (`repositories.repository_identity`) normalizes Git remotes 
 SSH forms of one repository match: credentials, ports and `.git` removed, host and path
 lowercased for every forge, Azure DevOps HTTPS/SSH/`visualstudio.com` forms collapsed to
 `dev.azure.com/org/project/repo`, SSH host aliases resolved with `ssh -G` (plain host names
-only, so no option injection). No Git remote is contacted.
+only, so no option injection), forge SSH-over-443 endpoints (`ssh.github.com`,
+`altssh.gitlab.com`, `altssh.bitbucket.org`) mapped back to the forge host. No Git remote is
+contacted.
 
 Why this order: explicit beats implicit; a personal override must be able to correct a
 wrong team-wide setting; a committed file is a deliberate, reviewable team decision; central
