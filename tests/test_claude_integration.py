@@ -97,6 +97,17 @@ class SetupTests(ClaudeTestCase):
         self.claude.remove(self.context)
         self.assertEqual(self.read(), {"theme": "dark", "model": "my-own-choice"})
 
+    def test_setup_keeps_and_remove_restores_the_users_own_model_and_gateway(self):
+        self.config.mkdir()
+        own = {"model": "opus", "env": {"ANTHROPIC_BASE_URL": "https://gateway.example"}}
+        self.settings.write_text(json.dumps(own), encoding="utf-8")
+        notes = self.claude.setup(self.context, "sonnet")
+        self.assertEqual(self.read()["model"], "opus")
+        self.assertTrue(any("already sets a model" in note for note in notes))
+        self.claude.setup(self.context, "sonnet")
+        self.claude.remove(self.context)
+        self.assertEqual(self.read(), own)
+
     def test_static_credentials_in_the_environment_are_reported(self):
         with patch.dict(os.environ, {"ANTHROPIC_AUTH_TOKEN": "x"}):
             notes = self.claude.setup(self.context)

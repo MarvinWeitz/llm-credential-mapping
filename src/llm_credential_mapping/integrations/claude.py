@@ -177,6 +177,14 @@ class Claude:
             raise CredentialError("Claude setup needs the configuration folder.")
         return context.home / "claude.json"
 
+    def _load_state(self, context: IntegrationContext) -> dict:
+        """What the last setup wrote; empty when unknown."""
+        try:
+            state = json.loads(self._state(context).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return state if isinstance(state, dict) else {}
+
     def setup(self, context: IntegrationContext, model: str | None = None, replace: bool = False) -> list[str]:
         """Configure Claude's user settings for this profile; refuse to replace another tool's credential setup."""
         path = settings_path()
@@ -191,21 +199,31 @@ class Claude:
         hooks = data.setdefault("hooks", {})
         if not isinstance(hooks, dict) or not isinstance(hooks.get("UserPromptSubmit", []), list):
             raise CredentialError(f"{path} has invalid hooks; nothing was changed.")
-        data["apiKeyHelper"] = self.helper(context)
-        env["ANTHROPIC_BASE_URL"] = base_url
-        if model:
-            data["model"] = model
-        hooks["UserPromptSubmit"] = [entry for entry in hooks.get("UserPromptSubmit", []) if not _our_hook(entry)] + [
-            {"hooks": [{"type": "command", "command": self.guard_command(context)}]},
-        ]
-        _write_json(path, data, original)
-        state = {"version": 1, "settings": str(path), "profile": context.profile.name, "base_url": base_url, "model": model}
-        atomic_write_text(self._state(context), json.dumps(state, indent=2) + "\n")
         notes = [
             f"Configured {path} for profile '{context.profile.name}'. New Claude sessions renew credentials "
             "themselves and get the customer of each repository; running sessions pick it up on the next prompt.",
             'For the VS Code extension, add to your VS Code user settings: {"claudeCode.disableLoginPrompt": true}',
         ]
+        # Record only values this setup owns, so remove never deletes the user's own (identical) ones.
+        previous = self._load_state(context)
+        owns_url = env.get("ANTHROPIC_BASE_URL") != base_url or previous.get("base_url") == base_url
+        data["apiKeyHelper"] = self.helper(context)
+        env["ANTHROPIC_BASE_URL"] = base_url
+        if model and data.get("model") in (None, previous.get("model")):
+            data["model"] = model
+        elif model:
+            if data["model"] != model:
+                notes.append(f"Note: {path} already sets a model; it was left unchanged.")
+            model = None
+        hooks["UserPromptSubmit"] = [entry for entry in hooks.get("UserPromptSubmit", []) if not _our_hook(entry)] + [
+            {"hooks": [{"type": "command", "command": self.guard_command(context)}]},
+        ]
+        _write_json(path, data, original)
+        state = {
+            "version": 1, "settings": str(path), "profile": context.profile.name,
+            "base_url": base_url if owns_url else None, "model": model,
+        }
+        atomic_write_text(self._state(context), json.dumps(state, indent=2) + "\n")
         for name in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
             if os.environ.get(name):
                 notes.append(f"Warning: {name} is set in this environment and takes precedence over the helper; unset it.")
@@ -216,12 +234,7 @@ class Claude:
         path = settings_path()
         original, data = _read_json(path)
         state_path = self._state(context)
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            if not isinstance(state, dict):
-                state = {}
-        except (OSError, ValueError):
-            state = {}
+        state = self._load_state(context)
         env = data.get("env", {})
         helper_was_ours = _ours(data.get("apiKeyHelper"))
         if helper_was_ours:
