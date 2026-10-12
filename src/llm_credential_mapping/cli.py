@@ -99,8 +99,8 @@ def _pick_customer(context: Context, prefix: str | None) -> str:
     tags = _catalogue(context, prefix)
     if not tags:
         raise CredentialError(
-            "No visible customers matched. The gateway may list only customers you used before. "
-            "Ask an administrator for an approved customer and pass --customer."
+            "No visible customers matched. A gateway's list is often empty for single sign-on users; "
+            "ask an administrator for a customers catalogue in the central rules, or pass --customer with an approved customer."
         )
     print("Visible customers are not an authorization list. Choose the approved customer for this session:", file=sys.stderr)
     for index, tag in enumerate(tags, 1):

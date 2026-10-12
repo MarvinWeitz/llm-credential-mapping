@@ -77,6 +77,9 @@ Nothing is sent without a customer: unassigned folders are blocked with an expla
 `repo show` tells you which customer applies and why; `repo list` / `repo unbind` manage your
 personal assignments. Customer tags and repository mappings are attribution, not access
 control: enforce allowed customers on the gateway if you need that.
+Gateway settings that break or leak attribution (tag routing, client-side tag rejection,
+header forwarding) and why the picker needs the rules' `customers` list are listed in
+[Gateway requirements](docs/architecture.md#11-gateway-requirements).
 
 ## Tools
 

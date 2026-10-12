@@ -199,8 +199,11 @@ acme's rule even if a later catch-all matches the fork's own address.
 path. URLs are cached in `<config folder>/rules-cache/` for an hour and revalidated with the
 ETag; on a failed fetch a stale cache is used, so a rules outage does not block work. The
 gateway credential is sent only if the rules URL is on the gateway's own origin. The
-rules' customer catalogue replaces the gateway's tag list in the interactive picker
-(LiteLLM's `/tag/list` only shows tags a user has already used).
+rules' customer catalogue replaces the gateway's tag list in the interactive picker.
+Configure one: LiteLLM's `/tag/list` scopes non-admins to spend of keys stored in its
+database, which SSO session tokens never are, so it is usually empty for developers (see
+[Gateway requirements](#11-gateway-requirements)). Rows it does return are spend tags; LiteLLM's
+automatic `<Header>: <value>` tags (`User-Agent: ...`) and invalid names are dropped.
 
 ### Attribution headers
 
@@ -467,3 +470,33 @@ for one-off launches and overrides.
 
 Tests that run `setup` point every tool's configuration at temporary folders
 (`tests/isolation.py`), so they never touch a developer's real configuration.
+
+## 11. Gateway requirements
+
+Settings the gateway needs that no client change can replace; check them before the first run.
+
+### Attribution (LiteLLM)
+
+- **Tag routing** (`router_settings.enable_tag_filtering`, also settable per key/team
+  `router_settings` or `model_info`; default off): when on, a customer tag that matches no
+  deployment fails every request with HTTP 401 ("Not allowed to access model due to tags
+  configuration"), which tools take for an expired sign-in. Either keep it off, or give every
+  deployment the `default` tag (`litellm_params.tags: [default]`) or set
+  `model_info.allow_fail_open: true`. Customer names starting with `!` or `&` are refused
+  because tag routing reads them as exclude/require directives.
+- **`general_settings.reject_clientside_metadata_tags`** must be off (default). When on, LiteLLM
+  copies the `x-litellm-tags` header into `metadata.tags` on `/v1/chat/completions` and rejects
+  it with HTTP 400, so OpenCode and Copilot Chat fail while Claude Code and Codex keep working.
+- **`litellm_settings.forward_client_headers_to_llm_api`** should stay off (default): when on,
+  every `x-` header, including the customer tag and the repository in
+  `x-litellm-spend-logs-metadata`, is forwarded to the upstream provider.
+- **`litellm_settings.disable_add_user_agent_to_request_tags: true`** is recommended: otherwise
+  LiteLLM adds `User-Agent: ...` tags to every request's spend (the picker filters them, spend
+  reports do not). Leave `extra_spend_tag_headers` empty for the same reason.
+- **`general_settings.litellm_key_header_name`** must stay unset: when set, LiteLLM reads the
+  key only from that header and ignores the `Authorization` header every tool sends. Developers
+  must not keep `x-litellm-api-key` in `ANTHROPIC_CUSTOM_HEADERS` (LiteLLM prefers it over the
+  SSO token); the Claude integration refuses any `*api-key` header there.
+- **Customer catalogue**: `/tag/list` is almost always empty for SSO users (only proxy admins
+  see tags, and then all of the gateway's). Publish the customers in the central rules
+  (`customers`) so the picker works, or have developers pass `--customer`.

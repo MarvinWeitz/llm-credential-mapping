@@ -126,6 +126,19 @@ class CustomerCliTests(unittest.TestCase):
                 self.assertEqual(self.call("run", "claude"), 1)
             self.assertFalse((self.home / "repositories.json").exists())
 
+    def test_empty_gateway_catalogue_points_to_central_rules(self):
+        stdin = io.StringIO("1\n")
+        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
+                patch("llm_credential_mapping.cli.NativeKeyring"), \
+                patch("llm_credential_mapping.cli.auth_for"), \
+                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+                patch.object(stdin, "isatty", return_value=True), \
+                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[]), \
+                patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
+            self.assertEqual(self.call("run", "claude"), 1)
+        self.assertIn("central rules", self.stderr.getvalue())
+        self.assertIn("--customer", self.stderr.getvalue())
+
     def test_picker_catalogue_failure_is_reported_not_guessed(self):
         stdin = io.StringIO("1\n")
         with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
