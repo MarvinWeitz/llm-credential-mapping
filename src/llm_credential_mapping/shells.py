@@ -43,7 +43,8 @@ def hook(shell: str, argv: list[str]) -> str:
         return "\n".join([
             "# llm-credentials: set the customer for tools started from this directory.",
             "$global:__LlmCredentialsDirectory = $null",
-            "$global:__LlmCredentialsPrompt = $function:prompt",
+            "# Loading the profile again must not wrap the wrapper (it would call itself).",
+            "if (\"$function:prompt\" -notmatch '__LlmCredentialsPrompt') { $global:__LlmCredentialsPrompt = $function:prompt }",
             "function global:prompt {",
             "    if ($PWD.Path -ne $global:__LlmCredentialsDirectory) {",
             "        $global:__LlmCredentialsDirectory = $PWD.Path",

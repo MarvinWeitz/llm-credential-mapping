@@ -236,6 +236,14 @@ class ShellTests(unittest.TestCase):
                     output = self.run_shell(name, hook(name, argv) + "\n" + cd + "\n" + printer_line)
                     self.assertEqual(Path(output.strip()).resolve(), folder)
 
+    def test_pwsh_hook_survives_loading_the_profile_twice(self):
+        # '. $PROFILE' after an edit must not make the wrapper call itself.
+        snippet = hook("pwsh", [sys.executable, "-c", "pass"])
+        script = "function global:prompt { 'PS> ' }\n" + snippet + "\n" + snippet + "\n[Console]::Write((prompt) + '|')"
+        # A profile that defines its own prompt again (a prompt framework) keeps the new one.
+        script += "\nfunction global:prompt { 'NEW> ' }\n" + snippet + "\n[Console]::Write((prompt))"
+        self.assertEqual(self.run_shell("pwsh", script), "PS> |NEW> ")
+
     def test_bash_hook_keeps_the_exit_status_for_later_prompt_commands(self):
         # Prompt frameworks after the hook in PROMPT_COMMAND show the last command's status from $?.
         script = hook("bash", ["true"]) + '\n(exit 7); __llm_credentials_hook; printf "%s|" "$?"'
