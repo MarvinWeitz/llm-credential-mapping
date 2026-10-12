@@ -155,6 +155,30 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.entries, before)
         self.assertEqual(self.store.get("a"), {"secret": "previous"})
 
+    def test_root_lost_by_a_delete_then_add_overwrite_is_restored(self):
+        # macOS Keychain replaces an item by deleting it, then adding the new one; the add can fail.
+        for old, new in (({"secret": "small"}, {"secret": "new"}), ({"secret": "old" * 2000}, {"secret": "new" * 3000})):
+            self.entries.clear()
+            self.backend.set_password.side_effect = self.write
+            self.store.put("a", old)
+            before = self.entries.copy()
+
+            failures = [OSError("add-failed-after-delete")]
+
+            def write(service, account, raw):
+                if service == self.store._service("a") and failures:
+                    self.entries.pop(service, None)
+                    raise failures.pop()
+                self.write(service, account, raw)
+
+            self.backend.set_password.side_effect = write
+            with self.subTest(size=len(str(new))):
+                with self.assertRaises(CredentialError):
+                    self.store.put("a", new)
+                self.backend.set_password.side_effect = self.write
+                self.assertEqual(self.entries, before)
+                self.assertEqual(self.store.get("a"), old)
+
     def test_failed_pointer_write_preserves_previous_generation(self):
         self.store.put("a", {"secret": "previous" * 1000})
         before = self.entries.copy()

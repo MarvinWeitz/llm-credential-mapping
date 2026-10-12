@@ -137,7 +137,8 @@ one refresh token concurrently.
 
 Windows Credential Manager limits entries to 2,560 bytes, so larger sessions are split into
 fragments; a small manifest pointing at a complete, hashed generation is written last, so a
-crash never leaves a half-written session readable. There is no plaintext fallback: without
+crash never leaves a half-written session readable. macOS Keychain replaces an entry by deleting it and
+adding the new one; if the add fails, the previous entry is written back. There is no plaintext fallback: without
 a supported vault the command fails (containers use the relay instead, section 6).
 
 ### Renewal

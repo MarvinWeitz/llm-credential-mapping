@@ -92,9 +92,14 @@ class NativeKeyring:
         if len(raw) > self.MAX_CHARS:
             raise CredentialError("Session is too large for the supported OS-vault format.")
         root = self._service(account)
-        old_services = self._stored_fragments(account, self._read(root, account))
+        previous = self._read(root, account)
+        old_services = self._stored_fragments(account, previous)
         if len(raw) <= self.ENTRY_CHARS:
-            self._write(root, account, raw)
+            try:
+                self._write(root, account, raw)
+            except (CredentialError, KeyboardInterrupt):
+                self._restore(root, account, previous)
+                raise
         else:
             parts = [raw[start:start + self.ENTRY_CHARS] for start in range(0, len(raw), self.ENTRY_CHARS)]
             manifest = {
@@ -120,6 +125,7 @@ class NativeKeyring:
                 else:
                     if not published:
                         self._cleanup(services, account)
+                        self._restore(root, account, previous)
                 raise
         self._cleanup(old_services, account)
 
@@ -159,6 +165,14 @@ class NativeKeyring:
                     "Could not remove an unused OS-vault fragment. Remove obsolete entries "
                     "under llm-credential-mapping from the vault manually."
                 )
+
+    def _restore(self, root: str, account: str, previous: str | None) -> None:
+        """Put back a root entry lost by a failed overwrite: macOS Keychain overwrites by deleting, then adding."""
+        try:
+            if previous is not None and self._read(root, account) is None:
+                self._write(root, account, previous)
+        except CredentialError:
+            logging.getLogger(__name__).warning("Cannot restore the previous sign-in in the OS vault; log in again.")
 
     def _stored_fragments(self, account: str, raw: str | None) -> list[str]:
         """Fragments named by a root entry about to be replaced or removed; a damaged root names none we trust."""
