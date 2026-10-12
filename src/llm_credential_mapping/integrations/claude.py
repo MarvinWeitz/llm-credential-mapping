@@ -218,6 +218,8 @@ class Claude:
             if data["model"] != model:
                 notes.append(f"Note: {path} already sets a model; it was left unchanged.")
             model = None
+        elif previous.get("model") is not None and data.get("model") == previous["model"]:
+            model = previous["model"]  # Still ours from an earlier setup: keep it so remove can undo it.
         hooks["UserPromptSubmit"] = [entry for entry in hooks.get("UserPromptSubmit", []) if not _our_hook(entry)] + [
             {"hooks": [{"type": "command", "command": self.guard_command(context)}]},
         ]
@@ -319,7 +321,10 @@ class Claude:
         """
         names = {name.lower() for name in context.gateway.attribution_header_names()}
         present = _header_values(environ.get("ANTHROPIC_CUSTOM_HEADERS", ""), names)
-        if present and environ.get(CUSTOMER_VARIABLE):
+        # Only a session whose headers carry the override's customer: tools that `run` starts set the
+        # variable too, and a Claude launched from them inherits it while its own headers go stale.
+        override = environ.get(CUSTOMER_VARIABLE)
+        if present and override and override in present.values():
             return None
         path = self.local_settings(directory, root)
         written = self._written(context, path)

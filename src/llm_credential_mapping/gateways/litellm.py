@@ -10,8 +10,9 @@ from ..transport import JsonTransport
 TAG_HEADER = "x-litellm-tags"
 # LiteLLM stores this JSON with each spend log entry (litellm_pre_call_utils, spend_logs_metadata).
 SPEND_METADATA_HEADER = "x-litellm-spend-logs-metadata"
-# Tags LiteLLM adds by itself as f"{header}: {value}" (litellm_logging._get_user_agent_tags, extra_spend_tag_headers).
-_AUTOMATIC_TAG = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+: ")
+# Tags LiteLLM adds by itself (litellm_logging._get_user_agent_tags); extra_spend_tag_headers must stay
+# empty (docs/architecture.md, Gateway requirements), so other "Name: value" tags remain valid customers.
+_AUTOMATIC_TAG = re.compile(r"User-Agent: ", re.IGNORECASE)
 
 
 def _is_customer(name: object) -> bool:

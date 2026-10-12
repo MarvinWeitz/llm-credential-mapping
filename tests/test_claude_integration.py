@@ -125,6 +125,15 @@ class SetupTests(ClaudeTestCase):
         self.claude.remove(self.context)
         self.assertEqual(self.read(), own)
 
+    def test_rerunning_setup_without_a_model_keeps_ownership_of_ours(self):
+        self.config.mkdir()
+        self.settings.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+        self.claude.setup(self.context, "sonnet")
+        self.claude.setup(self.context)
+        self.assertEqual(self.read()["model"], "sonnet")
+        self.claude.remove(self.context)
+        self.assertEqual(self.read(), {"theme": "dark"})
+
     def test_static_credentials_in_the_environment_are_reported(self):
         with patch.dict(os.environ, {"ANTHROPIC_AUTH_TOKEN": "x"}):
             notes = self.claude.setup(self.context)
@@ -208,6 +217,11 @@ class GuardTests(ClaudeTestCase):
         self.assertIsNone(self.guard(**override))
         self.assertIsNone(self.guard(None, **override))
         self.assertFalse(self.local.exists())
+
+    def test_an_inherited_override_does_not_cover_other_headers(self):
+        # Started from a terminal that `run codex` opened: the variable is inherited, the headers are not its.
+        stale = {"headers": "x-litellm-tags: customer:old", CUSTOMER_VARIABLE: "customer:codex"}
+        self.assertIn("Send the prompt again", self.guard(**stale))
 
     def test_headers_from_elsewhere_are_replaced(self):
         self.assertIn("Send the prompt again", self.guard(headers="x-litellm-tags: customer:other"))

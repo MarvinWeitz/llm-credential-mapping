@@ -68,12 +68,12 @@ class TagTests(unittest.TestCase):
         transport.get_list.return_value = [
             None, {}, {"name": 42}, {"name": "b", "description": []}, {"name": "x" * 257}, {"name": "a,b"},
             {"name": "&acme"}, {"name": "User-Agent: claude-cli"}, {"name": "User-Agent: claude-cli/2.0.14 (external, cli)"},
-            {"name": "x-team: web"}, {"name": "customer:A", "description": "first"}, {"name": "customer:A"},
+            {"name": "user-agent: curl/8.5"}, {"name": "Acme: EU"}, {"name": "customer:A", "description": "first"}, {"name": "customer:A"},
             {"name": "Customer B", "description": "This is just a spend tag"},
         ]
         self.assertEqual(
             list_tags(self.profile, "secret", transport=transport),
-            [Tag("Customer B", "This is just a spend tag"), Tag("customer:A", "first")],
+            [Tag("Acme: EU", None), Tag("Customer B", "This is just a spend tag"), Tag("customer:A", "first")],
         )
 
     def test_failed_discovery_is_not_a_successful_empty_list(self):
