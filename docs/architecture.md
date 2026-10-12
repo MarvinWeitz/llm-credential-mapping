@@ -187,7 +187,13 @@ Repository identity (`repositories.repository_identity`) normalizes Git remotes 
 SSH forms of one repository match: credentials, ports and `.git` removed, host and path
 lowercased for every forge, Azure DevOps HTTPS/SSH/`visualstudio.com` forms collapsed to
 `dev.azure.com/org/project/repo`, SSH host aliases resolved with `ssh -G` (plain host names
-only, so no option injection). No Git remote is contacted.
+only, so no option injection), forge SSH-over-443 endpoints (`ssh.github.com`,
+`altssh.gitlab.com`, `altssh.bitbucket.org`) mapped back to the forge host, and the `scm/`
+prefix of Bitbucket Server HTTPS remotes (`host/scm/project/repo`, three segments, not on
+github.com, gitlab.com, bitbucket.org or dev.azure.com) removed. No Git remote is contacted.
+A forge served under a sub-path (GitLab with a relative URL root such as
+`https://host/gitlab/group/repo`, SSH `host:group/repo`) cannot be recognized from the remote,
+so its two forms stay different identities: rules need one entry per form.
 
 Why this order: explicit beats implicit; a personal override must be able to correct a
 wrong team-wide setting; a committed file is a deliberate, reviewable team decision; central
@@ -201,7 +207,9 @@ acme's rule even if a later catch-all matches the fork's own address.
 
 `rules` in a profile is an HTTPS URL (HTTP only for opted-in loopback) or an absolute file
 path. URLs are cached in `<config folder>/rules-cache/` for an hour and revalidated with the
-ETag; on a failed fetch a stale cache is used, so a rules outage does not block work. The
+ETag; on a failed fetch, or when a newly published document is invalid, a stale cache is
+used, so a rules outage or a broken edit does not block work. Patterns match the identity
+`repo show` prints, which is percent-decoded: `dev.azure.com/org/My Project/**`, not `My%20Project`. The
 gateway credential is sent only if the rules URL is on the gateway's own origin. The
 rules' customer catalogue replaces the gateway's tag list in the interactive picker.
 Configure one: LiteLLM's `/tag/list` scopes non-admins to spend of keys stored in its

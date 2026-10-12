@@ -65,7 +65,8 @@ The customer of a directory is chosen in this order (first match wins):
    clone shares it;
 3. the nearest committed `.llm-customer` file (`customer = "NAME"`), written with
    `repo bind --shared`; a file in a parent folder such as `~/src/acme/` covers all
-   repositories below it; the search stops at your home directory;
+   repositories below it; the search stops below your home directory, so a file in it or
+   above it never applies (`repo bind --shared` refuses to write one there);
 4. central rules of the profile (`profile add --rules URL|PATH` or `profile update NAME --rules ...`):
    ```json
    {"version": 1,
@@ -73,7 +74,8 @@ The customer of a directory is chosen in this order (first match wins):
     "rules": [{"match": "github.com/acme-*/**", "customer": "customer-acme"}]}
    ```
    `**` spans path segments, `*`/`?` stay within one; the first matching rule wins, tried
-   against `origin`, then `upstream`.
+   against `origin`, then `upstream`. Write the repository as `repo show` prints it
+   (lowercase, `%20` decoded to a space).
 
 Nothing is sent without a customer: unassigned folders are blocked with an explanation.
 `repo show` tells you which customer applies and why; `repo list` / `repo unbind` manage your
