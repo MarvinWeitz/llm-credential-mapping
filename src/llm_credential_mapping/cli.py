@@ -362,7 +362,8 @@ def claude_guard(context: Context) -> None:
         data = json.loads(sys.stdin.read(1_048_576) or "{}")
     except ValueError:
         data = {}
-    cwd = data.get("cwd") if isinstance(data, dict) else None
+    # Claude reads local settings for the directory it started in, which the payload's cwd leaves after a cd.
+    cwd = os.environ.get("CLAUDE_PROJECT_DIR") or (data.get("cwd") if isinstance(data, dict) else None)
     try:
         directory = Path(cwd).resolve() if isinstance(cwd, str) and cwd else Path.cwd().resolve()
         checkout = find_checkout(directory)

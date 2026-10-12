@@ -296,16 +296,17 @@ class Claude:
     ) -> str | None:
         """Decide a prompt before it is sent: None allows it, a string blocks it with that reason.
 
-        Allows a session whose headers already match the customer, or whose attribution headers come
-        from elsewhere (e.g. ``claude --settings``, a deliberate override). Otherwise writes the local
-        settings file and blocks once, because Claude only uses the reloaded file from the next prompt.
+        Allows a session whose headers already match the customer, or that ``run claude`` started with
+        its own customer (a deliberate override). Otherwise writes the local settings file and blocks
+        once, because Claude only uses the reloaded file from the next prompt. Other headers are stale:
+        Claude keeps a header in its environment after the file stops setting it.
         """
         names = {name.lower() for name in context.gateway.attribution_header_names()}
         present = _header_values(environ.get("ANTHROPIC_CUSTOM_HEADERS", ""), names)
+        if present and environ.get(CUSTOMER_VARIABLE):
+            return None
         path = self.local_settings(directory, root)
         written = self._written(context, path)
-        if present and present != written:
-            return None
         if attribution is None:
             if written:
                 self.write_local(context, path, None, root)

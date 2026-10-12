@@ -13,7 +13,7 @@ from llm_credential_mapping.cli import main
 from llm_credential_mapping.customers import Attribution
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.integrations.claude import Claude, settings_path
-from llm_credential_mapping.integrations.common import shell_command
+from llm_credential_mapping.integrations.common import CUSTOMER_VARIABLE, shell_command
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.registry import gateway_for
 from isolation import isolate_tool_configuration
@@ -31,7 +31,10 @@ class ClaudeTestCase(unittest.TestCase):
         self.config = Path(os.environ["CLAUDE_CONFIG_DIR"])
         self.home = self.root / "credentials"
         self.home.mkdir()
-        for name in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "LLM_CREDENTIALS_CUSTOMER"):
+        for name in (
+            "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "LLM_CREDENTIALS_CUSTOMER",
+            CUSTOMER_VARIABLE, "CLAUDE_PROJECT_DIR",
+        ):
             os.environ.pop(name, None)
         self.profile = Profile("unit", "https://gateway.example", {"team_id": "t"})
         self.context = IntegrationContext(self.profile, gateway_for(self.profile), "", self.home)
@@ -122,8 +125,9 @@ class GuardTests(ClaudeTestCase):
         subprocess.run(["git", "init", "--quiet", str(self.repo)], check=True, capture_output=True)
         self.local = self.claude.local_settings(self.sub, self.repo)
 
-    def guard(self, attribution=ATTRIBUTION, headers=None):
-        environ = {} if headers is None else {"ANTHROPIC_CUSTOM_HEADERS": headers}
+    def guard(self, attribution=ATTRIBUTION, headers=None, **environ):
+        if headers is not None:
+            environ["ANTHROPIC_CUSTOM_HEADERS"] = headers
         return self.claude.guard(self.context, self.sub, self.repo, attribution, "UNMAPPED", environ)
 
     def test_local_settings_follow_claudes_lookup(self):
@@ -158,10 +162,25 @@ class GuardTests(ClaudeTestCase):
         self.assertIn("customer:B", reason)
         self.assertIn("x-litellm-tags: customer:B", self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
 
-    def test_headers_from_elsewhere_are_a_deliberate_override(self):
-        self.assertIsNone(self.guard(headers="x-litellm-tags: customer:override"))
-        self.assertIsNone(self.guard(None, headers="x-litellm-tags: customer:override"))
+    def test_headers_from_run_claude_are_a_deliberate_override(self):
+        override = {"headers": "x-litellm-tags: customer:override", CUSTOMER_VARIABLE: "customer:override"}
+        self.assertIsNone(self.guard(**override))
+        self.assertIsNone(self.guard(None, **override))
         self.assertFalse(self.local.exists())
+
+    def test_headers_from_elsewhere_are_replaced(self):
+        self.assertIn("Send the prompt again", self.guard(headers="x-litellm-tags: customer:other"))
+        self.assertIn("x-litellm-tags: customer:A", self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
+        self.assertEqual(self.guard(None, headers="x-litellm-tags: customer:other"), "UNMAPPED")
+
+    def test_stale_headers_keep_unmapped_prompts_blocked(self):
+        # Claude keeps ANTHROPIC_CUSTOM_HEADERS in its environment after the local file stops setting it.
+        self.guard()
+        self.assertEqual(self.guard(None, HEADERS), "UNMAPPED")
+        self.assertEqual(self.guard(None, HEADERS), "UNMAPPED")
+        self.local.unlink()
+        other = Attribution("customer:B", "local", "repo bind", "github.com/acme/web")
+        self.assertIn("customer:B", self.guard(other, HEADERS))
 
     def test_unrelated_local_settings_and_headers_are_kept(self):
         self.local.parent.mkdir(parents=True)
@@ -214,6 +233,19 @@ class CliTests(ClaudeTestCase):
         self.assertEqual(result, 0)
         self.assertIn("Updated", stderr)
         self.assertIn("x-litellm-tags: customer:B", self.read(local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
+
+    def test_guard_uses_the_directory_claude_started_in(self):
+        # After the model runs 'cd sub', the payload's cwd moves but Claude still reads the starting folder's settings.
+        self.assertEqual(self.call("repo", "bind", "--directory", str(self.repo), "--customer", "customer:A")[0], 0)
+        nested = self.repo / "sub"
+        subprocess.run(["git", "init", "--quiet", str(nested)], check=True, capture_output=True)
+        result, stdout, _ = self.call(
+            "claude", "guard", stdin=json.dumps({"cwd": str(nested)}), environ={"CLAUDE_PROJECT_DIR": str(self.repo)},
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("customer:A", json.loads(stdout)["reason"])
+        self.assertTrue(self.claude.local_settings(self.repo, self.repo).is_file())
+        self.assertFalse((nested / ".claude").exists())
 
     def test_guard_fails_closed(self):
         (self.repo / ".llm-customer").write_text("customer = 'a,b'", encoding="utf-8")
