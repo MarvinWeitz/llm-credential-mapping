@@ -29,7 +29,7 @@ http.createServer((request, response) => {
     } catch {
       return response.writeHead(400).end(); // Readiness probes and anything that is not a relay request.
     }
-    const result = await answer(body, run, "");
+    const result = await answer(body, run, []); // llmCredentials.localProfiles unset: the local default only.
     console.log(`companion: ${body?.operation} -> ${result.ok ? "ok" : result.error}`);
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
   });
