@@ -5,6 +5,10 @@ attribution header values come from environment variables, set per directory by 
 ``run codex``. The token command is called with ``--require-attribution-env`` and refuses without them.
 Codex then sends the request without a credential, which the gateway rejects: nothing goes through
 untagged. Codex reruns the command every ``refresh_interval_ms`` and once after a 401.
+
+The token command must see those variables. Interactive Codex on Windows filters the environment of
+the commands it starts unless ``shell_environment_policy.inherit = "all"`` (its documented default) is
+set explicitly, so setup and run set it whenever the user's configuration does not choose a value.
 """
 
 import json
@@ -25,6 +29,7 @@ REQUIRE_ENV = "--require-attribution-env"
 _TOP = ("# >>> llm-credentials: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials <<<")
 _TABLES = ("# >>> llm-credentials tables: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials tables <<<")
 _CLEARED = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
+INHERIT = "shell_environment_policy.inherit"
 
 
 def config_path(environ: Mapping[str, str] | None = None) -> Path:
@@ -43,6 +48,16 @@ def _toml(value) -> str:
     if isinstance(value, dict):
         return "{ " + ", ".join(f"{json.dumps(key)} = {_toml(item)}" for key, item in value.items()) + " }"
     return json.dumps(value)
+
+
+def _chosen_inherit() -> object:
+    """The user's own shell_environment_policy.inherit, or None when their configuration leaves it unset."""
+    try:
+        parsed = tomllib.loads(_without_blocks(config_path().read_text(encoding="utf-8")))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return None
+    policy = parsed.get("shell_environment_policy")
+    return policy.get("inherit") if isinstance(policy, dict) else None
 
 
 class Codex:
@@ -79,6 +94,8 @@ class Codex:
         if attribution is not None:
             env[CUSTOMER_VARIABLE] = attribution.customer
         settings = {"model_provider": PROVIDER}
+        if _chosen_inherit() is None:
+            settings[INHERIT] = "all"
         for key, value in self.provider(context).items():
             if isinstance(value, dict):
                 settings.update({f"model_providers.{PROVIDER}.{key}.{item}": entry for item, entry in value.items()})
@@ -139,6 +156,14 @@ class Codex:
             raise CredentialError(f"{path} already defines [model_providers.{PROVIDER}] outside the managed block.")
         top = [f"model_provider = {json.dumps(PROVIDER)}"]
         notes = []
+        policy = parsed.get("shell_environment_policy")
+        if policy is None:
+            top.append(f'{INHERIT} = "all"')
+        elif not isinstance(policy, dict) or policy.get("inherit") != "all":
+            notes.append(
+                f'Note: {path} has its own [shell_environment_policy]; set inherit = "all" there, otherwise '
+                "interactive Codex on Windows does not pass the customer to the token command."
+            )
         if model and "model" not in parsed:
             top.append(f"model = {json.dumps(model)}")
         elif model:

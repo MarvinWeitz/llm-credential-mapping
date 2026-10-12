@@ -70,6 +70,26 @@ class CodexSetupTests(ToolTestCase):
         self.assertTrue(any("left unchanged" in note for note in notes))
 
 
+    def test_setup_and_run_let_the_token_command_see_the_customer_unless_the_user_chose_a_policy(self):
+        # Interactive Codex on Windows filters the token command's environment without an explicit inherit.
+        path = codex_config()
+        path.parent.mkdir(parents=True)
+        Codex().setup(self.context)
+        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["shell_environment_policy"], {"inherit": "all"})
+        argv, _ = Codex().command(self.context, None, [], None)
+        self.assertIn('shell_environment_policy.inherit="all"', argv)
+        Codex().remove(self.context)
+        own = '[shell_environment_policy]\ninherit = "core"\n'
+        path.write_text(own, encoding="utf-8")
+        notes = Codex().setup(self.context)
+        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["shell_environment_policy"], {"inherit": "core"})
+        self.assertTrue(any('inherit = "all"' in note for note in notes))
+        argv, _ = Codex().command(self.context, None, [], None)
+        self.assertFalse(any(arg.startswith("shell_environment_policy") for arg in argv))
+        Codex().remove(self.context)
+        self.assertEqual(path.read_text(encoding="utf-8"), own)
+
+
 class OpenCodeSetupTests(ToolTestCase):
     def setup_opencode(self, model="alias", listed=None):
         response = {"data": [{"id": name} for name in (listed or [])]} if listed is not None else None
