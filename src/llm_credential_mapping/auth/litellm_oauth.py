@@ -339,7 +339,18 @@ class LiteLLMClient:
                 },
                 form=True,
             )
-            return Session.from_response(response, self.profile, client_id, discovery)
+            try:
+                if response.get("team_id") is None:
+                    # LiteLLM issues a grant without a team to a user who belongs to none.
+                    raise CredentialError(
+                        f"Your LiteLLM user is not a member of any team. Ask the gateway administrator to add you "
+                        f"to team '{team_id(self.profile)}', then log in again and choose it at consent."
+                    )
+                return Session.from_response(response, self.profile, client_id, discovery)
+            except CredentialError:
+                # The gateway already issued this grant; keep no unsaved grant alive.
+                self._revoke_unparsed(response, client_id, discovery, notify)
+                raise
         finally:
             callback.close()
 
@@ -377,9 +388,17 @@ class LiteLLMClient:
         return renewed
 
     def revoke(self, session: Session) -> None:
-        self.transport.request(
-            "POST",
-            session.revocation_endpoint,
-            {"token": session.refresh_token, "client_id": session.client_id},
-            form=True,
-        )
+        self._revoke(session.revocation_endpoint, session.refresh_token, session.client_id)
+
+    def _revoke(self, endpoint: str, refresh_token: str, client_id: str) -> None:
+        self.transport.request("POST", endpoint, {"token": refresh_token, "client_id": client_id}, form=True)
+
+    def _revoke_unparsed(self, response: dict, client_id: str, discovery: Discovery, notify: Callable[[str], None]) -> None:
+        """Revoke a grant from a token response that was rejected before it became a Session."""
+        refresh_token = response.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            return
+        try:
+            self._revoke(discovery.revocation_endpoint, refresh_token, client_id)
+        except CredentialError:
+            notify("Warning: the unsaved grant could not be revoked; its access token expires naturally.")

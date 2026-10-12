@@ -267,6 +267,20 @@ class OAuthIntegrationTests(unittest.TestCase):
         with self.assertRaises(CredentialError):
             self.client.refresh(session)
 
+    def test_teamless_login_is_explained_and_its_grant_revoked(self):
+        self.fixture.team = None
+        with self.assertRaises(CredentialError) as result:
+            self.login()
+        self.assertIn("not a member of any team", str(result.exception))
+        self.assertIn("team-a", str(result.exception))
+        self.assertEqual(self.fixture.posts[-1], ("/revoke", {"token": "fixture-refresh", "client_id": "client"}))
+
+    def test_rejected_login_response_revokes_its_grant(self):
+        self.fixture.access_token = "bad\naccess"
+        with self.assertRaises(CredentialError):
+            self.login()
+        self.assertEqual([path for path, body in self.fixture.posts], ["/register", "/token", "/revoke"])
+
     def test_browser_failure_does_not_wait_or_exchange_code(self):
         with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", return_value=False):
             with self.assertRaises(CredentialError):
