@@ -288,6 +288,11 @@ sequenceDiagram
   operations or malformed profile names are refused by both sides. The companion returns only
   the token fields (`access_token`, `expires_at`, `profile`, `user`) or the nonsecret profile
   description, never a refresh token.
+- **Which local profiles:** the companion answers only for the profiles in
+  `llmCredentials.localProfiles` (application scope, local user settings; the first is used
+  when a request names none), or, when that is empty, only for the local default profile. A
+  container process or a workspace setting cannot reach other local profiles. A failed
+  request names its profile, so "Sign in" signs in to exactly that one.
 - **Several windows on one container:** only one serves the socket; others see it answering
   (`Busy`) and retry every 30 s, taking over when the serving window closes. A stale socket
   file from a closed window is removed.

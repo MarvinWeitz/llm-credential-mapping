@@ -144,7 +144,8 @@ long-lived is stored inside it.
 
 1. Local VS Code: install `vscode-extension/local/llm-credentials-local.vsix`
    ("LLM Credentials: local sign-in") and set `llmCredentials.localCommand` in your user
-   settings to the local CLI command.
+   settings to the local CLI command. Containers get tokens only for your local default
+   profile; list others in `llmCredentials.localProfiles` (user settings) to allow them.
 2. In the container: install the CLI, e.g.
    `uv tool install --python 3.12 "git+https://github.com/MarvinWeitz/llm-credential-mapping@BRANCH_OR_COMMIT"`
    (or a Dev Container feature), and install `vscode-extension/llm-credentials.vsix` into

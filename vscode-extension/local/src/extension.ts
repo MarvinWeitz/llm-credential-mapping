@@ -29,15 +29,24 @@ function runner(timeout = 60000): Run {
   });
 }
 
-const profileName = () => vscode.workspace.getConfiguration("llmCredentials").get<string>("profile", "").trim();
+/**
+ * The local profiles remote windows may use; empty: the local default only. Application-scoped like localCommand, so
+ * neither a workspace nor the remote side can change it (`llmCredentials.profile` would be the remote window's value).
+ */
+function localProfiles(): string[] {
+  const names = vscode.workspace.getConfiguration("llmCredentials").get<string[]>("localProfiles", []);
+  return Array.isArray(names) ? names.filter((name) => typeof name === "string" && name.trim()).map((name) => name.trim()) : [];
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   let lastPrompt = "";
+  let lastProfile = ""; // The profile whose request needed a sign-in.
   context.subscriptions.push(
     vscode.commands.registerCommand("llmCredentials.local.request", async (request: unknown) => {
-      const result = await answer(request, runner(), profileName());
+      const result = await answer(request, runner(), localProfiles());
       if (!result.ok && result.login && result.error !== lastPrompt) {
         lastPrompt = result.error; // One prompt per distinct problem.
+        lastProfile = result.profile;
         void vscode.window.showWarningMessage(`llm-credentials: ${result.error}`, "Sign in").then((action) => {
           if (action === "Sign in") vscode.commands.executeCommand("llmCredentials.local.signIn");
         });
@@ -48,7 +57,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "llm-credentials: complete the sign-in in your browser", cancellable: false },
         async () => {
-          const name = profileName();
+          const name = lastProfile || localProfiles()[0] || "";
           try {
             const output = await runner(15 * 60000)(["login", ...(name ? ["--profile", name] : [])]);
             lastPrompt = "";
