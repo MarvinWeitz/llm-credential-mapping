@@ -97,6 +97,23 @@ class SetupTests(ClaudeTestCase):
         self.claude.remove(self.context)
         self.assertEqual(self.read(), {"theme": "dark", "model": "my-own-choice"})
 
+    def test_setup_and_remove_write_through_a_symlinked_settings_file(self):
+        # Dotfile managers (stow, home-manager) link the settings file into a repository.
+        managed = self.root / "dotfiles" / "settings.json"
+        managed.parent.mkdir()
+        managed.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+        self.config.mkdir()
+        try:
+            self.settings.symlink_to(managed)
+        except OSError:
+            self.skipTest("symbolic links are not available")
+        self.claude.setup(self.context)
+        self.assertTrue(self.settings.is_symlink())
+        self.assertIn("apiKeyHelper", self.read(managed))
+        self.claude.remove(self.context)
+        self.assertTrue(self.settings.is_symlink())
+        self.assertEqual(self.read(managed), {"theme": "dark"})
+
     def test_setup_keeps_and_remove_restores_the_users_own_model_and_gateway(self):
         self.config.mkdir()
         own = {"model": "opus", "env": {"ANTHROPIC_BASE_URL": "https://gateway.example"}}
