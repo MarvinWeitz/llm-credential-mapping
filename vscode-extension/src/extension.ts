@@ -4,9 +4,11 @@ import { AGENT_VARIABLE, agentPath, Busy, serve, type AgentRequest } from "./age
 import { AttributionCache, choose, type Choice } from "./attribution";
 import * as cli from "./cli";
 import { TokenCache } from "./credentials";
+import { GatewayError } from "./gateway";
 import { Provider, VENDOR, type Services } from "./provider";
 
 const CHOSEN_FOLDER = "llmCredentials.chosenFolder";
+const LOGIN_TERMINAL = "llm-credentials login";
 /** Commands of the companion extension "LLM Credentials: local sign-in", which runs on the local machine. */
 const LOCAL_REQUEST = "llmCredentials.local.request";
 const LOCAL_SIGN_IN = "llmCredentials.local.signIn";
@@ -29,7 +31,10 @@ async function askLocal(request: AgentRequest): Promise<unknown> {
  * In a remote window (dev container, SSH, WSL): serve the CLI's "forwarded" sign-in and make sure the remote
  * CLI has a profile using it, created from the local profile. The refresh grant never leaves the local vault.
  */
-function startRelay(context: vscode.ExtensionContext, output: vscode.OutputChannel, command: () => string[], profileName: () => string) {
+function startRelay(
+  context: vscode.ExtensionContext, output: vscode.OutputChannel, command: () => string[], profileName: () => string,
+  onCreated: () => void,
+) {
   const socketPath = agentPath();
   context.environmentVariableCollection.replace(AGENT_VARIABLE, socketPath);
   let stopped = false;
@@ -44,10 +49,12 @@ function startRelay(context: vscode.ExtensionContext, output: vscode.OutputChann
     }
   };
   context.subscriptions.push({ dispose: () => (stopped = true) });
-  void start().then(() => ensureRemoteProfile(command(), profileName(), output));
+  void start().then(() => ensureRemoteProfile(command(), profileName(), output, onCreated));
 }
 
-async function ensureRemoteProfile(command: string[], profileName: string, output: vscode.OutputChannel): Promise<void> {
+async function ensureRemoteProfile(
+  command: string[], profileName: string, output: vscode.OutputChannel, onCreated: () => void,
+): Promise<void> {
   const run = cli.runner(command);
   try {
     await cli.profile(run, profileName);
@@ -68,6 +75,7 @@ async function ensureRemoteProfile(command: string[], profileName: string, outpu
       ...(local.gateway.url.startsWith("http:") ? ["--allow-insecure-localhost"] : []),
     ]);
     output.appendLine(`Created profile '${local.name}' here; it uses the sign-in of your local machine.`);
+    onCreated(); // The first model listing ran without a profile and found nothing.
   } catch (error) {
     output.appendLine(`Could not create a profile from the local one: ${(error as Error).message}`);
   }
@@ -108,7 +116,9 @@ export function activate(context: vscode.ExtensionContext): void {
     output.appendLine(`[${new Date().toISOString()}] ${message}`);
     if (message === lastError) return; // One notification per distinct problem.
     lastError = message;
-    const actions = error instanceof cli.CliError && error.needsLogin ? ["Sign in"]
+    // A 401 here survived the retry with a fresh token: the gateway no longer accepts this sign-in.
+    const needsLogin = (error instanceof cli.CliError && error.needsLogin) || (error instanceof GatewayError && error.status === 401);
+    const actions = needsLogin ? ["Sign in"]
       : error instanceof cli.CliError && error.unassigned ? ["Assign customer"] : [];
     void vscode.window.showWarningMessage(`llm-credentials: ${message}`, ...actions).then((action) => {
       if (action === "Sign in") vscode.commands.executeCommand("llmCredentials.signIn");
@@ -158,10 +168,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshStatus()),
     vscode.window.onDidChangeActiveTextEditor(() => void refreshStatus()),
     vscode.commands.registerCommand("llmCredentials.refresh", reset),
+    // After a sign-in, list the models again: a listing without a sign-in found none.
+    vscode.window.onDidCloseTerminal((closed) => closed.name === LOGIN_TERMINAL && reset()),
     vscode.commands.registerCommand("llmCredentials.signIn", async () => {
-      if (!vscode.env.remoteName) return terminal("llm-credentials login", cli.loginArgs(profileName()));
+      if (!vscode.env.remoteName) return terminal(LOGIN_TERMINAL, cli.loginArgs(profileName()));
       try {
         await vscode.commands.executeCommand(LOCAL_SIGN_IN); // Remote windows sign in on the local machine.
+        reset();
       } catch {
         void vscode.window.showWarningMessage(LOCAL_MISSING);
       }
@@ -190,7 +203,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void refreshStatus();
     }),
   );
-  if (vscode.env.remoteName && process.platform !== "win32") startRelay(context, output, command, profileName);
+  if (vscode.env.remoteName && process.platform !== "win32") startRelay(context, output, command, profileName, reset);
   void refreshStatus();
 }
 

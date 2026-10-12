@@ -412,13 +412,17 @@ is declared), subject to the organization's "Bring Your Own Language Model Key" 
   `<endpoint>/models`; requests stream `<endpoint>/chat/completions` with tools, tool results,
   `tool_choice` and (opt-in) images. Redirects are refused.
 - **Credential:** `token --json`, cached until 60 s before expiry and at most 4 minutes; one
-  retry with a fresh token after a 401 if nothing was streamed yet.
+  retry with a fresh token after a 401 if nothing was streamed yet. The CLI returns the same
+  token until it is due for renewal, so a 401 that survives the retry offers "Sign in".
 - **Customer:** `repo show --json` for the folder: the only workspace folder; else the active
   editor's folder; else the folder chosen in the status bar; else, if all folders share one
-  customer, that one; otherwise requests fail and the status bar asks for a choice. Answers
+  customer, that one (its headers, so the spend-log metadata names the first folder's
+  repository); otherwise requests fail and the status bar asks for a choice. Answers
   are cached 30 s so a `repo bind` takes effect quickly.
 - **Errors:** notifications offer "Sign in" or "Assign customer", which open a terminal
   running the matching CLI command (in remote windows, sign-in goes to the companion).
+  When the sign-in finishes, or a remote window has created its profile, the models are
+  listed again; a listing before that found none.
 
 Why an extension instead of Copilot's "Custom Endpoint": its API key comes from VS Code's
 secret storage and cannot renew, and it carries no per-workspace information, so a
