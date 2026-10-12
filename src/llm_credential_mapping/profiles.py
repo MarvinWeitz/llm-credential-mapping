@@ -144,6 +144,7 @@ def atomic_write_text(
     path: Path, value: str, *, newline: str | None = None, permissions: int | None = None,
 ) -> None:
     """Replace text atomically under the caller's lock; optionally preserve line endings and file permissions."""
+    path = Path(os.path.realpath(path))  # Replace a symlink's target, not the link (dotfile managers).
     filename = None
     try:
         with tempfile.NamedTemporaryFile(

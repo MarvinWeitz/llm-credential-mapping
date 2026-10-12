@@ -346,7 +346,7 @@ Claude has no way to compute request headers per request; the only source is
 ```mermaid
 flowchart TD
     A[Prompt submitted] --> B{Attribution headers in<br/>ANTHROPIC_CUSTOM_HEADERS?}
-    B -- "yes, not written by us<br/>(e.g. run --customer)" --> OK[Allow]
+    B -- "yes, set by run claude<br/>(e.g. run --customer)" --> OK[Allow]
     B -- yes, equal to the resolver's --> OK
     B -- missing or outdated --> C{Customer resolved?}
     C -- no --> X[Block: how to assign a customer]
@@ -358,7 +358,10 @@ so the first request would otherwise go out untagged. Why `settings.local.json` 
 shared `settings.json`: it is personal and excluded from Git, so no billing tag is committed
 into a customer's repository by accident. Claude reads it at the Git root, except on Windows
 and outside Git, where it uses the session's starting directory; the guard writes where
-Claude reads.
+Claude reads, starting from `CLAUDE_PROJECT_DIR` (the hook payload's `cwd` follows the agent's
+`cd`). Headers that `run claude` did not set and that differ from the resolver's are stale,
+not an override: Claude keeps `ANTHROPIC_CUSTOM_HEADERS` in its environment after the local
+file stops setting it, so an unmapped folder must keep blocking.
 
 On Windows Claude Code runs hooks through Git Bash. The helper and hook commands therefore
 quote every argument in double quotes with forward slashes (valid in both cmd and bash) and

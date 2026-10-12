@@ -43,7 +43,8 @@ def hook(shell: str, argv: list[str]) -> str:
         return "\n".join([
             "# llm-credentials: set the customer for tools started from this directory.",
             "$global:__LlmCredentialsDirectory = $null",
-            "$global:__LlmCredentialsPrompt = $function:prompt",
+            "# Loading the profile again must not wrap the wrapper (it would call itself).",
+            "if (\"$function:prompt\" -notmatch '__LlmCredentialsPrompt') { $global:__LlmCredentialsPrompt = $function:prompt }",
             "function global:prompt {",
             "    if ($PWD.Path -ne $global:__LlmCredentialsDirectory) {",
             "        $global:__LlmCredentialsDirectory = $PWD.Path",
@@ -72,10 +73,12 @@ def hook(shell: str, argv: list[str]) -> str:
     return "\n".join([
         "# llm-credentials: set the customer for tools started from this directory.",
         "__llm_credentials_hook() {",
+        "    local status=$?  # Keep $? for prompt commands that run after this one.",
         '    if [ "$PWD" != "${__llm_credentials_directory-}" ]; then',
         '        __llm_credentials_directory="$PWD"',
         f'        eval "$({command} --directory "$PWD")"',
         "    fi",
+        '    return "$status"',
         "}",
         'case ";${PROMPT_COMMAND-};" in',
         '    *";__llm_credentials_hook;"*) ;;',
