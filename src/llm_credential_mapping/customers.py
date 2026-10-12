@@ -26,7 +26,8 @@ _MAX_RULES_BYTES = 1_048_576
 def validate_customer(value: str) -> str:
     """Validate one exact customer name; reject empty, padded, non-ASCII or comma-containing values.
 
-    The rules are strict enough for any gateway's request header, so no gateway needs its own.
+    The rules are strict enough for any gateway's request header, so no gateway needs its own. A leading
+    ``!`` or ``&`` is refused because LiteLLM's tag routing reads it as an exclude/require directive.
     """
     if (
         not isinstance(value, str)
@@ -34,10 +35,11 @@ def validate_customer(value: str) -> str:
         or len(value) > 256
         or value != value.strip()
         or "," in value
+        or value[0] in "!&"
         or any(not 32 <= ord(char) <= 126 for char in value)
     ):
         raise CredentialError(
-            "Customer must be 1-256 printable ASCII characters, without commas or surrounding whitespace. "
+            "Customer must be 1-256 printable ASCII characters, without commas, surrounding whitespace or a leading ! or &. "
             "Use the exact name the gateway expects; no prefix is added."
         )
     return value
