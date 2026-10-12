@@ -71,7 +71,8 @@ The customer of a directory is chosen in this order (first match wins):
     "rules": [{"match": "github.com/acme-*/**", "customer": "customer-acme"}]}
    ```
    `**` spans path segments, `*`/`?` stay within one; the first matching rule wins, tried
-   against `origin`, then `upstream`.
+   against `origin`, then `upstream`. Write the repository as `repo show` prints it
+   (lowercase, `%20` decoded to a space).
 
 Nothing is sent without a customer: unassigned folders are blocked with an explanation.
 `repo show` tells you which customer applies and why; `repo list` / `repo unbind` manage your

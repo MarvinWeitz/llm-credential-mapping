@@ -162,7 +162,8 @@ class Rules:
             if (
                 not isinstance(rule, dict) or set(rule) != {"match", "customer"}
                 or not isinstance(rule["match"], str) or not 0 < len(rule["match"]) <= 512
-                or any(char.isspace() or ord(char) < 32 for char in rule["match"])
+                # Spaces are allowed: identities are percent-decoded (Azure "My Project").
+                or any((char.isspace() and char != " ") or ord(char) < 32 for char in rule["match"])
             ):
                 raise CredentialError(f"Invalid rule in the customer rules document: {source}.")
             rules.append((rule["match"].lower(), validate_customer(rule["customer"])))
@@ -254,7 +255,12 @@ class RulesLoader:
                 return cached["document"]  # Stale rules beat no rules during an outage.
             raise
         document, etag = fetched if fetched is not None else (cached["document"], cached["etag"])
-        Rules.parse(document, url)
+        try:
+            Rules.parse(document, url)
+        except CredentialError:
+            if cached is not None:
+                return cached["document"]  # A broken publication must not block those with valid rules.
+            raise
         path = self._cache_path(url)
         try:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

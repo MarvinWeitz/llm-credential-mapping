@@ -11,7 +11,7 @@ from llm_credential_mapping.customers import (
 )
 from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.repositories import Checkout, RepositoryStore
+from llm_credential_mapping.repositories import Checkout, RepositoryStore, repository_identity
 
 DOCUMENT = {
     "version": 1,
@@ -84,10 +84,15 @@ class RulesTests(unittest.TestCase):
         self.assertIsNone(single.match(("github.com/abc/repo/x",)))
         self.assertIsNone(single.match(("github.com/a/c/repo",)))
 
+    def test_rules_match_azure_names_with_spaces_as_repo_show_prints_them(self):
+        identity = repository_identity("https://dev.azure.com/org/My%20Project/_git/My%20Repo")
+        rules = Rules.parse({"version": 1, "rules": [{"match": "dev.azure.com/org/My Project/**", "customer": "c"}]}, "test")
+        self.assertEqual(rules.match((identity,))[:2], ("c", "dev.azure.com/org/my project/**"))
+
     def test_invalid_documents_are_rejected(self):
         for document in (
             [], {"version": 2}, {"version": 1, "extra": []}, {"version": 1, "rules": [{"match": "x"}]},
-            {"version": 1, "rules": [{"match": "a b", "customer": "c"}]},
+            {"version": 1, "rules": [{"match": "a\tb", "customer": "c"}]},
             {"version": 1, "rules": [{"match": "x", "customer": "a,b"}]},
             {"version": 1, "customers": [{"name": "no id"}]},
             {"version": 1, "customers": [{"id": "c", "tag": "old field"}]},
@@ -175,6 +180,16 @@ class RulesLoaderTests(unittest.TestCase):
         with self.assertRaises(CredentialError) as error:
             other()
         self.assertIn("503", str(error.exception))
+
+    def test_stale_cache_is_used_when_a_newly_published_document_is_invalid(self):
+        load = self.loader("http://localhost:1", self.server.origin + "/rules.json")
+        load()
+        self.clock.now += RULES_CACHE_SECONDS + 1
+        self.server.document = {"version": 1, "rules": [{"match": "x", "customer": "a,b"}]}
+        self.assertEqual(load().rules[0][1], "customer-acme")
+        other = self.loader("http://localhost:1", self.server.origin + "/other.json")
+        with self.assertRaises(CredentialError):
+            other()
 
     def test_credential_is_only_sent_to_the_gateway_origin(self):
         self.loader("http://localhost:1", self.server.origin + "/elsewhere.json")()

@@ -203,7 +203,9 @@ acme's rule even if a later catch-all matches the fork's own address.
 
 `rules` in a profile is an HTTPS URL (HTTP only for opted-in loopback) or an absolute file
 path. URLs are cached in `<config folder>/rules-cache/` for an hour and revalidated with the
-ETag; on a failed fetch a stale cache is used, so a rules outage does not block work. The
+ETag; on a failed fetch, or when a newly published document is invalid, a stale cache is
+used, so a rules outage or a broken edit does not block work. Patterns match the identity
+`repo show` prints, which is percent-decoded: `dev.azure.com/org/My Project/**`, not `My%20Project`. The
 gateway credential is sent only if the rules URL is on the gateway's own origin. The
 rules' customer catalogue replaces the gateway's tag list in the interactive picker
 (LiteLLM's `/tag/list` only shows tags a user has already used).
