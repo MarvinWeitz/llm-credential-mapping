@@ -4,7 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { Busy, agentPath, parseRequest, serve, type AgentRequest } from "../src/agent";
+import { Busy, agentPath, parseRequest, serve, stillServing, type AgentRequest } from "../src/agent";
 
 const windows = process.platform === "win32";
 
@@ -69,18 +69,49 @@ test("a second window does not take over a served socket", async () => {
   }
 });
 
+/** A socket file nobody listens on, as a crashed window leaves it. */
+async function staleSocket(socket: string): Promise<void> {
+  const first = await serve(socket, async () => ({}));
+  fs.linkSync(socket, `${socket}.keep`);
+  await new Promise<void>((resolve) => first.close(() => resolve()));
+  fs.renameSync(`${socket}.keep`, socket);
+}
+
+const close = (server: net.Server) => new Promise<void>((resolve) => server.close(() => resolve()));
+
 test("a stale socket is replaced and the socket is private", { skip: windows }, async () => {
   const socket = socketPath("stale");
-  const first = await serve(socket, async () => ({}));
-  await new Promise<void>((resolve) => first.close(() => resolve()));
-  fs.writeFileSync(socket, ""); // A leftover file nobody listens on.
+  await staleSocket(socket);
   const second = await serve(socket, async () => ({ ok: 1 }));
   try {
     assert.equal(fs.statSync(socket).mode & 0o777, 0o600);
     assert.equal(fs.statSync(path.dirname(socket)).mode & 0o777, 0o700);
+    assert.deepEqual(await ask(socket, '{"version":1,"operation":"token","profile":""}\n'), { ok: true, result: { ok: 1 } });
   } finally {
-    second.close();
+    await close(second);
   }
+  assert.equal(fs.existsSync(socket), false, "a closing window removes its socket");
+});
+
+test("a file that is not a socket is never deleted", { skip: windows }, async () => {
+  const socket = socketPath("file");
+  fs.mkdirSync(path.dirname(socket), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(socket, "keep me");
+  await assert.rejects(serve(socket, async () => ({})), /not a socket of yours/);
+  assert.equal(fs.readFileSync(socket, "utf8"), "keep me");
+});
+
+test("of two windows racing for a stale socket, one serves and the other notices", { skip: windows }, async () => {
+  const socket = socketPath("race");
+  await staleSocket(socket);
+  const started = await Promise.allSettled([serve(socket, async () => ({ w: "A" })), serve(socket, async () => ({ w: "B" }))]);
+  const servers = started.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  const [owner, ...lost] = [...servers.filter(stillServing), ...servers.filter((server) => !stillServing(server))];
+  assert.equal(servers.filter(stillServing).length, 1);
+  for (const server of lost) await close(server); // What the extension's watchdog does.
+  assert.equal((await ask(socket, '{"version":1,"operation":"token","profile":""}\n')).ok, true, "closing the loser keeps the socket");
+  await close(owner);
+  assert.equal(fs.existsSync(socket), false);
 });
 
 test("a directory others can enter is refused", { skip: windows }, async () => {

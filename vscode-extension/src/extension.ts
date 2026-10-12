@@ -1,6 +1,6 @@
 // Registers the gateway models for Copilot Chat and shows which customer this window's requests use.
 import * as vscode from "vscode";
-import { AGENT_VARIABLE, agentPath, Busy, serve, type AgentRequest } from "./agent";
+import { AGENT_VARIABLE, agentPath, Busy, serve, stillServing, type AgentRequest } from "./agent";
 import { AttributionCache, choose, type Choice } from "./attribution";
 import * as cli from "./cli";
 import { TokenCache } from "./credentials";
@@ -36,7 +36,14 @@ function startRelay(context: vscode.ExtensionContext, output: vscode.OutputChann
   const start = async () => {
     try {
       const server = await serve(socketPath, askLocal);
-      context.subscriptions.push({ dispose: () => server.close() });
+      // Another window starting at the same moment may have replaced the socket: serve again, or wait as Busy.
+      const watch = setInterval(() => {
+        if (stillServing(server)) return;
+        clearInterval(watch);
+        server.close();
+        if (!stopped) void start();
+      }, 30000);
+      context.subscriptions.push({ dispose: () => (clearInterval(watch), server.close()) });
       output.appendLine(`Relaying the local sign-in on ${socketPath}.`);
     } catch (error) {
       output.appendLine(`Local sign-in relay: ${(error as Error).message}`);

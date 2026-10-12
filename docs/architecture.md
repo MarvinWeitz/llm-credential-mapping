@@ -295,7 +295,10 @@ sequenceDiagram
   request names its profile, so "Sign in" signs in to exactly that one.
 - **Several windows on one container:** only one serves the socket; others see it answering
   (`Busy`) and retry every 30 s, taking over when the serving window closes. A stale socket
-  file from a closed window is removed.
+  of ours from a crashed window is replaced; anything else at the path is refused, never
+  deleted. Each window listens under its own name and renames it into place, so when two
+  windows race past the probe the loser's close cannot remove the winner's socket, and the
+  loser notices within 30 s that the socket is no longer its own and serves again or waits.
 - **Lifetime:** the relay exists while a VS Code window is connected; containers used without
   VS Code get a clear error instead of a token.
 
