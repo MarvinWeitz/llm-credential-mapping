@@ -76,6 +76,25 @@ class RepositoryTests(unittest.TestCase):
                 self.assertEqual(repository_identity(remote, endpoints.get), identity)
         self.assertEqual(repository_identity("https://ssh.github.com/company/repo"), "ssh.github.com/company/repo")
 
+    def test_bitbucket_server_https_scm_prefix_matches_the_ssh_form(self):
+        for remote in (
+            "https://bitbucket.example.com/scm/proj/repo.git",
+            "https://user@bitbucket.example.com/scm/PROJ/repo.git",
+            "ssh://git@bitbucket.example.com:7999/proj/repo.git",
+        ):
+            with self.subTest(remote=remote):
+                self.assertEqual(repository_identity(remote), "bitbucket.example.com/proj/repo")
+        self.assertEqual(repository_identity("https://bitbucket.example.com/scm/~me/repo.git"), "bitbucket.example.com/~me/repo")
+        # Only the three-segment Bitbucket Server form on self-hosted forges; cloud forges keep their paths.
+        for remote, identity in (
+            ("https://git.example/scm/repo.git", "git.example/scm/repo"),
+            ("https://git.example/scm/a/b/repo.git", "git.example/scm/a/b/repo"),
+            ("https://gitlab.com/scm/sub/repo.git", "gitlab.com/scm/sub/repo"),
+            ("https://dev.azure.com/scm/project/_git/repo", "dev.azure.com/scm/project/repo"),
+        ):
+            with self.subTest(remote=remote):
+                self.assertEqual(repository_identity(remote), identity)
+
     def test_common_forge_identities_are_unchanged_so_existing_assignments_keep_their_keys(self):
         # repositories.json keys are hashes of these identities; changing them orphans assignments.
         for remote, identity in (
