@@ -17,9 +17,9 @@ class TagTests(unittest.TestCase):
         self.profile = Profile("unit", "https://gateway.example", {"team_id": "business-unit"})
 
     def test_exact_names_are_preserved_and_wire_constraints_are_checked(self):
-        for name in ("customer:A", "Customer A", "a" * 256):
+        for name in ("customer:A", "Customer A", "a" * 256, "acme!&"):
             self.assertEqual(validate_customer(name), name)
-        for name in ("", None, [], "a" * 257, " a", "a ", "a,b", "a\nb", "a\tb", "\x00", "\x7f", "\u00e9"):
+        for name in ("", None, [], "a" * 257, " a", "a ", "a,b", "a\nb", "a\tb", "\x00", "\x7f", "\u00e9", "!acme", "&acme"):
             with self.subTest(name=name), self.assertRaises(CredentialError):
                 validate_customer(name)
 
