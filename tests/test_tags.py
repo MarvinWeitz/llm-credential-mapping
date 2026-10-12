@@ -63,12 +63,18 @@ class TagTests(unittest.TestCase):
         transport.get_list.return_value = []
         self.assertEqual(list_tags(self.profile, "secret", transport=transport), [])
 
-    def test_bad_rows_and_duplicates_are_errors(self):
-        for rows in ([None], [{}], [{"name": 42}], [{"name": "a", "description": []}], [{"name": "a"}, {"name": "a"}]):
-            transport = Mock(spec=JsonTransport)
-            transport.get_list.return_value = rows
-            with self.subTest(rows=rows), self.assertRaises(CredentialError):
-                list_tags(self.profile, "secret", transport=transport)
+    def test_automatic_tags_and_bad_rows_are_skipped_not_fatal(self):
+        transport = Mock(spec=JsonTransport)
+        transport.get_list.return_value = [
+            None, {}, {"name": 42}, {"name": "b", "description": []}, {"name": "x" * 257}, {"name": "a,b"},
+            {"name": "&acme"}, {"name": "User-Agent: claude-cli"}, {"name": "User-Agent: claude-cli/2.0.14 (external, cli)"},
+            {"name": "x-team: web"}, {"name": "customer:A", "description": "first"}, {"name": "customer:A"},
+            {"name": "Customer B", "description": "This is just a spend tag"},
+        ]
+        self.assertEqual(
+            list_tags(self.profile, "secret", transport=transport),
+            [Tag("Customer B", "This is just a spend tag"), Tag("customer:A", "first")],
+        )
 
     def test_failed_discovery_is_not_a_successful_empty_list(self):
         transport = Mock(spec=JsonTransport)
