@@ -41,7 +41,8 @@ def _claude_headers(existing: str, headers: dict[str, str], replaced: set[str] |
         name, separator, value = line.partition(":")
         if not separator or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
             raise CredentialError("Existing ANTHROPIC_CUSTOM_HEADERS contains an invalid header.")
-        if name.lower() in ("authorization", "x-api-key", "host"):
+        # Any *api-key header: gateways read their own key header (LiteLLM's even before Authorization).
+        if name.lower() in ("authorization", "host") or name.lower().endswith("api-key"):
             raise CredentialError("Remove authentication/routing overrides from ANTHROPIC_CUSTOM_HEADERS before launch.")
         if any(not 32 <= ord(char) <= 126 for char in value):
             raise CredentialError("Existing ANTHROPIC_CUSTOM_HEADERS contains an invalid header value.")
