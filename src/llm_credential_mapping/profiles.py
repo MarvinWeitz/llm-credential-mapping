@@ -26,12 +26,16 @@ def gateway_origin(value: str, allow_http: bool = False) -> str:
         not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.path not in ("", "/")
         or parsed.query
         or parsed.fragment
         or any(char.isspace() or ord(char) < 32 for char in value)
     ):
         raise CredentialError("Gateway must be a root URL without credentials, query or path.")
+    if parsed.path not in ("", "/"):
+        # LiteLLM mounted under SERVER_ROOT_PATH is not supported: every route is built on the origin.
+        raise CredentialError(
+            f"Gateway must be served at the host root; a path prefix such as '{parsed.path}' is not supported."
+        )
     host = parsed.hostname.lower()
     if parsed.scheme != "https":
         if not (

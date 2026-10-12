@@ -48,6 +48,16 @@ class DiscoveryTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(CredentialError):
                 Discovery.parse(value, self.profile)
 
+    def test_mismatched_issuer_names_what_the_gateway_advertised_and_proxy_base_url(self):
+        for issuer in ("http://gateway.example", "http://10.0.0.5:4000", "https://gateway.example/litellm"):
+            gateway = discovery(issuer)
+            with self.subTest(issuer=issuer), self.assertRaises(CredentialError) as result:
+                Discovery.parse(gateway, self.profile)
+            message = str(result.exception)
+            self.assertIn(f"issuer '{issuer}'", message)
+            self.assertIn("PROXY_BASE_URL=https://gateway.example", message)
+            self.assertIn("host root", message)
+
     def test_endpoints_must_keep_the_gateway_scheme_host_and_port(self):
         stored = Session(
             self.profile.gateway, "team-a", "u", "c", "a", "r", 0, 1,
