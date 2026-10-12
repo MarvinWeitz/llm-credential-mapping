@@ -84,7 +84,7 @@ def _read_json(path: Path) -> tuple[str | None, dict]:
     return raw, value
 
 
-def _write_json(path: Path, value: dict, original: str | None) -> None:
+def _write_json(path: Path, value: dict, original: str | None, follow_symlinks: bool = False) -> None:
     """Replace ``path`` atomically, keeping its permissions, unless someone changed it since it was read."""
     try:
         current = path.read_text(encoding="utf-8") if path.exists() else None
@@ -92,7 +92,9 @@ def _write_json(path: Path, value: dict, original: str | None) -> None:
             raise CredentialError(f"{path} changed while it was being updated; nothing was changed, retry.")
         permissions = path.stat().st_mode & 0o777 if path.exists() else None
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, json.dumps(value, indent=2) + "\n", permissions=permissions)
+        atomic_write_text(
+            path, json.dumps(value, indent=2) + "\n", permissions=permissions, follow_symlinks=follow_symlinks,
+        )
     except OSError:
         raise CredentialError(f"Cannot write {path}; nothing was changed.") from None
 
@@ -219,7 +221,7 @@ class Claude:
         hooks["UserPromptSubmit"] = [entry for entry in hooks.get("UserPromptSubmit", []) if not _our_hook(entry)] + [
             {"hooks": [{"type": "command", "command": self.guard_command(context)}]},
         ]
-        _write_json(path, data, original)
+        _write_json(path, data, original, follow_symlinks=True)
         state = {
             "version": 1, "settings": str(path), "profile": context.profile.name,
             "base_url": base_url if owns_url else None, "model": model,
@@ -256,7 +258,7 @@ class Claude:
         if "env" in data and not data["env"]:
             del data["env"]
         if original is not None:
-            _write_json(path, data, original)
+            _write_json(path, data, original, follow_symlinks=True)
         state_path.unlink(missing_ok=True)
         return [
             f"Removed the llm-credentials configuration from {path}. Restart Claude sessions; "

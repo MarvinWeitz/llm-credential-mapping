@@ -142,9 +142,15 @@ def atomic_write_json(path: Path, value: dict) -> None:
 
 def atomic_write_text(
     path: Path, value: str, *, newline: str | None = None, permissions: int | None = None,
+    follow_symlinks: bool = False,
 ) -> None:
-    """Replace text atomically under the caller's lock; optionally preserve line endings and file permissions."""
-    path = Path(os.path.realpath(path))  # Replace a symlink's target, not the link (dotfile managers).
+    """Replace text atomically under the caller's lock; optionally preserve line endings and file permissions.
+
+    ``follow_symlinks`` replaces a symlink's target instead of the link (dotfile managers). Only for files
+    the user owns, such as tool configuration; never for files inside a repository, which may link anywhere.
+    """
+    if follow_symlinks:
+        path = Path(os.path.realpath(path))
     filename = None
     try:
         with tempfile.NamedTemporaryFile(

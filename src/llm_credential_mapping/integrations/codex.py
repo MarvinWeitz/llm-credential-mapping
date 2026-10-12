@@ -123,7 +123,7 @@ class Codex:
                 raise CredentialError(f"{path} changed while it was being updated; nothing was changed, retry.")
             permissions = path.stat().st_mode & 0o777 if path.exists() else None
             path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(path, text, permissions=permissions)
+            atomic_write_text(path, text, permissions=permissions, follow_symlinks=True)
         except OSError:
             raise CredentialError(f"Cannot write {path}; nothing was changed.") from None
 

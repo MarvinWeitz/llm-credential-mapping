@@ -175,6 +175,19 @@ class GuardTests(ClaudeTestCase):
         self.assertIsNone(self.guard(headers=HEADERS))
         self.assertIn("has not loaded", self.guard())
 
+    def test_a_symlinked_local_settings_file_is_replaced_not_followed(self):
+        # A cloned repository controls this path; following the link would let it pick the file we write.
+        outside = self.root / "outside.json"
+        outside.write_text("{}", encoding="utf-8")
+        self.local.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.local.symlink_to(outside)
+        except OSError:
+            self.skipTest("symbolic links are not available")
+        self.guard()
+        self.assertFalse(self.local.is_symlink())
+        self.assertEqual(outside.read_text(encoding="utf-8"), "{}")
+
     def test_written_file_is_excluded_from_git(self):
         self.guard()
         status = subprocess.run(
