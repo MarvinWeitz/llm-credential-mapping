@@ -170,7 +170,8 @@ class Rules:
             if (
                 not isinstance(rule, dict) or set(rule) != {"match", "customer"}
                 or not isinstance(rule["match"], str) or not 0 < len(rule["match"]) <= 512
-                # Spaces are allowed: identities are percent-decoded (Azure "My Project").
+                # Spaces are allowed inside: identities are percent-decoded (Azure "My Project").
+                or rule["match"] != rule["match"].strip()
                 or any((char.isspace() and char != " ") or ord(char) < 32 for char in rule["match"])
             ):
                 raise CredentialError(f"Invalid rule in the customer rules document: {source}.")

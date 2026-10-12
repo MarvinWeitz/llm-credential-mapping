@@ -93,6 +93,7 @@ class RulesTests(unittest.TestCase):
         for document in (
             [], {"version": 2}, {"version": 1, "extra": []}, {"version": 1, "rules": [{"match": "x"}]},
             {"version": 1, "rules": [{"match": "a\tb", "customer": "c"}]},
+            {"version": 1, "rules": [{"match": "github.com/acme/** ", "customer": "c"}]},
             {"version": 1, "rules": [{"match": "x", "customer": "a,b"}]},
             {"version": 1, "customers": [{"name": "no id"}]},
             {"version": 1, "customers": [{"id": "c", "tag": "old field"}]},

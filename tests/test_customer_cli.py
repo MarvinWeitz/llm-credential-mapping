@@ -240,8 +240,10 @@ class CustomerCliTests(unittest.TestCase):
         self.assertEqual(shown["headers"]["x-litellm-spend-logs-metadata"], '{"customer_source":"file"}')
 
     def test_shared_file_in_or_above_home_is_refused_instead_of_silently_ignored(self):
-        for root in (self.home, self.home.parent):
-            with self.subTest(root=root), \
+        home = self.home / "users" / "me"  # Its parent stays inside the sandbox even if the refusal regresses.
+        home.mkdir(parents=True)
+        for root in (home, home.parent):
+            with self.subTest(root=root), patch("llm_credential_mapping.customers.Path.home", return_value=home), \
                     patch("llm_credential_mapping.cli.find_checkout", return_value=Checkout(root, self.repository, None)), \
                     patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
                 self.assertEqual(self.call("repo", "bind", "--shared", "--customer", "customer:A"), 1)
