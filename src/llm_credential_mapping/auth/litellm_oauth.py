@@ -340,7 +340,7 @@ class LiteLLMClient:
                 form=True,
             )
             try:
-                if response.get("team_id") is None:
+                if "team_id" in response and response["team_id"] is None:
                     # LiteLLM issues a grant without a team to a user who belongs to none.
                     raise CredentialError(
                         f"Your LiteLLM user is not a member of any team. Ask the gateway administrator to add you "

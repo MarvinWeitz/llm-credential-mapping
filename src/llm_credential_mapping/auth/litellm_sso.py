@@ -9,7 +9,7 @@ from ..adapters import Credential
 from ..errors import CredentialError
 from ..profiles import Profile, ProfileStore
 from ..storage import SecretStore
-from ..transport import REQUEST_TIMEOUT_SECONDS, GatewayError
+from ..transport import HTTP_ERROR_ADVICE, REQUEST_TIMEOUT_SECONDS, GatewayError
 from .litellm_oauth import IdentityChanged, LiteLLMClient, Session, team_id
 
 # Two gateway round trips (refresh plus a possible revoke) at the transport timeout, plus vault I/O.
@@ -172,6 +172,7 @@ class SessionManager:
                         "This looks like a gateway configuration problem; the stored sign-in was kept. "
                         "Contact the gateway administrator if it persists."
                     )
+                    return self._retry_later(profile, session, f"{str(error).removesuffix(HTTP_ERROR_ADVICE)} {detail}")
                 else:
                     refused = self._save_state(profile, replace(session, needs_login=True))
                     if self._usable(refused):
@@ -239,7 +240,10 @@ class SessionManager:
         """Revoke the grant where possible; the local credential is deleted even when that fails."""
         with self._locked(profile):
             try:
-                session = self._load(profile)
+                value = self.secrets.get(self.account(profile))
+                # Not _load: a sign-in that no longer matches the profile (team or gateway changed)
+                # is still revoked; revoke only sends it to the endpoints it was issued for.
+                session = None if value is None else Session.from_dict(value)
             except CredentialError as error:
                 self.secrets.delete(self.account(profile))
                 notify(

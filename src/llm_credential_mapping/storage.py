@@ -182,7 +182,7 @@ class NativeKeyring:
             manifest = self._manifest(self._object(raw))
         except CredentialError:
             logging.getLogger(__name__).warning(
-                "Replaced a damaged OS-vault entry; obsolete entries under llm-credential-mapping may remain in the vault."
+                "Found a damaged OS-vault entry and overwrote or removed it; obsolete entries under llm-credential-mapping may remain in the vault."
             )
             return []
         return self._fragment_services(account, manifest) if manifest else []

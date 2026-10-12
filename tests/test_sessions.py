@@ -14,7 +14,7 @@ from llm_credential_mapping.errors import CredentialError
 from llm_credential_mapping.auth.litellm_oauth import IdentityChanged, Session
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.auth.litellm_sso import SessionManager, refresh_margin
-from llm_credential_mapping.transport import GatewayError
+from llm_credential_mapping.transport import HTTP_ERROR_ADVICE, GatewayError
 
 
 class MemoryStore:
@@ -412,11 +412,12 @@ class SessionTests(unittest.TestCase):
         for status, error in ((400, "invalid_target"), (400, "invalid_request"), (401, None), (403, None), (404, None)):
             self.client.refresh.reset_mock()
             self.store(self.expired())
-            self.client.refresh.side_effect = GatewayError("rejected", status=status, oauth_error=error)
+            self.client.refresh.side_effect = GatewayError(f"Gateway returned HTTP {status}.{HTTP_ERROR_ADVICE}", status=status, oauth_error=error)
             with self.subTest(status=status, error=error):
                 with self.assertRaises(CredentialError) as result:
                     self.manager.token(self.profile)
                 self.assertIn("configuration", str(result.exception))
+                self.assertNotRegex(str(result.exception), r"\blogin\b")  # The extensions would offer "Sign in".
                 self.assertEqual((self.stored().needs_login, self.stored().refresh_failures), (False, 1))
                 self.assertEqual(self.manager.status(self.profile)["state"], "expired")
 
@@ -509,6 +510,13 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(len(self.warnings()), 1)
                 self.assertIn("may stay valid until it expires", self.warnings()[0])
             self.client.revoke.side_effect = None
+
+    def test_logout_still_revokes_a_sign_in_for_a_changed_team(self):
+        other = replace(self.session, team_id="team-old")
+        self.store(other)
+        self.manager.logout(self.profile, self.notify)
+        self.client.revoke.assert_called_once_with(other)
+        self.assertIsNone(self.secrets.get(self.account))
 
     def test_logout_deletes_an_unreadable_stored_sign_in(self):
         self.secrets.put(self.account, {"version": 1})

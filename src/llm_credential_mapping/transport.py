@@ -7,6 +7,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .errors import CredentialError
 
+# Appended to HTTP errors; callers that know login will not help drop it (the extensions offer "Sign in" on it).
+HTTP_ERROR_ADVICE = " Check SSO configuration, membership and login."
+
 REQUEST_TIMEOUT_SECONDS = 20
 # How much of an OAuth error_description is shown; LiteLLM's are short sentences.
 OAUTH_DESCRIPTION_CHARS = 200
@@ -93,7 +96,7 @@ class JsonTransport:
                     "Gateway redirect refused; configure its final public HTTPS origin.", status=code,
                 ) from None
             raise GatewayError(
-                f"Gateway returned HTTP {code}{detail}. Check SSO configuration, membership and login.",
+                f"Gateway returned HTTP {code}{detail}.{HTTP_ERROR_ADVICE}",
                 status=code, oauth_error=oauth_error,
             ) from None
         except (URLError, OSError, HTTPException):
