@@ -19,6 +19,8 @@ MINIMUM_VALIDITY_SECONDS = 60
 # Waits after consecutive temporary renewal failures: 30 s, doubling up to 15 min.
 FIRST_RETRY_DELAY_SECONDS = 30
 MAXIMUM_RETRY_DELAY_SECONDS = 900
+# OAuth errors that refuse the refresh grant itself; any other 4xx is a gateway or ingress configuration problem.
+REFUSED_GRANT_ERRORS = ("invalid_grant", "invalid_client")
 
 
 def settings(values: dict) -> dict:
@@ -55,8 +57,10 @@ class SessionManager:
     Renewal starts early so a failed attempt still leaves a usable token. Transport failures,
     throttling, server errors, redirects and unusable responses keep the refresh token and are
     retried after a growing delay (LiteLLM claims a refresh token only after minting its
-    replacement, and a replayed one is merely refused). A refused grant stops renewal, but the
-    current access token is still released until it nearly expires: it cannot be revoked anyway.
+    replacement, and a replayed one is merely refused), and so are other client errors, which
+    point at the gateway's configuration. A grant refused with ``invalid_grant`` or
+    ``invalid_client`` stops renewal, but the current access token is still released until it
+    nearly expires: it cannot be revoked anyway.
     Only an unexpected identity stops releasing it at once.
     """
 
@@ -162,6 +166,12 @@ class SessionManager:
                     detail = f"The stored sign-in was kept; if the gateway moved its endpoints, {relogin}."
                 elif error.retryable:
                     detail = "Renewal will be retried; the stored sign-in was kept."
+                elif error.oauth_error not in REFUSED_GRANT_ERRORS:
+                    # E.g. invalid_target after a gateway base-URL change, or an ingress 403/404: not about this grant.
+                    detail = (
+                        "This looks like a gateway configuration problem; the stored sign-in was kept. "
+                        "Contact the gateway administrator if it persists."
+                    )
                 else:
                     refused = self._save_state(profile, replace(session, needs_login=True))
                     if self._usable(refused):

@@ -327,7 +327,7 @@ class SessionTests(unittest.TestCase):
         day = make_session(self.profile, issued_at=self.clock.now, lifetime=86_400)
         self.store(day)
         self.clock.now = day.expires_at - 5 * 3600
-        self.client.refresh.side_effect = GatewayError("refused", status=400)
+        self.client.refresh.side_effect = GatewayError("refused", status=400, oauth_error="invalid_grant")
         self.assertEqual(self.manager.token(self.profile), "access-secret")
         self.assertTrue(self.stored().needs_login)
         self.clock.now += 3600
@@ -343,7 +343,7 @@ class SessionTests(unittest.TestCase):
         day = make_session(self.profile, issued_at=self.clock.now, lifetime=86_400)
         self.store(day)
         self.clock.now = day.expires_at - 6 * 3600 + 1
-        self.client.refresh.side_effect = [GatewayError("lost"), GatewayError("already used", status=400)]
+        self.client.refresh.side_effect = [GatewayError("lost"), GatewayError("already used", status=400, oauth_error="invalid_grant")]
         self.assertEqual(self.manager.token(self.profile), "access-secret")
         self.clock.now += 60
         self.assertEqual(self.manager.token(self.profile), "access-secret")
@@ -353,7 +353,7 @@ class SessionTests(unittest.TestCase):
     def test_unsaved_refusal_state_only_repeats_the_attempt(self):
         self.store(self.session)
         self.clock.now += 3600 - 600
-        self.client.refresh.side_effect = GatewayError("refused", status=400)
+        self.client.refresh.side_effect = GatewayError("refused", status=400, oauth_error="invalid_grant")
         self.secrets.put = Mock(side_effect=CredentialError("vault locked"))
         self.assertEqual(self.manager.token(self.profile), "access-secret")
         self.assertEqual(self.manager.token(self.profile), "access-secret")
@@ -394,11 +394,11 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.manager.token(self.profile), "new")
 
     def test_refused_grant_requires_login_without_further_refreshes(self):
-        for status in (400, 401, 403, 404):
+        for status, error in ((400, "invalid_grant"), (400, "invalid_client"), (401, "invalid_client")):
             self.client.refresh.reset_mock()
             self.store(self.expired())
-            self.client.refresh.side_effect = GatewayError("refused", status=status)
-            with self.subTest(status=status):
+            self.client.refresh.side_effect = GatewayError("refused", status=status, oauth_error=error)
+            with self.subTest(status=status, error=error):
                 with self.assertRaises(CredentialError) as result:
                     self.manager.token(self.profile)
                 self.assertIn("login", str(result.exception))
@@ -407,6 +407,18 @@ class SessionTests(unittest.TestCase):
                     self.manager.token(self.profile)
                 self.client.refresh.assert_called_once()
                 self.assertEqual(self.manager.status(self.profile)["state"], "re-login-required")
+
+    def test_other_client_errors_keep_the_grant_as_a_configuration_problem(self):
+        for status, error in ((400, "invalid_target"), (400, "invalid_request"), (401, None), (403, None), (404, None)):
+            self.client.refresh.reset_mock()
+            self.store(self.expired())
+            self.client.refresh.side_effect = GatewayError("rejected", status=status, oauth_error=error)
+            with self.subTest(status=status, error=error):
+                with self.assertRaises(CredentialError) as result:
+                    self.manager.token(self.profile)
+                self.assertIn("configuration", str(result.exception))
+                self.assertEqual((self.stored().needs_login, self.stored().refresh_failures), (False, 1))
+                self.assertEqual(self.manager.status(self.profile)["state"], "expired")
 
     def test_changed_identity_stops_releasing_the_token_at_once(self):
         self.store(self.session)

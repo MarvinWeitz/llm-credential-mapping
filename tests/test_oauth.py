@@ -95,6 +95,7 @@ class OAuthFixture:
         self.posts = []
         self.gets = []
         self.token_status = 200
+        self.token_error = {"error": "temporarily_unavailable"}
         self.challenge = None
         self.team = "team-a"
         self.user = "employee"
@@ -147,7 +148,7 @@ class OAuthFixture:
                     })
                 elif self.path == "/token":
                     if fixture.token_status != 200:
-                        self.respond({"error": "temporarily_unavailable"}, fixture.token_status)
+                        self.respond(fixture.token_error, fixture.token_status)
                         return
                     if body["resource"] != fixture.origin:
                         self.respond({"error": "wrong-resource"}, 400)
@@ -272,6 +273,27 @@ class OAuthIntegrationTests(unittest.TestCase):
             JsonTransport().request("GET", self.fixture.origin + "/error")
         self.assertIn("401", str(result.exception))
         self.assertNotIn("SHOULD-NOT-BE-PRINTED", str(result.exception))
+
+    def test_oauth_errors_are_reported_sanitized_and_without_request_secrets(self):
+        session = self.login()
+        self.fixture.token_status = 400
+        cases = (
+            ({"error": "invalid_target", "error_description": "resource does not match"},
+             "(invalid_target: resource does not match)"),
+            ({"error": "invalid_grant", "error_description": "bad\x1b[31m\u202e" + "x" * 500}, "(invalid_grant: bad[31m"),
+            ({"error": "invalid_grant", "error_description": "token fixture-refresh is spent"}, "(invalid_grant)."),
+            ({"error": {"message": "proxy error"}}, "HTTP 400."),
+        )
+        for body, expected in cases:
+            self.fixture.token_error = body
+            with self.subTest(body=body), self.assertRaises(GatewayError) as result:
+                self.client.refresh(session)
+            message = str(result.exception)
+            self.assertIn(expected, message)
+            self.assertNotIn("fixture-refresh", message)
+            self.assertNotIn("\x1b", message)
+            self.assertLess(len(message), 320)
+            self.assertEqual(result.exception.oauth_error, body["error"] if isinstance(body["error"], str) else None)
 
     def test_non_object_and_large_responses_are_rejected(self):
         for path in ("/array", "/large"):
