@@ -294,16 +294,26 @@ sequenceDiagram
   extension, Codex) find the same default path.
 - **Privacy:** the extension creates the directory with mode 0700 and refuses to listen if it
   belongs to someone else or is accessible to others; the socket is 0600. Only the container
-  user can ask for tokens.
+  user can ask for tokens. The CLI in turn refuses a socket that is not its own or that sits
+  in a directory others can write to (or a symlinked one), so another user who creates
+  `/tmp/llm-credentials-<uid>` first cannot hand it tokens of their own.
 - **Messages:** one JSON line per connection,
   `{"version": 1, "operation": "token" | "profile", "profile": NAME}`, answered by
   `{"ok": true, "result": {...}}` or `{"ok": false, "error": "..."}`. Unknown versions,
   operations or malformed profile names are refused by both sides. The companion returns only
   the token fields (`access_token`, `expires_at`, `profile`, `user`) or the nonsecret profile
   description, never a refresh token.
+- **Which local profiles:** the companion answers only for the profiles in
+  `llmCredentials.localProfiles` (application scope, local user settings; the first is used
+  when a request names none), or, when that is empty, only for the local default profile. A
+  container process or a workspace setting cannot reach other local profiles. A failed
+  request names its profile, so "Sign in" signs in to exactly that one.
 - **Several windows on one container:** only one serves the socket; others see it answering
   (`Busy`) and retry every 30 s, taking over when the serving window closes. A stale socket
-  file from a closed window is removed.
+  of ours from a crashed window is replaced; anything else at the path is refused, never
+  deleted. Each window listens under its own name and renames it into place, so when two
+  windows race past the probe the loser's close cannot remove the winner's socket, and the
+  loser notices within 30 s that the socket is no longer its own and serves again or waits.
 - **Lifetime:** the relay exists while a VS Code window is connected; containers used without
   VS Code get a clear error instead of a token.
 
@@ -311,7 +321,9 @@ sequenceDiagram
 
 On start in a remote window the main extension asks the container CLI for a profile. If
 there is none, it fetches the local profile (`operation: "profile"`) and runs
-`profile add NAME --gateway URL --gateway-type TYPE --auth forwarded --host-profile NAME`.
+`profile add NAME --gateway URL --gateway-type TYPE --auth forwarded --host-profile NAME`,
+plus `--rules URL` when the local profile has central customer rules at a URL (rules in a
+local file do not exist in the container; the output channel says how to set them there).
 The `forwarded` auth kind stores nothing: `credential()` asks the socket, `login`/`logout`
 point to the local machine. Because auth kinds receive a vault *factory*, commands in the
 container never try to open an OS vault.

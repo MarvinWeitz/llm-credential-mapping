@@ -1,6 +1,6 @@
 // Registers the gateway models for Copilot Chat and shows which customer this window's requests use.
 import * as vscode from "vscode";
-import { AGENT_VARIABLE, agentPath, Busy, serve, type AgentRequest } from "./agent";
+import { AGENT_VARIABLE, agentPath, Busy, serve, stillServing, type AgentRequest } from "./agent";
 import { AttributionCache, choose, type Choice } from "./attribution";
 import * as cli from "./cli";
 import { TokenCache } from "./credentials";
@@ -41,7 +41,14 @@ function startRelay(
   const start = async () => {
     try {
       const server = await serve(socketPath, askLocal);
-      context.subscriptions.push({ dispose: () => server.close() });
+      // Another window starting at the same moment may have replaced the socket: serve again, or wait as Busy.
+      const watch = setInterval(() => {
+        if (stillServing(server)) return;
+        clearInterval(watch);
+        server.close();
+        if (!stopped) void start();
+      }, 30000);
+      context.subscriptions.push({ dispose: () => (clearInterval(watch), server.close()) });
       output.appendLine(`Relaying the local sign-in on ${socketPath}.`);
     } catch (error) {
       output.appendLine(`Local sign-in relay: ${(error as Error).message}`);
@@ -68,13 +75,14 @@ async function ensureRemoteProfile(
     }
   }
   try {
-    const local = await askLocal({ operation: "profile", profile: profileName }) as { name: string; gateway: { type: string; url: string } };
-    await run([
-      "profile", "add", local.name, "--gateway", local.gateway.url, "--gateway-type", local.gateway.type,
-      "--auth", "forwarded", "--host-profile", local.name,
-      ...(local.gateway.url.startsWith("http:") ? ["--allow-insecure-localhost"] : []),
-    ]);
+    const local = await askLocal({ operation: "profile", profile: profileName }) as cli.LocalProfile;
+    const { args, skippedRules } = cli.remoteProfileArgs(local);
+    await run(args);
     output.appendLine(`Created profile '${local.name}' here; it uses the sign-in of your local machine.`);
+    if (skippedRules) {
+      output.appendLine(`Its central customer rules (${skippedRules}) are a local file; set them here with `
+        + `'llm-credentials profile update ${local.name} --rules URL_OR_PATH'.`);
+    }
     onCreated(); // The first model listing ran without a profile and found nothing.
   } catch (error) {
     output.appendLine(`Could not create a profile from the local one: ${(error as Error).message}`);
