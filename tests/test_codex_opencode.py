@@ -235,3 +235,8 @@ class ShellTests(unittest.TestCase):
                         argv = [Path(arg).as_posix() if index < 2 else arg for index, arg in enumerate(argv)]
                     output = self.run_shell(name, hook(name, argv) + "\n" + cd + "\n" + printer_line)
                     self.assertEqual(Path(output.strip()).resolve(), folder)
+
+    def test_bash_hook_keeps_the_exit_status_for_later_prompt_commands(self):
+        # Prompt frameworks after the hook in PROMPT_COMMAND show the last command's status from $?.
+        script = hook("bash", ["true"]) + '\n(exit 7); __llm_credentials_hook; printf "%s|" "$?"'
+        self.assertEqual(self.run_shell("bash", script + '; (exit 3); __llm_credentials_hook; printf "%s" "$?"'), "7|3")

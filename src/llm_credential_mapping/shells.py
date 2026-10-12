@@ -72,10 +72,12 @@ def hook(shell: str, argv: list[str]) -> str:
     return "\n".join([
         "# llm-credentials: set the customer for tools started from this directory.",
         "__llm_credentials_hook() {",
+        "    local status=$?  # Keep $? for prompt commands that run after this one.",
         '    if [ "$PWD" != "${__llm_credentials_directory-}" ]; then',
         '        __llm_credentials_directory="$PWD"',
         f'        eval "$({command} --directory "$PWD")"',
         "    fi",
+        '    return "$status"',
         "}",
         'case ";${PROMPT_COMMAND-};" in',
         '    *";__llm_credentials_hook;"*) ;;',
