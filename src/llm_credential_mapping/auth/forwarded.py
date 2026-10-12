@@ -110,7 +110,7 @@ class Forwarded:
             "there, in a local terminal."
         )
 
-    def logout(self) -> None:
+    def logout(self, notify: Callable[[str], None]) -> None:
         raise CredentialError(
             f"Profile '{self.profile.name}' uses the sign-in of your local machine: run 'llm-credentials logout' there."
         )

@@ -450,7 +450,9 @@ for one-off launches and overrides.
   with a valid sign-in; enforcing allowed customers needs a gateway-side policy (for LiteLLM
   an `async_pre_call_hook` validating the tag against the user's or team's allowed customers).
 - Access tokens of LiteLLM's native SSO cannot be revoked; `logout` revokes the refresh grant,
-  and existing access tokens expire on their own.
+  and existing access tokens expire on their own. If revocation fails (gateway down, rotated
+  keys), `logout` still deletes the local credential and warns that the grant may stay valid
+  until it expires.
 
 ## 10. Testing
 

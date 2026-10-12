@@ -57,7 +57,7 @@ class FixedKeyAuth:
     def login(self, notify, **options):
         return self.credential()
 
-    def logout(self):
+    def logout(self, notify):
         pass
 
     def status(self):

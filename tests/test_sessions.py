@@ -494,16 +494,28 @@ class SessionTests(unittest.TestCase):
 
     def test_logout_revokes_and_deletes(self):
         self.manager.login(self.profile, self.notify)
-        self.manager.logout(self.profile)
+        self.manager.logout(self.profile, self.notify)
         self.client.revoke.assert_called_once_with(self.session)
         self.assertIsNone(self.secrets.get(self.account))
 
-    def test_failed_logout_keeps_grant_for_retry(self):
-        self.manager.login(self.profile, self.notify)
-        self.client.revoke.side_effect = CredentialError("offline")
-        with self.assertRaises(CredentialError):
-            self.manager.logout(self.profile)
-        self.assertIsNotNone(self.secrets.get(self.account))
+    def test_failed_revocation_still_deletes_the_local_credential_with_a_warning(self):
+        for failure in (CredentialError("Gateway returned HTTP 401 (invalid_client)."), GatewayError("unavailable", status=503)):
+            self.manager.login(self.profile, self.notify)
+            self.notify.reset_mock()
+            self.client.revoke.side_effect = failure
+            with self.subTest(failure=str(failure)):
+                self.manager.logout(self.profile, self.notify)
+                self.assertIsNone(self.secrets.get(self.account))
+                self.assertEqual(len(self.warnings()), 1)
+                self.assertIn("may stay valid until it expires", self.warnings()[0])
+            self.client.revoke.side_effect = None
+
+    def test_logout_deletes_an_unreadable_stored_sign_in(self):
+        self.secrets.put(self.account, {"version": 1})
+        self.manager.logout(self.profile, self.notify)
+        self.assertIsNone(self.secrets.get(self.account))
+        self.client.revoke.assert_not_called()
+        self.assertIn("could not be read", self.warnings()[0])
 
     def test_invalid_or_unsupported_stored_grant_is_an_error(self):
         for value in (

@@ -211,7 +211,7 @@ def status(context: Context) -> None:
 
 
 def logout(context: Context) -> None:
-    context.auth.logout()
+    context.auth.logout(notify)
     print(f"Logged out of '{context.profile.name}'. Previously issued access tokens expire naturally.")
 
 

@@ -235,13 +235,29 @@ class SessionManager:
                 "state": state,
             }
 
-    def logout(self, profile: Profile) -> None:
+    def logout(self, profile: Profile, notify: Callable[[str], None]) -> None:
+        """Revoke the grant where possible; the local credential is deleted even when that fails."""
         with self._locked(profile):
-            session = self._load(profile)
+            try:
+                session = self._load(profile)
+            except CredentialError as error:
+                self.secrets.delete(self.account(profile))
+                notify(
+                    f"Warning: the stored sign-in could not be read ({error}) and was deleted without being revoked; "
+                    "it stays valid until it expires. Ask the gateway administrator to revoke it."
+                )
+                return
             if session is None:
                 raise CredentialError("This profile is already logged out.")
-            self.client_factory(profile).revoke(session)
-            self.secrets.delete(self.account(profile))
+            try:
+                self.client_factory(profile).revoke(session)
+            except CredentialError as error:
+                notify(
+                    f"Warning: the gateway did not revoke the sign-in ({error}); it may stay valid until it expires. "
+                    "The local credential is deleted anyway."
+                )
+            finally:
+                self.secrets.delete(self.account(profile))
 
 
 class LiteLLMSSO:
@@ -257,8 +273,8 @@ class LiteLLMSSO:
     def login(self, notify: Callable[[str], None], **options) -> Credential:
         return self._credential(self.manager.login(self.profile, notify, **options))
 
-    def logout(self) -> None:
-        self.manager.logout(self.profile)
+    def logout(self, notify: Callable[[str], None]) -> None:
+        self.manager.logout(self.profile, notify)
 
     def status(self) -> dict:
         return self.manager.status(self.profile)

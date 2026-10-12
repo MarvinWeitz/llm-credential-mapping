@@ -79,7 +79,7 @@ class ForwardedTests(unittest.TestCase):
 
     def test_sign_in_and_out_happen_on_the_local_machine(self):
         auth = forwarded.Forwarded(self.profile, None)
-        for action in (lambda: auth.login(print), auth.logout):
+        for action in (lambda: auth.login(print), lambda: auth.logout(print)):
             with self.assertRaises(CredentialError) as error:
                 action()
             self.assertIn("local machine", str(error.exception))
