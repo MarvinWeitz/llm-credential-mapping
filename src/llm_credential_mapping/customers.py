@@ -106,8 +106,14 @@ def read_customer_file(path: Path) -> str:
         raise CredentialError(f"{path}: {error}") from None
 
 
-def write_customer_file(directory: Path, customer: str) -> Path:
+def write_customer_file(directory: Path, customer: str, home: Path | None = None) -> Path:
     path = directory / CUSTOMER_FILE
+    home = (home or Path.home()).resolve()
+    if directory.resolve() in (home, *home.parents):
+        raise CredentialError(
+            f"{path} would be ignored: the home directory and folders above it never assign a customer. "
+            "Run 'repo bind --shared' in a project folder, or a folder below home such as ~/src/acme."
+        )
     content = (
         "# Customer for AI agent usage in this folder and below (llm-credentials).\n"
         f"customer = {json.dumps(validate_customer(customer))}\n"

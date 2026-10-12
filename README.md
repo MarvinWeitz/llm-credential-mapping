@@ -63,7 +63,8 @@ The customer of a directory is chosen in this order (first match wins):
    clone shares it;
 3. the nearest committed `.llm-customer` file (`customer = "NAME"`), written with
    `repo bind --shared`; a file in a parent folder such as `~/src/acme/` covers all
-   repositories below it; the search stops at your home directory;
+   repositories below it; the search stops below your home directory, so a file in it or
+   above it never applies (`repo bind --shared` refuses to write one there);
 4. central rules of the profile (`profile add --rules URL|PATH` or `profile update NAME --rules ...`):
    ```json
    {"version": 1,

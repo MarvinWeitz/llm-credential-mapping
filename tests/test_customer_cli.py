@@ -226,6 +226,15 @@ class CustomerCliTests(unittest.TestCase):
         self.assertEqual((shown["customer"], shown["repository"]), ("customer:A", None))
         self.assertEqual(shown["headers"]["x-litellm-spend-logs-metadata"], '{"customer_source":"file"}')
 
+    def test_shared_file_in_or_above_home_is_refused_instead_of_silently_ignored(self):
+        for root in (self.home, self.home.parent):
+            with self.subTest(root=root), \
+                    patch("llm_credential_mapping.cli.find_checkout", return_value=Checkout(root, self.repository, None)), \
+                    patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+                self.assertEqual(self.call("repo", "bind", "--shared", "--customer", "customer:A"), 1)
+                self.assertIn("would be ignored", self.stderr.getvalue())
+                self.assertFalse((root / ".llm-customer").exists())
+
     def test_picker_prefers_the_rules_catalogue_and_saves_a_personal_override(self):
         rules = self.home / "rules.json"
         rules.write_text(json.dumps({"version": 1, "customers": [{"id": "customer:central"}]}), encoding="utf-8")
