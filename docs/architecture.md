@@ -154,8 +154,11 @@ a supported vault the command fails (containers use the relay instead, section 6
   refresh token and set a retry time: 30 s, doubling to 15 minutes, never later than one
   attempt before the token becomes unusable. Concurrent callers therefore share one failed
   attempt instead of each blocking on the network.
-- A refused refresh grant (4xx) stops renewal but keeps releasing the current access token
-  until 60 s before expiry; `status` reports `re-login-required` and the CLI prints a warning
+- Other client errors (e.g. `invalid_target` after a base-URL change, or an ingress 403/404)
+  are retried the same way and reported as a gateway configuration problem, with the
+  gateway's OAuth `error` and sanitized `error_description`.
+- A refused refresh grant (`invalid_grant` or `invalid_client`) stops renewal but keeps
+  releasing the current access token until 60 s before expiry; `status` reports `re-login-required` and the CLI prints a warning
   on stderr. A renewal that changes user or team blocks the session at once.
 - A token with 60 s or less left is never handed out; validity is measured after any slow
   network attempt.
