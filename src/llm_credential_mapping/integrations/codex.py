@@ -54,7 +54,7 @@ def _chosen_inherit() -> object:
     """The user's own shell_environment_policy.inherit, or None when their configuration leaves it unset."""
     try:
         parsed = tomllib.loads(_without_blocks(config_path().read_text(encoding="utf-8")))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeError, RuntimeError, tomllib.TOMLDecodeError):  # RuntimeError: no home folder.
         return None
     policy = parsed.get("shell_environment_policy")
     return policy.get("inherit") if isinstance(policy, dict) else None

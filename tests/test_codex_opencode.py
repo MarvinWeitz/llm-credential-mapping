@@ -89,6 +89,13 @@ class CodexSetupTests(ToolTestCase):
         Codex().remove(self.context)
         self.assertEqual(path.read_text(encoding="utf-8"), own)
 
+    def test_run_works_where_no_home_folder_can_be_determined(self):
+        # Windows without USERPROFILE/HOMEDRIVE: Path.home() raises; run must still build the command.
+        with patch.dict(os.environ, {}, clear=True), \
+                patch("llm_credential_mapping.integrations.codex.Path.home", side_effect=RuntimeError("no home")):
+            argv, _ = Codex().command(self.context, None, [], None)
+        self.assertIn('shell_environment_policy.inherit="all"', argv)
+
 
 class OpenCodeSetupTests(ToolTestCase):
     def setup_opencode(self, model="alias", listed=None):
