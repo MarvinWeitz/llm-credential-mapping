@@ -207,11 +207,18 @@ class NativeCodexTests(NativeToolCase):
         environment = {**self.environment, **self.shell_environment(self.repo), "PWD": str(self.repo)}
         other = {name: value.replace("customer:live", "customer:other") for name, value in environment.items()}
         daemon = [self.binary, "app-server", "daemon"]
-        subprocess.run([*daemon, "start"], cwd=self.root, env=other, capture_output=True, timeout=60, check=False)
-        self.addCleanup(subprocess.run, [*daemon, "stop"], env=other, capture_output=True, timeout=60, check=False)
+        # No pipes: the daemon's background processes would inherit them and keep run() waiting.
+        quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        self.addCleanup(self.stop_daemon, daemon, other, quiet)
+        subprocess.run([*daemon, "start"], cwd=self.root, env=other, timeout=60, check=False, **quiet)
         self.gateway.calls.clear()
         screen = self.interactive([self.binary, "--no-daemon"], environment, "Say OK")
         self.assert_tagged(screen)
+
+    def stop_daemon(self, daemon, environment, quiet):
+        subprocess.run([*daemon, "stop"], env=environment, timeout=60, check=False, **quiet)
+        # Helpers of this test's daemon live under its CODEX_HOME; none may outlive the test.
+        subprocess.run(["pkill", "-f", environment["CODEX_HOME"]], timeout=30, check=False, **quiet)
 
     def interactive(self, argv, environment, prompt):
         """Type a prompt into Codex's terminal UI and wait for its request; returns the screen output."""

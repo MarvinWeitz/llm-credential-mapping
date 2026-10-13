@@ -107,6 +107,13 @@ llm-credentials setup codex [--model ALIAS] [--remove]
 eval "$(llm-credentials shell-init bash)"     # add to ~/.bashrc; also zsh, fish, pwsh
 ```
 
+On Windows, add `llm-credentials shell-init pwsh | Out-String | Invoke-Expression` to your PowerShell
+`$PROFILE`. Where the execution policy blocks scripts (common on company PCs, "running scripts is
+disabled on this system"), a profile cannot load; run `llm-credentials shell-init pwsh --terminal`
+instead and paste its command line into Windows Terminal (Settings → your PowerShell profile →
+Command line) or its snippet into your VS Code user settings. Check in a new terminal:
+`Get-Command codex` shows `Function`.
+
 Codex reads the customer from environment variables that the shell hook sets per directory.
 Without them, Codex gets no credential and the gateway refuses the request. The hook also makes
 `codex` start with `--no-daemon`: Codex's shared background daemon would keep the variables of the

@@ -98,3 +98,13 @@ def without_daemon(shell: str, tool: str = "codex") -> str:
     if shell == "fish":
         return f"function {tool} --wraps {tool}\n    command {tool} --no-daemon $argv\nend"
     return f'{tool}() {{ command {tool} --no-daemon "$@"; }}'
+
+
+def pwsh_loader(argv: list[str]) -> list[str]:
+    """PowerShell arguments that load the hook printed by ``argv`` without any script file.
+
+    For machines whose execution policy blocks profiles and other .ps1 files: the policy does not
+    apply to commands passed with -Command, so a terminal can load the hook when it starts.
+    """
+    command = "& " + " ".join(_single_quoted(arg, "pwsh") for arg in argv) + " | Out-String | Invoke-Expression"
+    return ["-NoExit", "-Command", command]

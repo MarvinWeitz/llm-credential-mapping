@@ -179,6 +179,24 @@ class CliTests(ToolTestCase):
         self.assertIn(f"set -e {TAG}", stdout)
         self.assertIn(".llm-customer", stderr)
 
+    def test_terminal_command_loads_the_hook_without_a_script_file(self):
+        # For machines whose execution policy blocks profiles: -Command is not a script file.
+        result, stdout, _, _ = self.call("shell-init", "pwsh", "--terminal", "--profile", "unit")
+        self.assertEqual(result, 0)
+        settings = json.loads("{" + stdout.split("(JSON):\n", 1)[1] + "}")
+        args = settings["terminal.integrated.profiles.windows"]["PowerShell (llm-credentials)"]["args"]
+        self.assertEqual(args[:2], ["-NoExit", "-Command"])
+        self.assertIn(f'-NoExit -Command "{args[2]}"', stdout)
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if executable is None:
+            unavailable(self, "pwsh", "pwsh is not installed")
+        check = subprocess.run(
+            [executable, "-NoProfile", "-Command", args[2] + "; [Console]::Write((Get-Command codex).CommandType)"],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        self.assertEqual(check.stdout.strip(), "Function", check.stderr)
+        self.assertEqual(self.call("shell-init", "bash", "--terminal")[0], 1)
+
     def test_shell_init_embeds_this_cli_and_profile(self):
         for shell in SHELLS:
             with self.subTest(shell=shell):

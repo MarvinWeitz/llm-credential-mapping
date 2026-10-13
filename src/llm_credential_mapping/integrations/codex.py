@@ -167,7 +167,9 @@ class Codex:
             f"Configured {path} for profile '{context.profile.name}'. Codex renews the credential itself.",
             "Codex reads the customer from the environment: add the hook printed by "
             "'llm-credentials shell-init bash|zsh|fish|pwsh' to your shell profile, or start Codex with "
-            "'llm-credentials run codex'. Without a customer, Codex gets no credential and the gateway refuses the request.",
+            "'llm-credentials run codex'. Without a customer, Codex gets no credential and the gateway refuses the request. "
+            "Where PowerShell may not run scripts (no profile), 'llm-credentials shell-init pwsh --terminal' prints a "
+            "terminal command line that loads the hook instead.",
             "If a Codex daemon is already running, stop it once: 'codex app-server daemon stop'.",
             *notes,
         ]
