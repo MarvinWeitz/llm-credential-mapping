@@ -19,7 +19,7 @@ from llm_credential_mapping.integrations.common import header_variable
 from llm_credential_mapping.integrations.opencode import OpenCode, PLACEHOLDER_KEY, config_path as opencode_config
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.registry import gateway_for
-from llm_credential_mapping.shells import SHELLS, assignments, hook
+from llm_credential_mapping.shells import SHELLS, assignments, hook, without_daemon
 from isolation import isolate_tool_configuration
 from live import unavailable
 
@@ -70,31 +70,23 @@ class CodexSetupTests(ToolTestCase):
         self.assertTrue(any("left unchanged" in note for note in notes))
 
 
-    def test_setup_and_run_let_the_token_command_see_the_customer_unless_the_user_chose_a_policy(self):
-        # Interactive Codex on Windows filters the token command's environment without an explicit inherit.
+    def test_setup_and_run_keep_codex_out_of_its_shared_daemon(self):
+        # A shared daemon keeps the environment of the terminal that started it: another folder's customer.
         path = codex_config()
         path.parent.mkdir(parents=True)
         Codex().setup(self.context)
-        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["shell_environment_policy"], {"inherit": "all"})
-        argv, _ = Codex().command(self.context, None, [], None)
-        self.assertIn('shell_environment_policy.inherit="all"', argv)
+        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["features"], {"daemon_auto_start": False})
+        argv, _ = Codex().command(self.context, None, ["exec", "hi"], None)
+        self.assertEqual(argv[:2], ["codex", "--no-daemon"])
+        self.assertEqual(argv[-2:], ["exec", "hi"])
         Codex().remove(self.context)
-        own = '[shell_environment_policy]\ninherit = "core"\n'
+        own = "[features]\nweb_search = true\n"
         path.write_text(own, encoding="utf-8")
         notes = Codex().setup(self.context)
-        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["shell_environment_policy"], {"inherit": "core"})
-        self.assertTrue(any('inherit = "all"' in note for note in notes))
-        argv, _ = Codex().command(self.context, None, [], None)
-        self.assertFalse(any(arg.startswith("shell_environment_policy") for arg in argv))
+        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["features"], {"web_search": True})
+        self.assertTrue(any("daemon_auto_start = false" in note for note in notes))
         Codex().remove(self.context)
         self.assertEqual(path.read_text(encoding="utf-8"), own)
-
-    def test_run_works_where_no_home_folder_can_be_determined(self):
-        # Windows without USERPROFILE/HOMEDRIVE: Path.home() raises; run must still build the command.
-        with patch.dict(os.environ, {}, clear=True), \
-                patch("llm_credential_mapping.integrations.codex.Path.home", side_effect=RuntimeError("no home")):
-            argv, _ = Codex().command(self.context, None, [], None)
-        self.assertIn('shell_environment_policy.inherit="all"', argv)
 
 
 class OpenCodeSetupTests(ToolTestCase):
@@ -208,11 +200,11 @@ class ShellTests(unittest.TestCase):
             found = str(candidate) if candidate.is_file() else shutil.which("bash", path=r"C:\Program Files\Git\bin")
         return found
 
-    def run_shell(self, name, script):
+    def run_shell(self, name, script, environment=None):
         executable = self.shell(name)
         if executable is None:
             unavailable(self, name, f"{name} is not installed")
-        environment = {**os.environ, "LLM_CREDENTIALS_TEST_B": "stale"}
+        environment = {**os.environ, "LLM_CREDENTIALS_TEST_B": "stale", **(environment or {})}
         with tempfile.TemporaryDirectory() as directory:
             # No user startup files: they could change the environment under test.
             command = {
@@ -262,6 +254,19 @@ class ShellTests(unittest.TestCase):
                         argv = [Path(arg).as_posix() if index < 2 else arg for index, arg in enumerate(argv)]
                     output = self.run_shell(name, hook(name, argv) + "\n" + cd + "\n" + printer_line)
                     self.assertEqual(Path(output.strip()).resolve(), folder)
+
+    def test_codex_starts_without_the_shared_daemon(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            # A stand-in codex that prints its arguments: a script for POSIX shells, a .cmd for PowerShell on Windows.
+            (folder / "codex").write_text('#!/bin/sh\nprintf "%s " "$@"\n', encoding="utf-8")
+            (folder / "codex").chmod(0o755)
+            (folder / "codex.cmd").write_text("@echo %*\r\n", encoding="utf-8")
+            path = {"PATH": str(folder) + os.pathsep + os.environ.get("PATH", "")}
+            for name in ("bash", "zsh", "fish", "pwsh"):
+                with self.subTest(shell=name):
+                    output = self.run_shell(name, without_daemon(name) + "\ncodex exec hi", path)
+                    self.assertEqual(output.split(), ["--no-daemon", "exec", "hi"])
 
     def test_pwsh_hook_survives_loading_the_profile_twice(self):
         # '. $PROFILE' after an edit must not make the wrapper call itself.

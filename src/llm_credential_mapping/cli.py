@@ -16,7 +16,7 @@ from .integrations.claude import Claude
 from .integrations.common import header_variable
 from .registry import AUTH, GATEWAYS, INTEGRATIONS, auth_for, gateway_for
 from .repositories import Checkout, RepositoryStore, find_checkout
-from .shells import SHELLS, assignments, hook
+from .shells import SHELLS, assignments, hook, without_daemon
 from .storage import NativeKeyring
 
 
@@ -248,6 +248,7 @@ def shell_init(context: Context) -> None:
     if context.args.profile:
         argv += ["--profile", context.args.profile]
     print(hook(context.args.shell, argv))
+    print(without_daemon(context.args.shell))
 
 
 def _origin(checkout: Checkout | None) -> str:

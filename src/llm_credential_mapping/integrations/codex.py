@@ -6,9 +6,10 @@ attribution header values come from environment variables, set per directory by 
 Codex then sends the request without a credential, which the gateway rejects: nothing goes through
 untagged. Codex reruns the command every ``refresh_interval_ms`` and once after a 401.
 
-The token command must see those variables. Interactive Codex on Windows filters the environment of
-the commands it starts unless ``shell_environment_policy.inherit = "all"`` (its documented default) is
-set explicitly, so setup and run set it whenever the user's configuration does not choose a value.
+Both must come from the session's own environment. Interactive Codex (0.162+) otherwise runs sessions
+in a shared background daemon that keeps the environment of the terminal that started it: requests
+then carry no customer, or another folder's. So ``run codex`` and the shell hook start Codex with
+``--no-daemon``, and setup turns off ``features.daemon_auto_start``.
 """
 
 import json
@@ -29,7 +30,7 @@ REQUIRE_ENV = "--require-attribution-env"
 _TOP = ("# >>> llm-credentials: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials <<<")
 _TABLES = ("# >>> llm-credentials tables: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials tables <<<")
 _CLEARED = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
-INHERIT = "shell_environment_policy.inherit"
+NO_DAEMON = "--no-daemon"
 
 
 def config_path(environ: Mapping[str, str] | None = None) -> Path:
@@ -48,16 +49,6 @@ def _toml(value) -> str:
     if isinstance(value, dict):
         return "{ " + ", ".join(f"{json.dumps(key)} = {_toml(item)}" for key, item in value.items()) + " }"
     return json.dumps(value)
-
-
-def _chosen_inherit() -> object:
-    """The user's own shell_environment_policy.inherit, or None when their configuration leaves it unset."""
-    try:
-        parsed = tomllib.loads(_without_blocks(config_path().read_text(encoding="utf-8")))
-    except (OSError, UnicodeError, RuntimeError, tomllib.TOMLDecodeError):  # RuntimeError: no home folder.
-        return None
-    policy = parsed.get("shell_environment_policy")
-    return policy.get("inherit") if isinstance(policy, dict) else None
 
 
 class Codex:
@@ -94,14 +85,12 @@ class Codex:
         if attribution is not None:
             env[CUSTOMER_VARIABLE] = attribution.customer
         settings = {"model_provider": PROVIDER}
-        if _chosen_inherit() is None:
-            settings[INHERIT] = "all"
         for key, value in self.provider(context).items():
             if isinstance(value, dict):
                 settings.update({f"model_providers.{PROVIDER}.{key}.{item}": entry for item, entry in value.items()})
             else:
                 settings[f"model_providers.{PROVIDER}.{key}"] = value
-        command = ["codex"]
+        command = ["codex", NO_DAEMON]
         for key, value in settings.items():
             command.extend(["-c", key + "=" + json.dumps(value)])
         if model:
@@ -156,13 +145,13 @@ class Codex:
             raise CredentialError(f"{path} already defines [model_providers.{PROVIDER}] outside the managed block.")
         top = [f"model_provider = {json.dumps(PROVIDER)}"]
         notes = []
-        policy = parsed.get("shell_environment_policy")
-        if policy is None:
-            top.append(f'{INHERIT} = "all"')
-        elif not isinstance(policy, dict) or policy.get("inherit") != "all":
+        features = parsed.get("features")
+        if features is None:
+            top.append("features.daemon_auto_start = false")
+        elif not isinstance(features, dict) or features.get("daemon_auto_start") is not False:
             notes.append(
-                f'Note: {path} has its own [shell_environment_policy]; set inherit = "all" there, otherwise '
-                "interactive Codex on Windows does not pass the customer to the token command."
+                f"Note: {path} has its own [features]; add daemon_auto_start = false there, otherwise a shared "
+                "Codex daemon can send requests with another folder's customer."
             )
         if model and "model" not in parsed:
             top.append(f"model = {json.dumps(model)}")
@@ -179,6 +168,7 @@ class Codex:
             "Codex reads the customer from the environment: add the hook printed by "
             "'llm-credentials shell-init bash|zsh|fish|pwsh' to your shell profile, or start Codex with "
             "'llm-credentials run codex'. Without a customer, Codex gets no credential and the gateway refuses the request.",
+            "If a Codex daemon is already running, stop it once: 'codex app-server daemon stop'.",
             *notes,
         ]
 

@@ -416,6 +416,15 @@ the prompt reaches the gateway. A gateway-side "customer required" policy is the
 backstop. The token never goes into Codex's environment, because Codex passes `*TOKEN*`
 variables to the shell commands its agent runs.
 
+Interactive Codex (0.161+) normally runs sessions in a shared background daemon
+(`codex app-server`) that keeps the environment of the terminal that started it, and runs
+the token command there. Tested with the real Codex: a daemon started without the variables
+sends requests without credential or customer; one started in another repository's terminal
+sends that repository's customer. So the `shell-init` hook also defines a `codex` function that
+adds `--no-daemon`, `run codex` passes it, and `setup` writes `features.daemon_auto_start = false`.
+A daemon started explicitly (`codex app-server daemon start`) or by an IDE extension still serves
+whatever connects to it; stop it with `codex app-server daemon stop`.
+
 ### OpenCode
 
 OpenCode v1 loads plugins listed as `file://` URLs. `setup opencode` writes a provider

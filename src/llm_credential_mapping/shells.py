@@ -85,3 +85,16 @@ def hook(shell: str, argv: list[str]) -> str:
         '    *) PROMPT_COMMAND="__llm_credentials_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;',
         "esac",
     ])
+
+
+def without_daemon(shell: str, tool: str = "codex") -> str:
+    """Make ``tool`` start ``--no-daemon``: a shared daemon would keep another terminal's customer variables."""
+    if shell == "pwsh":
+        return "\n".join([
+            f"function global:{tool} {{",
+            f"    & (Get-Command {tool} -CommandType Application | Select-Object -First 1) --no-daemon @args",
+            "}",
+        ])
+    if shell == "fish":
+        return f"function {tool} --wraps {tool}\n    command {tool} --no-daemon $argv\nend"
+    return f'{tool}() {{ command {tool} --no-daemon "$@"; }}'

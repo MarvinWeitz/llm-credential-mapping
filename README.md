@@ -108,7 +108,9 @@ eval "$(llm-credentials shell-init bash)"     # add to ~/.bashrc; also zsh, fish
 ```
 
 Codex reads the customer from environment variables that the shell hook sets per directory.
-Without them, Codex gets no credential and the gateway refuses the request.
+Without them, Codex gets no credential and the gateway refuses the request. The hook also makes
+`codex` start with `--no-daemon`: Codex's shared background daemon would keep the variables of the
+terminal that started it. If one is running from before, stop it once: `codex app-server daemon stop`.
 
 ### OpenCode
 
