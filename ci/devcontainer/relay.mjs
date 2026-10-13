@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { agentPath, serve } = require("../../vscode-extension/out/src/agent.js");
+const { remoteProfileArgs } = require("../../vscode-extension/out/src/cli.js");
 
 async function askLocal(request) {
   const response = await fetch(process.env.LLMC_COMPANION, { method: "POST", body: JSON.stringify(request) });
@@ -21,9 +22,5 @@ await serve(socketPath, askLocal);
 console.log(`relay listening on ${socketPath}`);
 
 const local = await askLocal({ operation: "profile", profile: "" });
-execFileSync("python", [
-  "-m", "llm_credential_mapping", "profile", "add", local.name, "--gateway", local.gateway.url,
-  "--gateway-type", local.gateway.type, "--auth", "forwarded", "--host-profile", local.name,
-  ...(local.gateway.url.startsWith("http:") ? ["--allow-insecure-localhost"] : []),
-], { stdio: "inherit" });
+execFileSync("python", ["-m", "llm_credential_mapping", ...remoteProfileArgs(local).args], { stdio: "inherit" });
 console.log(`relay: created profile '${local.name}' from the local one`);

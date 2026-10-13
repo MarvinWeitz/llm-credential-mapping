@@ -34,6 +34,13 @@ class ProfileTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(CredentialError):
                 gateway_origin(url, True)
 
+    def test_gateway_under_a_path_prefix_is_rejected_explicitly(self):
+        for url in ("https://llm.corp.example/litellm", "https://llm.corp.example/litellm/"):
+            with self.subTest(url=url), self.assertRaises(CredentialError) as result:
+                Profile("a", url, {"team_id": "team-a"})
+            self.assertIn("served at the host root", str(result.exception))
+            self.assertIn("'/litellm", str(result.exception))
+
     def test_invalid_names_and_teams(self):
         for name in ("", "../profile", "two profiles", "a" * 65):
             with self.subTest(name=name), self.assertRaises(CredentialError):

@@ -131,7 +131,7 @@ class NativeVaultTests(unittest.TestCase):
             refreshes = [body for path, body in fixture.posts if path == "/token" and body["grant_type"] == "refresh_token"]
             self.assertEqual(len(refreshes), 1)
 
-            manager.logout(profile)
+            manager.logout(profile, lambda message: None)
             self.assertEqual(manager.status(profile)["state"], "logged-out")
             revoked = [body["token"] for path, body in fixture.posts if path == "/revoke"]
             self.assertEqual(revoked, [fixture.refresh_token])

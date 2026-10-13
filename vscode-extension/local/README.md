@@ -10,7 +10,9 @@ sign-in of your local `llm-credentials` CLI:
 
 Settings (in your local user settings): `llmCredentials.command`, how to run the local CLI,
 e.g. `["C:\\path\\to\\venv\\Scripts\\python.exe", "-m", "llm_credential_mapping"]`; and
-`llmCredentials.profile`, the local profile (empty for the default).
+`llmCredentials.localProfiles`, the local profiles remote windows may use (empty: only the
+default profile; the first entry is used when a window names none). Requests for any other
+profile are refused, whatever the container or workspace asks for.
 
 "LLM Credentials: Sign in on this computer" runs `llm-credentials login` locally; remote
 windows offer it when the local sign-in is missing or expired.

@@ -90,23 +90,69 @@ function answers(socketPath: string): Promise<boolean> {
   });
 }
 
+/** Only a socket of ours, left behind by a closed window, may be replaced; anything else at the path is the user's. */
+function replaceable(socketPath: string): void {
+  let info: fs.Stats;
+  try {
+    info = fs.lstatSync(socketPath);
+  } catch {
+    return; // Nothing there.
+  }
+  if (!info.isSocket() || (typeof process.getuid === "function" && info.uid !== process.getuid())) {
+    throw new Error(`Refusing to replace ${socketPath}: it is not a socket of yours.`);
+  }
+}
+
 export class Busy extends Error {}
 
-/** Listen on ``socketPath``; throws Busy when another relay is already serving it. */
+/** The inode each server moved to its socket path; Node removes only the name it listened on when closing. */
+const bound = new WeakMap<net.Server, { socketPath: string; ino: number }>();
+let serial = 0;
+
+/** False once another window has replaced or removed the socket this server put in place. */
+export function stillServing(server: net.Server): boolean {
+  const socket = bound.get(server);
+  if (!socket) return true; // A named pipe: only one window can create it.
+  try {
+    return fs.lstatSync(socket.socketPath).ino === socket.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Listen on ``socketPath``; throws Busy when another relay is already serving it. Two windows can still race past
+ * the probe: each listens under its own name and renames it into place, so the loser's socket is never removed by
+ * the winner's close, and the loser sees ``stillServing`` turn false.
+ */
 export async function serve(socketPath: string, forward: Forward): Promise<net.Server> {
-  if (!isPipe(socketPath)) {
+  const pipe = isPipe(socketPath);
+  const listenPath = pipe ? socketPath : `${socketPath}.${process.pid}-${++serial}`;
+  if (!pipe) {
     privateDirectory(path.dirname(socketPath));
-    if (fs.existsSync(socketPath)) {
-      if (await answers(socketPath)) throw new Busy(`Another VS Code window serves ${socketPath}.`);
-      fs.unlinkSync(socketPath); // Left behind by a closed window.
-    }
+    replaceable(socketPath);
+    if (fs.existsSync(socketPath) && await answers(socketPath)) throw new Busy(`Another VS Code window serves ${socketPath}.`);
+    fs.rmSync(listenPath, { force: true }); // Left by a crashed process with the same pid.
   }
   const server = net.createServer((connection) => handle(connection, forward));
   await new Promise<void>((resolve, reject) => {
     server.once("error", (error: NodeJS.ErrnoException) =>
       reject(error.code === "EADDRINUSE" ? new Busy(`Another VS Code window serves ${socketPath}.`) : error));
-    server.listen(socketPath, () => resolve());
+    server.listen(listenPath, () => resolve());
   });
-  if (!isPipe(socketPath)) fs.chmodSync(socketPath, 0o600);
+  if (pipe) return server;
+  try {
+    fs.chmodSync(listenPath, 0o600);
+    const ino = fs.lstatSync(listenPath).ino;
+    replaceable(socketPath);
+    fs.renameSync(listenPath, socketPath); // Replaces a stale socket in one step.
+    bound.set(server, { socketPath, ino });
+  } catch (error) {
+    server.close();
+    throw error;
+  }
+  server.on("close", () => {
+    if (stillServing(server)) fs.rmSync(socketPath, { force: true }); // Not when another window has taken over.
+  });
   return server;
 }

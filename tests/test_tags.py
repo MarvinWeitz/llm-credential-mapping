@@ -17,9 +17,9 @@ class TagTests(unittest.TestCase):
         self.profile = Profile("unit", "https://gateway.example", {"team_id": "business-unit"})
 
     def test_exact_names_are_preserved_and_wire_constraints_are_checked(self):
-        for name in ("customer:A", "Customer A", "a" * 256):
+        for name in ("customer:A", "Customer A", "a" * 256, "acme!&"):
             self.assertEqual(validate_customer(name), name)
-        for name in ("", None, [], "a" * 257, " a", "a ", "a,b", "a\nb", "a\tb", "\x00", "\x7f", "\u00e9"):
+        for name in ("", None, [], "a" * 257, " a", "a ", "a,b", "a\nb", "a\tb", "\x00", "\x7f", "\u00e9", "!acme", "&acme"):
             with self.subTest(name=name), self.assertRaises(CredentialError):
                 validate_customer(name)
 
@@ -63,12 +63,18 @@ class TagTests(unittest.TestCase):
         transport.get_list.return_value = []
         self.assertEqual(list_tags(self.profile, "secret", transport=transport), [])
 
-    def test_bad_rows_and_duplicates_are_errors(self):
-        for rows in ([None], [{}], [{"name": 42}], [{"name": "a", "description": []}], [{"name": "a"}, {"name": "a"}]):
-            transport = Mock(spec=JsonTransport)
-            transport.get_list.return_value = rows
-            with self.subTest(rows=rows), self.assertRaises(CredentialError):
-                list_tags(self.profile, "secret", transport=transport)
+    def test_automatic_tags_and_bad_rows_are_skipped_not_fatal(self):
+        transport = Mock(spec=JsonTransport)
+        transport.get_list.return_value = [
+            None, {}, {"name": 42}, {"name": "b", "description": []}, {"name": "x" * 257}, {"name": "a,b"},
+            {"name": "&acme"}, {"name": "User-Agent: claude-cli"}, {"name": "User-Agent: claude-cli/2.0.14 (external, cli)"},
+            {"name": "user-agent: curl/8.5"}, {"name": "Acme: EU"}, {"name": "customer:A", "description": "first"}, {"name": "customer:A"},
+            {"name": "Customer B", "description": "This is just a spend tag"},
+        ]
+        self.assertEqual(
+            list_tags(self.profile, "secret", transport=transport),
+            [Tag("Acme: EU", None), Tag("Customer B", "This is just a spend tag"), Tag("customer:A", "first")],
+        )
 
     def test_failed_discovery_is_not_a_successful_empty_list(self):
         transport = Mock(spec=JsonTransport)

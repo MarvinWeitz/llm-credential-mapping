@@ -16,7 +16,7 @@ from .integrations.claude import Claude
 from .integrations.common import header_variable
 from .registry import AUTH, GATEWAYS, INTEGRATIONS, auth_for, gateway_for
 from .repositories import Checkout, RepositoryStore, find_checkout
-from .shells import SHELLS, assignments, hook
+from .shells import SHELLS, assignments, hook, pwsh_loader, without_daemon
 from .storage import NativeKeyring
 
 
@@ -99,8 +99,8 @@ def _pick_customer(context: Context, prefix: str | None) -> str:
     tags = _catalogue(context, prefix)
     if not tags:
         raise CredentialError(
-            "No visible customers matched. The gateway may list only customers you used before. "
-            "Ask an administrator for an approved customer and pass --customer."
+            "No visible customers matched. A gateway's list is often empty for single sign-on users; "
+            "ask an administrator for a customers catalogue in the central rules, or pass --customer with an approved customer."
         )
     print("Visible customers are not an authorization list. Choose the approved customer for this session:", file=sys.stderr)
     for index, tag in enumerate(tags, 1):
@@ -211,7 +211,7 @@ def status(context: Context) -> None:
 
 
 def logout(context: Context) -> None:
-    context.auth.logout()
+    context.auth.logout(notify)
     print(f"Logged out of '{context.profile.name}'. Previously issued access tokens expire naturally.")
 
 
@@ -244,10 +244,28 @@ def _print_environment(context: Context, shell: str, directory: Path, checkout: 
 
 
 def shell_init(context: Context) -> None:
-    argv = [*_integration_context(context).cli_command("repo", "show", "--env", context.args.shell)]
-    if context.args.profile:
-        argv += ["--profile", context.args.profile]
+    profile = ["--profile", context.args.profile] if context.args.profile else []
+    if context.args.terminal:
+        if context.args.shell != "pwsh":
+            raise CredentialError("--terminal is for PowerShell; other shells load the hook from their profile.")
+        _print_pwsh_terminal([*_integration_context(context).cli_command("shell-init", "pwsh"), *profile])
+        return
+    argv = [*_integration_context(context).cli_command("repo", "show", "--env", context.args.shell), *profile]
     print(hook(context.args.shell, argv))
+    print(without_daemon(context.args.shell))
+
+
+def _print_pwsh_terminal(argv: list[str]) -> None:
+    args = pwsh_loader(argv)
+    name = "PowerShell (llm-credentials)"
+    vscode = {
+        "terminal.integrated.profiles.windows": {name: {"source": "PowerShell", "args": args}},
+        "terminal.integrated.defaultProfile.windows": name,
+    }
+    print("# Windows Terminal: Settings > your PowerShell profile > Command line (PowerShell 7: pwsh.exe instead):")
+    print(f'powershell.exe {args[0]} {args[1]} "{args[2]}"')
+    print("# VS Code: add to your user settings (JSON):")
+    print(json.dumps(vscode, indent=2)[1:-1].strip("\n"))
 
 
 def _origin(checkout: Checkout | None) -> str:
@@ -362,7 +380,8 @@ def claude_guard(context: Context) -> None:
         data = json.loads(sys.stdin.read(1_048_576) or "{}")
     except ValueError:
         data = {}
-    cwd = data.get("cwd") if isinstance(data, dict) else None
+    # Claude reads local settings for the directory it started in, which the payload's cwd leaves after a cd.
+    cwd = os.environ.get("CLAUDE_PROJECT_DIR") or (data.get("cwd") if isinstance(data, dict) else None)
     try:
         directory = Path(cwd).resolve() if isinstance(cwd, str) and cwd else Path.cwd().resolve()
         checkout = find_checkout(directory)
@@ -448,6 +467,11 @@ def parser() -> argparse.ArgumentParser:
     command.set_defaults(handler=token)
     command = commands.add_parser("shell-init", help="Print a shell profile hook that sets the customer per directory.")
     command.add_argument("shell", choices=SHELLS)
+    command.add_argument(
+        "--terminal", action="store_true",
+        help="PowerShell only: print a terminal command line that loads the hook without a script file "
+        "(for machines where the execution policy blocks profiles).",
+    )
     _profile_option(command)
     command.set_defaults(handler=shell_init)
     for name, handler, text in (

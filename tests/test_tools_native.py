@@ -200,6 +200,67 @@ class NativeCodexTests(NativeToolCase):
         self.assertIn("FIXTURE_OK", output)
         self.assert_tagged(output)
 
+    @unittest.skipIf(os.name == "nt", "interactive Codex needs a pseudo-terminal")
+    def test_interactive_codex_ignores_a_daemon_started_with_another_customer(self):
+        # Codex's shared daemon keeps the environment of the terminal that started it; the shell hook's
+        # codex function and 'run codex' start Codex with --no-daemon so the folder's customer applies.
+        environment = {**self.environment, **self.shell_environment(self.repo), "PWD": str(self.repo)}
+        other = {name: value.replace("customer:live", "customer:other") for name, value in environment.items()}
+        daemon = [self.binary, "app-server", "daemon"]
+        # No pipes: the daemon's background processes would inherit them and keep run() waiting.
+        quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        self.addCleanup(self.stop_daemon, daemon, other, quiet)
+        subprocess.run([*daemon, "start"], cwd=self.root, env=other, timeout=60, check=False, **quiet)
+        self.gateway.calls.clear()
+        screen = self.interactive([self.binary, "--no-daemon"], environment, "Say OK")
+        self.assert_tagged(screen)
+
+    def stop_daemon(self, daemon, environment, quiet):
+        subprocess.run([*daemon, "stop"], env=environment, timeout=60, check=False, **quiet)
+        # Helpers of this test's daemon live under its CODEX_HOME; none may outlive the test.
+        subprocess.run(["pkill", "-f", environment["CODEX_HOME"]], timeout=30, check=False, **quiet)
+
+    def interactive(self, argv, environment, prompt):
+        """Type a prompt into Codex's terminal UI and wait for its request; returns the screen output."""
+        import pty
+        import select
+        import time
+
+        # The pseudo-terminal is opened here and Codex started by subprocess: forking this threaded
+        # process (the fake gateway) with pty.fork() can deadlock the child.
+        terminal, child = pty.openpty()
+        process = subprocess.Popen(
+            argv, cwd=self.repo, stdin=child, stdout=child, stderr=child, start_new_session=True,
+            env={**environment, "TERM": "xterm-256color", "COLUMNS": "120", "LINES": "40"},
+        )
+        os.close(child)
+        screen = b""
+
+        def read(seconds, until=lambda: False):
+            nonlocal screen
+            deadline = time.time() + seconds
+            while time.time() < deadline and not until():
+                if select.select([terminal], [], [], 0.2)[0]:
+                    try:
+                        data = os.read(terminal, 65536)
+                    except OSError:
+                        return
+                    screen += data
+                    if b"\x1b[6n" in data:  # The UI asks for the cursor position.
+                        os.write(terminal, b"\x1b[1;1R")
+
+        try:
+            read(8)
+            os.write(terminal, prompt.encode())
+            read(1)
+            os.write(terminal, b"\r")
+            read(60, lambda: bool(self.gateway.model_calls()))
+        finally:
+            process.kill()
+            process.wait(timeout=30)
+            os.close(terminal)
+        return screen.decode("utf-8", "replace")
+
     def test_without_a_customer_codex_gets_no_credential(self):
         self.assertEqual(self.shell_environment(self.unmapped), {})
         output = self.run_tool([self.binary, "exec", "--skip-git-repo-check", "Say OK"], self.unmapped)

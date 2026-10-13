@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import socket
 import tempfile
 import threading
@@ -79,7 +80,7 @@ class ForwardedTests(unittest.TestCase):
 
     def test_sign_in_and_out_happen_on_the_local_machine(self):
         auth = forwarded.Forwarded(self.profile, None)
-        for action in (lambda: auth.login(print), auth.logout):
+        for action in (lambda: auth.login(print), lambda: auth.logout(print)):
             with self.assertRaises(CredentialError) as error:
                 action()
             self.assertIn("local machine", str(error.exception))
@@ -90,6 +91,36 @@ class ForwardedTests(unittest.TestCase):
             Path(forwarded.agent_path({"XDG_RUNTIME_DIR": "/run/user/1000"})), Path("/run/user/1000/llm-credentials/agent.sock"),
         )
         self.assertTrue(forwarded.agent_path({}).endswith("agent.sock"))
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX") and hasattr(os, "getuid"), "Unix sockets only")
+    def test_a_socket_others_could_have_placed_is_refused(self):
+        directory = tempfile.mkdtemp(prefix="llmc-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, "agent.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(path)
+        listener.listen()
+        forwarded._connect(path).close()  # Ours, in a private directory.
+        os.chmod(directory, 0o777)
+        with self.assertRaises(CredentialError) as error:
+            forwarded._connect(path)
+        self.assertIn("Refusing", str(error.exception))
+        os.chmod(directory, 0o700)
+        if os.getuid() == 0:  # Only root can hand the socket to another user.
+            os.chown(path, 65534, 65534)
+            with self.assertRaises(CredentialError):
+                forwarded._connect(path)
+            os.chown(path, 0, 0)
+        os.symlink(directory, directory + "-link")
+        self.addCleanup(os.unlink, directory + "-link")
+        with self.assertRaises(CredentialError):
+            forwarded._connect(os.path.join(directory + "-link", "agent.sock"))
+        os.unlink(path)
+        with open(path, "w"):
+            pass  # Not a socket.
+        with self.assertRaises(CredentialError):
+            forwarded._connect(path)
 
     def test_settings(self):
         self.assertEqual(forwarded.settings({}), {})

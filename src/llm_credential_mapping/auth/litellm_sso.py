@@ -9,7 +9,7 @@ from ..adapters import Credential
 from ..errors import CredentialError
 from ..profiles import Profile, ProfileStore
 from ..storage import SecretStore
-from ..transport import REQUEST_TIMEOUT_SECONDS, GatewayError
+from ..transport import HTTP_ERROR_ADVICE, REQUEST_TIMEOUT_SECONDS, GatewayError
 from .litellm_oauth import IdentityChanged, LiteLLMClient, Session, team_id
 
 # Two gateway round trips (refresh plus a possible revoke) at the transport timeout, plus vault I/O.
@@ -19,6 +19,8 @@ MINIMUM_VALIDITY_SECONDS = 60
 # Waits after consecutive temporary renewal failures: 30 s, doubling up to 15 min.
 FIRST_RETRY_DELAY_SECONDS = 30
 MAXIMUM_RETRY_DELAY_SECONDS = 900
+# OAuth errors that refuse the refresh grant itself; any other 4xx is a gateway or ingress configuration problem.
+REFUSED_GRANT_ERRORS = ("invalid_grant", "invalid_client")
 
 
 def settings(values: dict) -> dict:
@@ -55,8 +57,10 @@ class SessionManager:
     Renewal starts early so a failed attempt still leaves a usable token. Transport failures,
     throttling, server errors, redirects and unusable responses keep the refresh token and are
     retried after a growing delay (LiteLLM claims a refresh token only after minting its
-    replacement, and a replayed one is merely refused). A refused grant stops renewal, but the
-    current access token is still released until it nearly expires: it cannot be revoked anyway.
+    replacement, and a replayed one is merely refused), and so are other client errors, which
+    point at the gateway's configuration. A grant refused with ``invalid_grant`` or
+    ``invalid_client`` stops renewal, but the current access token is still released until it
+    nearly expires: it cannot be revoked anyway.
     Only an unexpected identity stops releasing it at once.
     """
 
@@ -162,6 +166,13 @@ class SessionManager:
                     detail = f"The stored sign-in was kept; if the gateway moved its endpoints, {relogin}."
                 elif error.retryable:
                     detail = "Renewal will be retried; the stored sign-in was kept."
+                elif error.oauth_error not in REFUSED_GRANT_ERRORS:
+                    # E.g. invalid_target after a gateway base-URL change, or an ingress 403/404: not about this grant.
+                    detail = (
+                        "This looks like a gateway configuration problem; the stored sign-in was kept. "
+                        "Contact the gateway administrator if it persists."
+                    )
+                    return self._retry_later(profile, session, f"{str(error).removesuffix(HTTP_ERROR_ADVICE)} {detail}")
                 else:
                     refused = self._save_state(profile, replace(session, needs_login=True))
                     if self._usable(refused):
@@ -225,13 +236,32 @@ class SessionManager:
                 "state": state,
             }
 
-    def logout(self, profile: Profile) -> None:
+    def logout(self, profile: Profile, notify: Callable[[str], None]) -> None:
+        """Revoke the grant where possible; the local credential is deleted even when that fails."""
         with self._locked(profile):
-            session = self._load(profile)
+            try:
+                value = self.secrets.get(self.account(profile))
+                # Not _load: a sign-in that no longer matches the profile (team or gateway changed)
+                # is still revoked; revoke only sends it to the endpoints it was issued for.
+                session = None if value is None else Session.from_dict(value)
+            except CredentialError as error:
+                self.secrets.delete(self.account(profile))
+                notify(
+                    f"Warning: the stored sign-in could not be read ({error}) and was deleted without being revoked; "
+                    "it stays valid until it expires. Ask the gateway administrator to revoke it."
+                )
+                return
             if session is None:
                 raise CredentialError("This profile is already logged out.")
-            self.client_factory(profile).revoke(session)
-            self.secrets.delete(self.account(profile))
+            try:
+                self.client_factory(profile).revoke(session)
+            except CredentialError as error:
+                notify(
+                    f"Warning: the gateway did not revoke the sign-in ({error}); it may stay valid until it expires. "
+                    "The local credential is deleted anyway."
+                )
+            finally:
+                self.secrets.delete(self.account(profile))
 
 
 class LiteLLMSSO:
@@ -247,8 +277,8 @@ class LiteLLMSSO:
     def login(self, notify: Callable[[str], None], **options) -> Credential:
         return self._credential(self.manager.login(self.profile, notify, **options))
 
-    def logout(self) -> None:
-        self.manager.logout(self.profile)
+    def logout(self, notify: Callable[[str], None]) -> None:
+        self.manager.logout(self.profile, notify)
 
     def status(self) -> dict:
         return self.manager.status(self.profile)

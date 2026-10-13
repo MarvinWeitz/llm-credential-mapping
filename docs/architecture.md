@@ -137,7 +137,8 @@ one refresh token concurrently.
 
 Windows Credential Manager limits entries to 2,560 bytes, so larger sessions are split into
 fragments; a small manifest pointing at a complete, hashed generation is written last, so a
-crash never leaves a half-written session readable. There is no plaintext fallback: without
+crash never leaves a half-written session readable. macOS Keychain replaces an entry by deleting it and
+adding the new one; if the add fails, the previous entry is written back. There is no plaintext fallback: without
 a supported vault the command fails (containers use the relay instead, section 6).
 
 ### Renewal
@@ -153,8 +154,11 @@ a supported vault the command fails (containers use the relay instead, section 6
   refresh token and set a retry time: 30 s, doubling to 15 minutes, never later than one
   attempt before the token becomes unusable. Concurrent callers therefore share one failed
   attempt instead of each blocking on the network.
-- A refused refresh grant (4xx) stops renewal but keeps releasing the current access token
-  until 60 s before expiry; `status` reports `re-login-required` and the CLI prints a warning
+- Other client errors (e.g. `invalid_target` after a base-URL change, or an ingress 403/404)
+  are retried the same way and reported as a gateway configuration problem, with the
+  gateway's OAuth `error` and sanitized `error_description`.
+- A refused refresh grant (`invalid_grant` or `invalid_client`) stops renewal but keeps
+  releasing the current access token until 60 s before expiry; `status` reports `re-login-required` and the CLI prints a warning
   on stderr. A renewal that changes user or team blocks the session at once.
 - A token with 60 s or less left is never handed out; validity is measured after any slow
   network attempt.
@@ -183,7 +187,13 @@ Repository identity (`repositories.repository_identity`) normalizes Git remotes 
 SSH forms of one repository match: credentials, ports and `.git` removed, host and path
 lowercased for every forge, Azure DevOps HTTPS/SSH/`visualstudio.com` forms collapsed to
 `dev.azure.com/org/project/repo`, SSH host aliases resolved with `ssh -G` (plain host names
-only, so no option injection). No Git remote is contacted.
+only, so no option injection), forge SSH-over-443 endpoints (`ssh.github.com`,
+`altssh.gitlab.com`, `altssh.bitbucket.org`) mapped back to the forge host, and the `scm/`
+prefix of Bitbucket Server HTTPS remotes (`host/scm/project/repo`, three segments, not on
+github.com, gitlab.com, bitbucket.org or dev.azure.com) removed. No Git remote is contacted.
+A forge served under a sub-path (GitLab with a relative URL root such as
+`https://host/gitlab/group/repo`, SSH `host:group/repo`) cannot be recognized from the remote,
+so its two forms stay different identities: rules need one entry per form.
 
 Why this order: explicit beats implicit; a personal override must be able to correct a
 wrong team-wide setting; a committed file is a deliberate, reviewable team decision; central
@@ -197,10 +207,15 @@ acme's rule even if a later catch-all matches the fork's own address.
 
 `rules` in a profile is an HTTPS URL (HTTP only for opted-in loopback) or an absolute file
 path. URLs are cached in `<config folder>/rules-cache/` for an hour and revalidated with the
-ETag; on a failed fetch a stale cache is used, so a rules outage does not block work. The
+ETag; on a failed fetch, or when a newly published document is invalid, a stale cache is
+used, so a rules outage or a broken edit does not block work. Patterns match the identity
+`repo show` prints, which is percent-decoded: `dev.azure.com/org/My Project/**`, not `My%20Project`. The
 gateway credential is sent only if the rules URL is on the gateway's own origin. The
-rules' customer catalogue replaces the gateway's tag list in the interactive picker
-(LiteLLM's `/tag/list` only shows tags a user has already used).
+rules' customer catalogue replaces the gateway's tag list in the interactive picker.
+Configure one: LiteLLM's `/tag/list` scopes non-admins to spend of keys stored in its
+database, which SSO session tokens never are, so it is usually empty for developers (see
+[Gateway requirements](#11-gateway-requirements)). Rows it does return are spend tags; LiteLLM's
+automatic `<Header>: <value>` tags (`User-Agent: ...`) and invalid names are dropped.
 
 ### Attribution headers
 
@@ -279,16 +294,26 @@ sequenceDiagram
   extension, Codex) find the same default path.
 - **Privacy:** the extension creates the directory with mode 0700 and refuses to listen if it
   belongs to someone else or is accessible to others; the socket is 0600. Only the container
-  user can ask for tokens.
+  user can ask for tokens. The CLI in turn refuses a socket that is not its own or that sits
+  in a directory others can write to (or a symlinked one), so another user who creates
+  `/tmp/llm-credentials-<uid>` first cannot hand it tokens of their own.
 - **Messages:** one JSON line per connection,
   `{"version": 1, "operation": "token" | "profile", "profile": NAME}`, answered by
   `{"ok": true, "result": {...}}` or `{"ok": false, "error": "..."}`. Unknown versions,
   operations or malformed profile names are refused by both sides. The companion returns only
   the token fields (`access_token`, `expires_at`, `profile`, `user`) or the nonsecret profile
   description, never a refresh token.
+- **Which local profiles:** the companion answers only for the profiles in
+  `llmCredentials.localProfiles` (application scope, local user settings; the first is used
+  when a request names none), or, when that is empty, only for the local default profile. A
+  container process or a workspace setting cannot reach other local profiles. A failed
+  request names its profile, so "Sign in" signs in to exactly that one.
 - **Several windows on one container:** only one serves the socket; others see it answering
   (`Busy`) and retry every 30 s, taking over when the serving window closes. A stale socket
-  file from a closed window is removed.
+  of ours from a crashed window is replaced; anything else at the path is refused, never
+  deleted. Each window listens under its own name and renames it into place, so when two
+  windows race past the probe the loser's close cannot remove the winner's socket, and the
+  loser notices within 30 s that the socket is no longer its own and serves again or waits.
 - **Lifetime:** the relay exists while a VS Code window is connected; containers used without
   VS Code get a clear error instead of a token.
 
@@ -296,7 +321,9 @@ sequenceDiagram
 
 On start in a remote window the main extension asks the container CLI for a profile. If
 there is none, it fetches the local profile (`operation: "profile"`) and runs
-`profile add NAME --gateway URL --gateway-type TYPE --auth forwarded --host-profile NAME`.
+`profile add NAME --gateway URL --gateway-type TYPE --auth forwarded --host-profile NAME`,
+plus `--rules URL` when the local profile has central customer rules at a URL (rules in a
+local file do not exist in the container; the output channel says how to set them there).
 The `forwarded` auth kind stores nothing: `credential()` asks the socket, `login`/`logout`
 point to the local machine. Because auth kinds receive a vault *factory*, commands in the
 container never try to open an OS vault.
@@ -331,7 +358,7 @@ Claude has no way to compute request headers per request; the only source is
 ```mermaid
 flowchart TD
     A[Prompt submitted] --> B{Attribution headers in<br/>ANTHROPIC_CUSTOM_HEADERS?}
-    B -- "yes, not written by us<br/>(e.g. run --customer)" --> OK[Allow]
+    B -- "yes, set by run claude<br/>(e.g. run --customer)" --> OK[Allow]
     B -- yes, equal to the resolver's --> OK
     B -- missing or outdated --> C{Customer resolved?}
     C -- no --> X[Block: how to assign a customer]
@@ -343,7 +370,10 @@ so the first request would otherwise go out untagged. Why `settings.local.json` 
 shared `settings.json`: it is personal and excluded from Git, so no billing tag is committed
 into a customer's repository by accident. Claude reads it at the Git root, except on Windows
 and outside Git, where it uses the session's starting directory; the guard writes where
-Claude reads.
+Claude reads, starting from `CLAUDE_PROJECT_DIR` (the hook payload's `cwd` follows the agent's
+`cd`). Headers that `run claude` did not set and that differ from the resolver's are stale,
+not an override: Claude keeps `ANTHROPIC_CUSTOM_HEADERS` in its environment after the local
+file stops setting it, so an unmapped folder must keep blocking.
 
 On Windows Claude Code runs hooks through Git Bash. The helper and hook commands therefore
 quote every argument in double quotes with forward slashes (valid in both cmd and bash) and
@@ -386,6 +416,15 @@ the prompt reaches the gateway. A gateway-side "customer required" policy is the
 backstop. The token never goes into Codex's environment, because Codex passes `*TOKEN*`
 variables to the shell commands its agent runs.
 
+Interactive Codex (0.161+) normally runs sessions in a shared background daemon
+(`codex app-server`) that keeps the environment of the terminal that started it, and runs
+the token command there. Tested with the real Codex: a daemon started without the variables
+sends requests without credential or customer; one started in another repository's terminal
+sends that repository's customer. So the `shell-init` hook also defines a `codex` function that
+adds `--no-daemon`, `run codex` passes it, and `setup` writes `features.daemon_auto_start = false`.
+A daemon started explicitly (`codex app-server daemon start`) or by an IDE extension still serves
+whatever connects to it; stop it with `codex app-server daemon stop`.
+
 ### OpenCode
 
 OpenCode v1 loads plugins listed as `file://` URLs. `setup opencode` writes a provider
@@ -412,13 +451,17 @@ is declared), subject to the organization's "Bring Your Own Language Model Key" 
   `<endpoint>/models`; requests stream `<endpoint>/chat/completions` with tools, tool results,
   `tool_choice` and (opt-in) images. Redirects are refused.
 - **Credential:** `token --json`, cached until 60 s before expiry and at most 4 minutes; one
-  retry with a fresh token after a 401 if nothing was streamed yet.
+  retry with a fresh token after a 401 if nothing was streamed yet. The CLI returns the same
+  token until it is due for renewal, so a 401 that survives the retry offers "Sign in".
 - **Customer:** `repo show --json` for the folder: the only workspace folder; else the active
   editor's folder; else the folder chosen in the status bar; else, if all folders share one
-  customer, that one; otherwise requests fail and the status bar asks for a choice. Answers
+  customer, that one (its headers, so the spend-log metadata names the first folder's
+  repository); otherwise requests fail and the status bar asks for a choice. Answers
   are cached 30 s so a `repo bind` takes effect quickly.
 - **Errors:** notifications offer "Sign in" or "Assign customer", which open a terminal
   running the matching CLI command (in remote windows, sign-in goes to the companion).
+  When the sign-in finishes, or a remote window has created its profile, the models are
+  listed again; a listing before that found none.
 
 Why an extension instead of Copilot's "Custom Endpoint": its API key comes from VS Code's
 secret storage and cannot renew, and it carries no per-workspace information, so a
@@ -450,7 +493,9 @@ for one-off launches and overrides.
   with a valid sign-in; enforcing allowed customers needs a gateway-side policy (for LiteLLM
   an `async_pre_call_hook` validating the tag against the user's or team's allowed customers).
 - Access tokens of LiteLLM's native SSO cannot be revoked; `logout` revokes the refresh grant,
-  and existing access tokens expire on their own.
+  and existing access tokens expire on their own. If revocation fails (gateway down, rotated
+  keys), `logout` still deletes the local credential and warns that the grant may stay valid
+  until it expires.
 
 ## 10. Testing
 
@@ -467,3 +512,55 @@ for one-off launches and overrides.
 
 Tests that run `setup` point every tool's configuration at temporary folders
 (`tests/isolation.py`), so they never touch a developer's real configuration.
+
+## 11. Gateway requirements
+
+Settings the gateway needs that no client change can replace; check them before the first run.
+
+### Sign-in (auth)
+
+- **Served at the host root, with `PROXY_BASE_URL` set to the public URL.** LiteLLM builds the
+  discovery issuer, resource and every endpoint from `PROXY_BASE_URL`; without it, from trusted
+  `X-Forwarded-*` headers (`general_settings.use_x_forwarded_for` plus `mcp_trusted_proxy_ranges`
+  covering the ingress), otherwise from the request as uvicorn sees it, which behind a
+  TLS-terminating ingress is `http://…` or an internal `host:port`. `login` then fails before
+  the browser opens and names the advertised issuer. A mismatch also sends `/authorize` and
+  `/token` down LiteLLM's MCP path (`invalid_target` on renewal). A gateway under a path prefix
+  (`SERVER_ROOT_PATH`) is not supported. Check before the first login:
+  `curl https://<gateway>/.well-known/litellm-cli-auth` must report `"issuer": "https://<gateway>"`.
+- **Redis on a gateway with several workers or replicas** (`litellm_settings.cache` with a Redis
+  cache, or `general_settings.coordination_redis`). LiteLLM enforces refresh-token single use
+  and revocation through a claim cache that is otherwise per worker: a revoked (`logout`,
+  re-login) or rotated refresh token stays usable on the other workers for up to its 14-day
+  lifetime, and the gateway still answers `logout` with success.
+- **Stable salt and master key.** The registered client ID is sealed with them; after a
+  rotation the gateway refuses every renewal and revocation, and every user must log in again (`logout`
+  still deletes the local credential).
+- **Every user in at least one team.** A user without a team gets a sign-in without a team,
+  which `login` rejects and revokes.
+
+### Attribution (LiteLLM)
+
+- **Tag routing** (`router_settings.enable_tag_filtering`, also settable per key/team
+  `router_settings` or `model_info`; default off): when on, a customer tag that matches no
+  deployment fails every request with HTTP 401 ("Not allowed to access model due to tags
+  configuration"), which tools take for an expired sign-in. Either keep it off, or give every
+  deployment the `default` tag (`litellm_params.tags: [default]`) or set
+  `model_info.allow_fail_open: true`. Customer names starting with `!` or `&` are refused
+  because tag routing reads them as exclude/require directives.
+- **`general_settings.reject_clientside_metadata_tags`** must be off (default). When on, LiteLLM
+  copies the `x-litellm-tags` header into `metadata.tags` on `/v1/chat/completions` and rejects
+  it with HTTP 400, so OpenCode and Copilot Chat fail while Claude Code and Codex keep working.
+- **`litellm_settings.forward_client_headers_to_llm_api`** should stay off (default): when on,
+  every `x-` header, including the customer tag and the repository in
+  `x-litellm-spend-logs-metadata`, is forwarded to the upstream provider.
+- **`litellm_settings.disable_add_user_agent_to_request_tags: true`** is recommended: otherwise
+  LiteLLM adds `User-Agent: ...` tags to every request's spend (the picker filters them, spend
+  reports do not). Leave `extra_spend_tag_headers` empty for the same reason.
+- **`general_settings.litellm_key_header_name`** must stay unset: when set, LiteLLM reads the
+  key only from that header and ignores the `Authorization` header every tool sends. Developers
+  must not keep `x-litellm-api-key` in `ANTHROPIC_CUSTOM_HEADERS` (LiteLLM prefers it over the
+  SSO token); the Claude integration refuses any `*api-key` header there.
+- **Customer catalogue**: `/tag/list` is almost always empty for SSO users (only proxy admins
+  see tags, and then all of the gateway's). Publish the customers in the central rules
+  (`customers`) so the picker works, or have developers pass `--customer`.
