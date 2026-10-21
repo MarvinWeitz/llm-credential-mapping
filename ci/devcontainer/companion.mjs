@@ -2,7 +2,7 @@
 // (vscode-extension/local/src/handler.ts, unchanged) answering with the host CLI and its OS vault.
 // In VS Code the relay reaches it through a VS Code command; here, through HTTP on the shared host network.
 //
-//   LLMC_HOST_CLI='["python","-m","virtual_key_mapper","--home","/path"]' node companion.mjs PORT
+//   VKM_CI_HOST_CLI='["python","-m","virtual_key_mapper","--home","/path"]' node companion.mjs PORT
 import { execFile } from "node:child_process";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { answer, RunError } = require("../../vscode-extension/local/out/src/handler.js");
 
-const command = JSON.parse(process.env.LLMC_HOST_CLI);
+const command = JSON.parse(process.env.VKM_CI_HOST_CLI);
 // Like the extension's runner: stderr of a failing command becomes the error message.
 const run = (args) => new Promise((resolve, reject) => {
   execFile(command[0], [...command.slice(1), ...args], { maxBuffer: 4 << 20, timeout: 60000 }, (error, stdout, stderr) => {

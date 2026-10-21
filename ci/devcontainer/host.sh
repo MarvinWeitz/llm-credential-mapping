@@ -4,16 +4,16 @@
 set -euo pipefail
 GATEWAY_PORT=47801
 COMPANION_PORT=47802
-export LLMC_GATEWAY="http://127.0.0.1:$GATEWAY_PORT"
+export VKM_CI_GATEWAY="http://127.0.0.1:$GATEWAY_PORT"
 HOST_HOME="$(mktemp -d)"
-export LLMC_HOST_CLI="[\"python\", \"-m\", \"virtual_key_mapper\", \"--home\", \"$HOST_HOME\"]"
+export VKM_CI_HOST_CLI="[\"python\", \"-m\", \"virtual_key_mapper\", \"--home\", \"$HOST_HOME\"]"
 cli() { python -m virtual_key_mapper --home "$HOST_HOME" "$@"; }
 
 printf ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
 python ci/devcontainer/gateway.py "$GATEWAY_PORT" &
-for _ in $(seq 30); do curl -sf "$LLMC_GATEWAY/v1/models" > /dev/null && break; sleep 1; done
+for _ in $(seq 30); do curl -sf "$VKM_CI_GATEWAY/v1/models" > /dev/null && break; sleep 1; done
 
-cli profile add work --gateway "$LLMC_GATEWAY" --team-id team-a --allow-insecure-localhost
+cli profile add work --gateway "$VKM_CI_GATEWAY" --team-id team-a --allow-insecure-localhost
 BROWSER="python $PWD/ci/devcontainer/browser.py %s" cli login --profile work --timeout 60
 cli status --profile work
 
@@ -23,5 +23,5 @@ for _ in $(seq 30); do curl -s "http://127.0.0.1:$COMPANION_PORT" > /dev/null &&
 devcontainer=(npx --yes @devcontainers/cli@0.89.0)
 "${devcontainer[@]}" up --workspace-folder . --config ci/devcontainer/devcontainer.json
 "${devcontainer[@]}" exec --workspace-folder . --config ci/devcontainer/devcontainer.json \
-  --remote-env "LLMC_GATEWAY=$LLMC_GATEWAY" --remote-env "LLMC_COMPANION=http://127.0.0.1:$COMPANION_PORT" \
+  --remote-env "VKM_CI_GATEWAY=$VKM_CI_GATEWAY" --remote-env "VKM_CI_COMPANION=http://127.0.0.1:$COMPANION_PORT" \
   bash ci/devcontainer/container-test.sh

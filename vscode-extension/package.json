@@ -6,6 +6,12 @@
   "publisher": "cbs-consulting",
   "private": true,
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cbs-consulting/virtual-key-mapper"
+  },
+  "homepage": "https://github.com/cbs-consulting/virtual-key-mapper#readme",
+  "bugs": "https://github.com/cbs-consulting/virtual-key-mapper/issues",
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -83,7 +89,7 @@
     "compile": "tsc -p .",
     "test": "tsc -p . && node --test \"out/test/*.test.js\"",
     "test:host": "tsc -p . && node test-host/run.js",
-    "package": "tsc -p . && vsce package --no-dependencies --allow-missing-repository --skip-license --out vkm.vsix"
+    "package": "tsc -p . && vsce package --no-dependencies --out vkm.vsix"
   },
   "devDependencies": {
     "@types/node": "20.19.0",

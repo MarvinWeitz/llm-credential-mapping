@@ -1,3 +1,3 @@
-"""Profile-scoped LiteLLM SSO credentials and customer attribution for AI coding agents."""
+"""Virtual Key Mapper: short-lived keys from your company gateway, attributed to each repository's customer, for every tool you use."""
 
 __version__ = "0.1.0"

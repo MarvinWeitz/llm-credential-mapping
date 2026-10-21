@@ -30,42 +30,49 @@ without touching the rest.
 
 | Gateway | Sign-in | What the gateway receives |
 | --- | --- | --- |
-| [LiteLLM](https://github.com/BerriAI/litellm) | Native CLI single sign-on in the browser, with team choice; the refresh token stays in the OS vault | the SSO user and team, the customer as a request tag (`x-litellm-tags`), the repository and how the customer was chosen as spend-log metadata |
-| any gateway, from a dev container, SSH or WSL window | `forwarded`: short-lived keys from the sign-in on your own computer | the same as above |
+| [LiteLLM](https://github.com/BerriAI/litellm) | Its native CLI single sign-on in the browser, with team choice. The refresh token stays in the OS vault. | The SSO user and team (from the token), the customer as the request tag `x-litellm-tags`, and `x-litellm-spend-logs-metadata` = `{"customer_source": "explicit\|local\|file\|rules", "repository": "github.com/org/repo"}` (repository only inside a Git checkout with an origin). |
+| LiteLLM, from a VS Code dev container, SSH or WSL window | `forwarded`: the two VS Code extensions relay short-lived keys from the sign-in on your own computer; the refresh token never leaves it. | The same. |
+
+More gateways and sign-in methods are adapters ([docs/adapters.md](docs/adapters.md)).
 
 ### Tools
 
-| Tool | Connected with | Customer per repository | Key renewal | Unassigned folders |
+| Tool | Connected with | Customer | Key renewal | In a folder without a customer |
 | --- | --- | --- | --- | --- |
-| Claude Code CLI | `vkm setup claude` | ✅ | ✅ | blocked |
-| Claude Code for VS Code | `vkm setup claude` | ✅ | ✅ | blocked |
-| Codex CLI | `vkm setup codex` + shell hook | ✅ | ✅ | blocked |
-| OpenCode v1 | `vkm setup opencode` | ✅ | ✅ | blocked |
-| OpenCode v2 | `vkm run opencode` | ✅ | ✅ | blocked |
-| GitHub Copilot Chat in VS Code | the Virtual Key Mapper extension | ✅ (status bar) | ✅ | asks for a customer |
-| any of the above, one launch | `vkm run [--customer NAME] TOOL` | ✅ (or the one you give) | ✅ | blocked |
+| Claude Code CLI | `vkm setup claude` | per repository, checked before each prompt | ✅ | the prompt is blocked |
+| Claude Code for VS Code | `vkm setup claude` + `"claudeCode.disableLoginPrompt": true` | per repository, checked before each prompt | ✅ | the prompt is blocked |
+| Codex CLI | `vkm setup codex` + the shell hook | of the folder where Codex starts | ✅ | no key is sent; the gateway refuses |
+| OpenCode v1 | `vkm setup opencode` | per request, of the folder OpenCode runs in | ✅ | the request is blocked |
+| OpenCode v2 | `vkm run opencode` (`setup` refuses v2) | fixed at launch | ❌ key from launch time; restart when it expires | as for `vkm run` |
+| GitHub Copilot Chat in VS Code | the Virtual Key Mapper extension | per workspace folder, shown in the status bar | ✅ | blocked, with an "Assign customer" button that runs `vkm repo bind` |
+| any of the above, one launch | `vkm run [--customer NAME] TOOL` | fixed at launch (or the one you give) | ✅ (OpenCode v2: ❌) | asks in a terminal and saves your choice; blocked without a terminal or outside Git |
 | Codex for VS Code | not supported yet | | | |
 | Copilot inline completions | not possible: they always use GitHub's models | | | |
 
 ### Platforms
 
-| | Windows | macOS | Linux | Dev container, SSH, WSL |
-| --- | --- | --- | --- | --- |
-| CLI and all tools above | ✅ | ✅ | ✅ | ✅ (relayed from your computer) |
-| Credential vault | Credential Manager | Keychain | Secret Service / KWallet | none needed |
-| Shell hooks | PowerShell 5.1 and 7 (also where scripts are blocked), bash | bash, zsh, fish, PowerShell 7 | bash, zsh, fish, PowerShell 7 | as on Linux |
-| VS Code extensions | ✅ | ✅ | ✅ | ✅ |
+✅ = tested in CI on every push, with the real tools (pinned in `ci/agents`, plus a weekly
+run with their latest releases) against a local test gateway. ☑️ = supported and checked by
+hand with the [manual checklist](docs/testing.md#manual-checklist).
 
-Every cell is tested in CI on that platform, against the real tools and a local test gateway;
-see [docs/testing.md](docs/testing.md).
+| | Windows | macOS | Linux | Dev container | SSH, WSL |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code CLI, Codex CLI, OpenCode v1 | ✅ (interactive Codex ☑️) | ✅ | ✅ | ✅ Claude Code and Codex, ☑️ OpenCode | ☑️ |
+| Claude Code for VS Code, Copilot Chat, OpenCode v2 | ☑️ | ☑️ | ☑️ | ☑️ | ☑️ |
+| Credential vault | ✅ Credential Manager | ✅ Keychain | ✅ Secret Service (GNOME Keyring), ☑️ KWallet | not needed | not needed |
+| Shell hooks | ✅ PowerShell 7, bash; ☑️ Windows PowerShell 5.1 and PCs that block scripts (`shell-init pwsh --terminal`) | ✅ bash, zsh, fish, PowerShell 7 | ✅ bash, zsh, fish, PowerShell 7 | as on Linux | as on Linux |
+| VS Code extensions | ✅ in a VS Code extension host | ✅ in an extension host, with the relay | ✅ in an extension host, with the relay | ✅ relay in a real dev container | ☑️ |
 
 ### Choosing the customer
 
-| Source | Who sets it | Scope |
+First match wins:
+
+| Source | Who sets it | Applies to |
 | --- | --- | --- |
-| `--customer NAME` or `VKM_CUSTOMER` | you, for one launch | one process |
-| `vkm repo bind` | you | that repository, every clone of it, only for you |
-| a committed `.vkm` file (`vkm repo bind --shared`) | the team | the folder and everything below it |
+| `vkm run --customer NAME` | you | that launch |
+| `VKM_CUSTOMER` | you | every process started with the variable set |
+| `vkm repo bind` | you | clones of that repository on this computer (same origin, or it as upstream), only for you |
+| a committed `.vkm` file (`vkm repo bind --shared` writes it at the repository root) | the team | that folder and everything below it, unless a nearer `.vkm` exists |
 | central rules (a JSON file or URL in the profile) | your organisation | repositories matching a pattern, e.g. `github.com/acme-*/**` |
 
 ## 🚀 Quick start
@@ -73,7 +80,7 @@ see [docs/testing.md](docs/testing.md).
 Needs Python 3.11 or newer and an OS credential vault.
 
 ```bash
-uv tool install git+https://github.com/cbs-consulting/virtual-key-mapper    # or: pipx install git+...
+uv tool install git+https://github.com/cbs-consulting/virtual-key-mapper    # or: pipx install git+https://...
 ```
 
 From a checkout instead:
@@ -116,12 +123,14 @@ The customer of a directory is chosen in this order (first match wins):
 
 1. `--customer NAME` (for `run`) or the environment variable `VKM_CUSTOMER`;
 2. your personal assignment: `vkm repo bind --customer NAME`, stored only for you
-   (`repositories.json`), keyed by the repository's `origin`/`upstream` address, so every
-   clone shares it;
+   (`repositories.json` on this computer), keyed by the repository's `origin`/`upstream`
+   address, so every clone on this computer shares it;
 3. the nearest committed `.vkm` file (`customer = "NAME"`), written with
    `repo bind --shared`; a file in a parent folder such as `~/src/acme/` covers all
-   repositories below it; the search stops below your home directory, so a file in it or
-   above it never applies (`repo bind --shared` refuses to write one there);
+   repositories below it, and a nearer file wins. Inside your home folder the search stops
+   below home, so a file in home or above it never applies (`repo bind --shared` refuses to
+   write one there); for folders outside home, such as `/workspaces` in a dev container or
+   another drive on Windows, it goes up to the root of the drive;
 4. central rules of the profile (`profile add --rules URL|PATH` or `profile update NAME --rules ...`):
    ```json
    {"version": 1,
@@ -203,7 +212,7 @@ code --install-extension vkm.vsix   # or Extensions → ··· → Install from 
 ```
 
 Set `vkm.command` in your VS Code user settings to how the CLI runs, e.g.
-`["/path/to/.venv/bin/python", "-m", "virtual_key_mapper"]`. Pick an "vkm"
+`["/path/to/.venv/bin/python", "-m", "virtual_key_mapper"]`. Pick a "Virtual Key Mapper"
 model in Copilot Chat; the status bar shows the customer. If you use VS Code profiles,
 install the extension in the profile you work in. Inline completions and next-edit
 suggestions always use GitHub's models and are not attributed.
@@ -213,13 +222,14 @@ suggestions always use GitHub's models and are not attributed.
 The container gets short-lived tokens from the sign-in on your own computer; nothing
 long-lived is stored inside it.
 
-1. Local VS Code: install `vscode-extension/local/vkm-local.vsix`
+1. Local VS Code: build the companion (`cd vscode-extension && npm ci && cd local && npm run package`)
+   and install `vscode-extension/local/vkm-local.vsix`
    ("Virtual Key Mapper: local sign-in") and set `vkm.localCommand` in your user
    settings to the local CLI command. Containers get tokens only for your local default
    profile; list others in `vkm.localProfiles` (user settings) to allow them.
 2. In the container: install the CLI, e.g.
    `uv tool install --python 3.12 "git+https://github.com/cbs-consulting/virtual-key-mapper@BRANCH_OR_COMMIT"`
-   (or a Dev Container feature), and install `vscode-extension/vkm.vsix` into
+   and install `vscode-extension/vkm.vsix` (`npm run package` in `vscode-extension/`) into
    the container (Install from VSIX → Show Local). Reload the window.
 3. The extension creates a container profile that uses your local sign-in
    (`vkm profile list` shows `forwarded`). Do not run `login` in the container.

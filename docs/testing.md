@@ -44,6 +44,14 @@ corresponding parts, and before a release:
 - **Interactive Codex on Windows** (CI drives the interactive UI only on Linux and macOS): in a new
   PowerShell window with the hook, plain `codex` in a mapped repository answers with the customer, also
   after `codex app-server daemon start` from another folder (the hook's `codex` adds `--no-daemon`).
+- **Windows PowerShell 5.1 where scripts are blocked** (CI runs PowerShell 7 with a bypassed policy): the
+  `vkm shell-init pwsh --terminal` command line in a Windows Terminal or VS Code profile loads the hook,
+  and `Get-Command codex` shows `Function`.
+- **OpenCode v2** (CI pins OpenCode v1): `vkm run opencode` in a mapped repository answers with the
+  customer; `vkm setup opencode` refuses v2.
+- **OpenCode in a dev container** (the dev container job runs Claude Code and Codex): `opencode run` in
+  the container answers with the customer.
+- **KWallet** (CI uses GNOME Keyring): `vkm login`, a renewal and `vkm logout` on a KDE desktop.
 - **Claude Code extension**: after `setup claude` and `claudeCode.disableLoginPrompt`, a new conversation
   works without a Claude login; an unmapped repository is blocked with the guard's message; the launch
   folder in multi-root workspaces resolves the expected customer.

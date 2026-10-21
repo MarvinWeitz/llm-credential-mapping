@@ -6,7 +6,7 @@ container the relay (the main extension's code) listens on the CLI's socket and 
 container, against the host's fake gateway (shared network), and check that only short-lived
 access tokens ever reach the container.
 
-Opt-in: VKM_TEST_DEVCONTAINER=1, plus LLMC_GATEWAY (the fake gateway's origin) and
+Opt-in: VKM_TEST_DEVCONTAINER=1, plus VKM_CI_GATEWAY (the fake gateway's origin) and
 the agent binaries from ci/agents/locate.mjs.
 """
 
@@ -30,7 +30,7 @@ CUSTOMER = "customer:container"
 @binary_tests("devcontainer", "VKM_TEST_DEVCONTAINER")
 class DevContainerTests(unittest.TestCase):
     def setUp(self):
-        self.gateway = os.environ["LLMC_GATEWAY"]
+        self.gateway = os.environ["VKM_CI_GATEWAY"]
         temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)  # Codex clones plugins in the background.
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()

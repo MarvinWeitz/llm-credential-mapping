@@ -24,7 +24,7 @@ of the workspace folder you are working in. Nothing is stored in VS Code.
 
 ## Use
 
-Choose an "vkm" model in the Copilot Chat model picker. The status bar
+Choose a "Virtual Key Mapper" model in the Copilot Chat model picker. The status bar
 shows the customer of the current folder; in multi-root workspaces the active
 editor's folder wins, and the status bar lets you choose a folder or assign a
 customer. "Virtual Key Mapper: Sign in" opens a terminal running `vkm login`.
