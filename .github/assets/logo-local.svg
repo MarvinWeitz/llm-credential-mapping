@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <rect x="4" y="4" width="112" height="112" rx="24" fill="#EE7D01" />
+  <!-- the key stays on your computer; remote windows only get it relayed -->
+  <g transform="translate(6 0)">
+    <rect x="16" y="36" width="46" height="32" rx="5" fill="#FFFFFF" />
+    <rect x="11" y="71" width="56" height="7" rx="3.5" fill="#FADBB8" />
+    <circle cx="30" cy="52" r="7" fill="none" stroke="#EE7D01" stroke-width="4" />
+    <path d="M37 52 H52 M47 52 V58 M52 52 V56" fill="none" stroke="#EE7D01" stroke-width="4" stroke-linecap="round" />
+    <path d="M66 52 C72 52 72 36 78 36 M66 52 C72 52 72 72 78 72" fill="none" stroke="#FCEAD6" stroke-width="4" stroke-linecap="round" stroke-dasharray="1 7" />
+    <rect x="79.25" y="26.25" width="17.5" height="17.5" rx="5" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-dasharray="4 3" />
+    <rect x="79.25" y="62.25" width="17.5" height="17.5" rx="5" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-dasharray="4 3" />
+  </g>
+</svg>

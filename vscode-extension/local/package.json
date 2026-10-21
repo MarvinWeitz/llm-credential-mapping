@@ -4,6 +4,7 @@
   "description": "Relays your local vkm sign-in into dev containers and other remote windows; nothing is stored there.",
   "version": "0.2.0",
   "publisher": "cbs-consulting",
+  "icon": "images/icon.png",
   "private": true,
   "license": "Apache-2.0",
   "repository": {
