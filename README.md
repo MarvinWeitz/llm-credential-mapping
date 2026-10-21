@@ -1,36 +1,91 @@
-# Virtual Key Mapper
+<div align="center">
 
-`vkm` signs you in to your company's LLM gateway once and lets your coding
-tools use it: every request carries a short-lived credential and the **customer** of the
-repository you are working in, so gateway spend can be attributed per customer.
+<img src=".github/assets/logo.svg" alt="" width="120" />
 
-| Tool | How it is connected |
-| --- | --- |
-| Claude Code (CLI and VS Code extension) | `vkm setup claude` |
-| Codex CLI | `vkm setup codex` + a shell hook |
-| OpenCode (v1) | `vkm setup opencode` |
-| GitHub Copilot Chat in VS Code | the VS Code extension in `vscode-extension/` |
-| Dev Containers (and SSH/WSL windows) | the companion extension relays your local sign-in |
+# cbs Virtual Key Mapper
 
-Gateway today: **LiteLLM** with its native CLI single sign-on. The design keeps gateway,
-sign-in method and tools independent; see [docs/architecture.md](docs/architecture.md).
+**Short-lived keys from your company gateway, attributed to the right customer, for every tool you use.**
 
-## Install
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.11-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-0F4C5C)](#-what-works-where)
+[![Gateway](https://img.shields.io/badge/gateway-LiteLLM-0F4C5C)](docs/architecture.md#11-gateway-requirements)
 
-Python 3.11 or newer and an OS credential vault (Windows Credential Manager, macOS
-Keychain, or Secret Service/KWallet on Linux). From a checkout:
+</div>
+
+---
+
+`vkm` signs you in to your company's gateway once, with its single sign-on. From then on your
+tools get short-lived keys from it, and every request carries the **customer** of the
+repository you are working in. Spend is attributed per customer without anyone pasting API
+keys into config files, and nothing goes out without a customer.
+
+`vkm` does not depend on a particular gateway or tool. Gateways, sign-in methods and tools
+are separate adapters ([docs/adapters.md](docs/adapters.md)), so new ones can be added
+without touching the rest.
+
+## ✨ What works where
+
+### Gateways and sign-in
+
+| Gateway | Sign-in | What the gateway receives |
+| --- | --- | --- |
+| [LiteLLM](https://github.com/BerriAI/litellm) | Native CLI single sign-on in the browser, with team choice; the refresh token stays in the OS vault | the SSO user and team, the customer as a request tag (`x-litellm-tags`), the repository and how the customer was chosen as spend-log metadata |
+| any gateway, from a dev container, SSH or WSL window | `forwarded`: short-lived keys from the sign-in on your own computer | the same as above |
+
+### Tools
+
+| Tool | Connected with | Customer per repository | Key renewal | Unassigned folders |
+| --- | --- | --- | --- | --- |
+| Claude Code CLI | `vkm setup claude` | ✅ | ✅ | blocked |
+| Claude Code for VS Code | `vkm setup claude` | ✅ | ✅ | blocked |
+| Codex CLI | `vkm setup codex` + shell hook | ✅ | ✅ | blocked |
+| OpenCode v1 | `vkm setup opencode` | ✅ | ✅ | blocked |
+| OpenCode v2 | `vkm run opencode` | ✅ | ✅ | blocked |
+| GitHub Copilot Chat in VS Code | the Virtual Key Mapper extension | ✅ (status bar) | ✅ | asks for a customer |
+| any of the above, one launch | `vkm run [--customer NAME] TOOL` | ✅ (or the one you give) | ✅ | blocked |
+| Codex for VS Code | not supported yet | | | |
+| Copilot inline completions | not possible: they always use GitHub's models | | | |
+
+### Platforms
+
+| | Windows | macOS | Linux | Dev container, SSH, WSL |
+| --- | --- | --- | --- | --- |
+| CLI and all tools above | ✅ | ✅ | ✅ | ✅ (relayed from your computer) |
+| Credential vault | Credential Manager | Keychain | Secret Service / KWallet | none needed |
+| Shell hooks | PowerShell 5.1 and 7 (also where scripts are blocked), bash | bash, zsh, fish, PowerShell 7 | bash, zsh, fish, PowerShell 7 | as on Linux |
+| VS Code extensions | ✅ | ✅ | ✅ | ✅ |
+
+Every cell is tested in CI on that platform, against the real tools and a local test gateway;
+see [docs/testing.md](docs/testing.md).
+
+### Choosing the customer
+
+| Source | Who sets it | Scope |
+| --- | --- | --- |
+| `--customer NAME` or `VKM_CUSTOMER` | you, for one launch | one process |
+| `vkm repo bind` | you | that repository, every clone of it, only for you |
+| a committed `.vkm` file (`vkm repo bind --shared`) | the team | the folder and everything below it |
+| central rules (a JSON file or URL in the profile) | your organisation | repositories matching a pattern, e.g. `github.com/acme-*/**` |
+
+## 🚀 Quick start
+
+Needs Python 3.11 or newer and an OS credential vault.
+
+```bash
+uv tool install git+https://github.com/cbs-consulting/virtual-key-mapper    # or: pipx install git+...
+```
+
+From a checkout instead:
 
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -e .          # Windows: .venv\Scripts\python.exe -m pip install -e .
-.venv/bin/python -m virtual_key_mapper --help
 ```
 
-`vkm` is the installed command. If your machine blocks pip-generated `.exe`
-launchers (some Windows policies do), use `python -m virtual_key_mapper` everywhere
-instead; it accepts the same arguments.
-
-## Quickstart
+`vkm` is the installed command. If your machine blocks pip-generated `.exe` launchers (some
+Windows policies do), use `python -m virtual_key_mapper` everywhere instead; it accepts the
+same arguments.
 
 ```bash
 # 1. Once per machine: a profile for your gateway and your business-unit team, then sign in.
@@ -55,7 +110,7 @@ long pause or a change of team membership.
 The gateway must be served at its host root with LiteLLM's `PROXY_BASE_URL` set to that URL
 (see [Gateway requirements](docs/architecture.md#11-gateway-requirements)).
 
-## Customers
+## 🧭 Customers
 
 The customer of a directory is chosen in this order (first match wins):
 
@@ -85,7 +140,7 @@ Gateway settings that break or leak attribution (tag routing, client-side tag re
 header forwarding) and why the picker needs the rules' `customers` list are listed in
 [Gateway requirements](docs/architecture.md#11-gateway-requirements).
 
-## Tools
+## 🧩 Tools
 
 ### Claude Code (CLI and the official VS Code extension)
 
@@ -153,7 +208,7 @@ model in Copilot Chat; the status bar shows the customer. If you use VS Code pro
 install the extension in the profile you work in. Inline completions and next-edit
 suggestions always use GitHub's models and are not attributed.
 
-## Dev Containers, SSH and WSL
+## 🐳 Dev Containers, SSH and WSL
 
 The container gets short-lived tokens from the sign-in on your own computer; nothing
 long-lived is stored inside it.
@@ -172,7 +227,7 @@ long-lived is stored inside it.
 All tools work in the container as described above. Personal `repo bind` assignments made
 inside a container live in the container.
 
-## Where things are stored
+## 🗂️ Where things are stored
 
 | What | Where |
 | --- | --- |
@@ -180,13 +235,13 @@ inside a container live in the container.
 | Sign-in (access and refresh token) | the OS credential vault only; never in files |
 | Claude / Codex / OpenCode configuration | each tool's own user configuration, changed only by `setup` |
 
-## Commands
+## ⌨️ Commands
 
 `profile add|list|show|use|update`, `login`, `status`, `token [--json]`, `logout`,
 `repo show|bind|unbind|list`, `tags list`, `setup claude|codex|opencode`, `run`,
 `shell-init`, and `claude guard` (the hook). `vkm COMMAND --help` explains each.
 
-## Development
+## 🛠️ Contributing
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
@@ -210,5 +265,10 @@ macOS and Linux: the Python suite, the live agents and shell hooks, the real OS 
 in a real VS Code, and a real dev container on Linux; a weekly run tries the newest agent releases.
 Details and the manual checklist: [docs/testing.md](docs/testing.md). How it works and why:
 [docs/architecture.md](docs/architecture.md); extending it: [docs/adapters.md](docs/adapters.md).
-This is an independent project, not an official LiteLLM client, and has no open-source
-license assigned yet.
+
+## 📄 License
+
+Copyright © 2026 cbs Corporate Business Solutions Unternehmensberatung GmbH.
+Licensed under the [Apache License 2.0](LICENSE).
+
+<sub>LiteLLM is a project of BerriAI. Claude Code is a product of Anthropic, Codex of OpenAI, OpenCode of SST, GitHub Copilot and VS Code of GitHub and Microsoft. This project is not affiliated with or endorsed by any of them.</sub>
