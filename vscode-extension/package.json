@@ -4,6 +4,7 @@
   "description": "Gateway models in Copilot Chat with your vkm sign-in and each workspace's customer.",
   "version": "0.2.0",
   "publisher": "cbs-consulting",
+  "icon": "images/icon.png",
   "private": true,
   "license": "Apache-2.0",
   "repository": {
