@@ -1,6 +1,6 @@
 # Adding a gateway, sign-in kind or tool
 
-Each is one module plus one line in `src/llm_credential_mapping/registry.py`. The interfaces
+Each is one module plus one line in `src/virtual_key_mapper/registry.py`. The interfaces
 are in `adapters.py`; background in [architecture.md](architecture.md#3-adapters-why-the-core-knows-no-vendor).
 `tests/test_adapters.py` contains a complete worked example (`FakeGateway`, `FixedKeyAuth`)
 that runs through every integration and the CLI.

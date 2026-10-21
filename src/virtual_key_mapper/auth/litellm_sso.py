@@ -139,10 +139,10 @@ class SessionManager:
         with self._locked(profile):
             session = self._load(profile)
             if session is None:
-                raise CredentialError(f"No login for '{profile.name}'; run 'llm-credentials login --profile {profile.name}'.")
+                raise CredentialError(f"No login for '{profile.name}'; run 'vkm login --profile {profile.name}'.")
             if expected_user is not None and session.user_id != expected_user:
                 raise CredentialError("The signed-in employee changed; start a new agent session. No credential returned.")
-            command = f"'llm-credentials login --profile {profile.name}'"
+            command = f"'vkm login --profile {profile.name}'"
             relogin = f"run {command}"
             if session.blocked:
                 raise CredentialError(f"The sign-in for '{profile.name}' must not be used any more; {relogin}.")
@@ -291,6 +291,6 @@ class LiteLLMSSO:
         if session.needs_login:
             notice = (
                 f"Warning: the sign-in for '{self.profile.name}' can no longer be renewed; this token works until it "
-                f"expires. Run 'llm-credentials login --profile {self.profile.name}'."
+                f"expires. Run 'vkm login --profile {self.profile.name}'."
             )
         return Credential(session.access_token, session.expires_at, session.user_id, notice)

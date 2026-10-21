@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from llm_credential_mapping.adapters import Credential
-from llm_credential_mapping.cli import main
-from llm_credential_mapping.customers import Tag
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.repositories import Checkout, RepositoryStore
+from virtual_key_mapper.adapters import Credential
+from virtual_key_mapper.cli import main
+from virtual_key_mapper.customers import Tag
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.profiles import Profile, ProfileStore
+from virtual_key_mapper.repositories import Checkout, RepositoryStore
 
 
 class CustomerCliTests(unittest.TestCase):
@@ -26,10 +26,10 @@ class CustomerCliTests(unittest.TestCase):
         self.work = self.home / "work"
         self.work.mkdir()
         self.checkout = Checkout(self.work, self.repository, None)
-        # Run in a folder whose .llm-customer search ends at the temporary home directory.
+        # Run in a folder whose .vkm search ends at the temporary home directory.
         for patcher in (
-            patch("llm_credential_mapping.cli.Path.cwd", return_value=self.work),
-            patch("llm_credential_mapping.customers.Path.home", return_value=self.home),
+            patch("virtual_key_mapper.cli.Path.cwd", return_value=self.work),
+            patch("virtual_key_mapper.customers.Path.home", return_value=self.home),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -40,7 +40,7 @@ class CustomerCliTests(unittest.TestCase):
             return main(["--home", str(self.home), *args])
 
     def test_profile_commands_preserve_the_profile_and_its_identity(self):
-        with patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+        with patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError):
             self.assertEqual(self.call("profile", "list"), 0)
             self.assertEqual(self.call("profile", "use", "consulting"), 0)
         self.assertEqual(self.store.get(), self.profile)
@@ -48,23 +48,23 @@ class CustomerCliTests(unittest.TestCase):
 
     def test_picker_filters_the_catalogue_by_prefix(self):
         stdin = io.StringIO("1\n")
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as manager, \
-                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as manager, \
+                patch("virtual_key_mapper.cli.sys.stdin", stdin), \
                 patch.object(stdin, "isatty", return_value=True), \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("other"), Tag("customer:B")]), \
-                patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
+                patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=[Tag("other"), Tag("customer:B")]), \
+                patch("virtual_key_mapper.cli.launch", return_value=0) as launch:
             manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("run", "--tag-prefix", "customer:", "claude"), 0)
         self.assertEqual(launch.call_args.args[2].customer, "customer:B")
 
     def test_explicit_customer_needs_neither_git_nor_catalogue_and_is_not_saved(self):
-        with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as manager, \
-                patch("llm_credential_mapping.cli.find_checkout", return_value=None), \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", side_effect=AssertionError), \
-                patch("llm_credential_mapping.cli.launch", return_value=7) as launch:
+        with patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as manager, \
+                patch("virtual_key_mapper.cli.find_checkout", return_value=None), \
+                patch("virtual_key_mapper.gateways.litellm.list_tags", side_effect=AssertionError), \
+                patch("virtual_key_mapper.cli.launch", return_value=7) as launch:
             manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("run", "--profile", "consulting", "--customer", "customer:B", "claude"), 7)
         self.assertEqual(launch.call_args.args[2].customer, "customer:B")
@@ -75,24 +75,24 @@ class CustomerCliTests(unittest.TestCase):
 
     def test_bound_customer_skips_picker_and_catalogue(self):
         RepositoryStore(self.store).bind(self.profile.gateway, self.repository, "customer:A")
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as manager, \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", side_effect=AssertionError), \
-                patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as manager, \
+                patch("virtual_key_mapper.gateways.litellm.list_tags", side_effect=AssertionError), \
+                patch("virtual_key_mapper.cli.launch", return_value=0) as launch:
             manager.return_value.credential.return_value = Credential("same-secret")
             self.assertEqual(self.call("run", "claude"), 0)
         self.assertEqual(launch.call_args.args[2].customer, "customer:A")
 
     def test_unknown_repo_interactive_selection_is_persisted_once(self):
         stdin = io.StringIO("2\n")
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as manager, \
-                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as manager, \
+                patch("virtual_key_mapper.cli.sys.stdin", stdin), \
                 patch.object(stdin, "isatty", return_value=True), \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A"), Tag("customer:B")]) as catalogue, \
-                patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
+                patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=[Tag("customer:A"), Tag("customer:B")]) as catalogue, \
+                patch("virtual_key_mapper.cli.launch", return_value=0) as launch:
             manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("run", "--tag-prefix", "customer:", "claude"), 0)
         self.assertEqual(launch.call_args.args[2].customer, "customer:B")
@@ -101,10 +101,10 @@ class CustomerCliTests(unittest.TestCase):
 
     def test_noninteractive_unbound_repo_never_launches_or_reads_secrets(self):
         stdin = io.StringIO()
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
-                patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError), \
-                patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.sys.stdin", stdin), \
+                patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError), \
+                patch("virtual_key_mapper.cli.launch", side_effect=AssertionError):
             self.assertEqual(self.call("run", "claude"), 1)
         self.assertIn("--customer", self.stderr.getvalue())
         self.assertFalse((self.home / "repositories.json").exists())
@@ -116,45 +116,45 @@ class CustomerCliTests(unittest.TestCase):
         ):
             stdin = io.StringIO(answer)
             with self.subTest(catalogue=catalogue, answer=answer), \
-                    patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                    patch("llm_credential_mapping.cli.NativeKeyring"), \
-                    patch("llm_credential_mapping.cli.auth_for"), \
-                    patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+                    patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                    patch("virtual_key_mapper.cli.NativeKeyring"), \
+                    patch("virtual_key_mapper.cli.auth_for"), \
+                    patch("virtual_key_mapper.cli.sys.stdin", stdin), \
                     patch.object(stdin, "isatty", return_value=True), \
-                    patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=catalogue), \
-                    patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
+                    patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=catalogue), \
+                    patch("virtual_key_mapper.cli.launch", side_effect=AssertionError):
                 self.assertEqual(self.call("run", "claude"), 1)
             self.assertFalse((self.home / "repositories.json").exists())
 
     def test_empty_gateway_catalogue_points_to_central_rules(self):
         stdin = io.StringIO("1\n")
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for"), \
-                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for"), \
+                patch("virtual_key_mapper.cli.sys.stdin", stdin), \
                 patch.object(stdin, "isatty", return_value=True), \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[]), \
-                patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
+                patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=[]), \
+                patch("virtual_key_mapper.cli.launch", side_effect=AssertionError):
             self.assertEqual(self.call("run", "claude"), 1)
         self.assertIn("central rules", self.stderr.getvalue())
         self.assertIn("--customer", self.stderr.getvalue())
 
     def test_picker_catalogue_failure_is_reported_not_guessed(self):
         stdin = io.StringIO("1\n")
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for"), \
-                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for"), \
+                patch("virtual_key_mapper.cli.sys.stdin", stdin), \
                 patch.object(stdin, "isatty", return_value=True), \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", side_effect=CredentialError("Tag catalogue HTTP 403")), \
-                patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
+                patch("virtual_key_mapper.gateways.litellm.list_tags", side_effect=CredentialError("Tag catalogue HTTP 403")), \
+                patch("virtual_key_mapper.cli.launch", side_effect=AssertionError):
             self.assertEqual(self.call("run", "claude"), 1)
         self.assertIn("403", self.stderr.getvalue())
         self.assertFalse((self.home / "repositories.json").exists())
 
     def test_binding_and_unbinding_explicit_customer_need_no_keyring(self):
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError):
             self.assertEqual(self.call("repo", "bind", "--customer", "customer:A"), 0)
             self.assertEqual(self.call("repo", "bind", "--customer", "customer:B"), 0)
             self.assertEqual(self.call("repo", "list"), 0)
@@ -165,16 +165,16 @@ class CustomerCliTests(unittest.TestCase):
     def test_explicit_override_does_not_modify_repository_default(self):
         repositories = RepositoryStore(self.store)
         repositories.bind(self.profile.gateway, self.repository, "customer:A")
-        with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for"), \
-                patch("llm_credential_mapping.cli.launch", return_value=0):
+        with patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for"), \
+                patch("virtual_key_mapper.cli.launch", return_value=0):
             self.assertEqual(self.call("run", "--customer", "customer:B", "claude"), 0)
         self.assertEqual(repositories.get(self.profile.gateway, self.repository), "customer:A")
 
     def test_tag_list_json_has_only_nonsecret_catalogue_fields(self):
-        with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as manager, \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A", "Customer A")]) as catalogue:
+        with patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as manager, \
+                patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=[Tag("customer:A", "Customer A")]) as catalogue:
             manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("tags", "list", "--profile", "consulting", "--prefix", "customer:", "--json"), 0)
         self.assertEqual(json.loads(self.stdout.getvalue()), [{"name": "customer:A", "description": "Customer A"}])
@@ -182,9 +182,9 @@ class CustomerCliTests(unittest.TestCase):
         self.assertEqual(self.stderr.getvalue(), "")
 
     def test_terminal_control_characters_in_tag_catalogue_are_escaped(self):
-        with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for"), \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A", "\x1b[31msecret-looking\ntext")]):
+        with patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for"), \
+                patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=[Tag("customer:A", "\x1b[31msecret-looking\ntext")]):
             self.assertEqual(self.call("tags", "list"), 0)
         self.assertNotIn("\x1b", self.stdout.getvalue())
         self.assertIn("\\u001b", self.stdout.getvalue())
@@ -192,8 +192,8 @@ class CustomerCliTests(unittest.TestCase):
     def show(self, checkout=None):
         self.stdout.truncate(0)
         self.stdout.seek(0)
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError):
             result = self.call("repo", "show", "--json")
         return result, json.loads(self.stdout.getvalue()) if result == 0 else None
 
@@ -217,21 +217,21 @@ class CustomerCliTests(unittest.TestCase):
             json.loads(shown["headers"]["x-litellm-spend-logs-metadata"]),
             {"customer_source": "rules", "repository": self.repository},
         )
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout):
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout):
             self.assertEqual(self.call("repo", "bind", "--shared", "--customer", "customer:file"), 0)
         self.assertEqual(
-            (self.work / ".llm-customer").read_text(encoding="utf-8").splitlines()[-1], 'customer = "customer:file"',
+            (self.work / ".vkm").read_text(encoding="utf-8").splitlines()[-1], 'customer = "customer:file"',
         )
         self.assertEqual(self.show(self.checkout)[1]["source"], "file")
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout):
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout):
             self.assertEqual(self.call("repo", "bind", "--customer", "customer:mine"), 0)
         self.assertEqual(self.show(self.checkout)[1]["customer"], "customer:mine")
-        with patch.dict("os.environ", {"LLM_CREDENTIALS_CUSTOMER": "customer:env"}):
+        with patch.dict("os.environ", {"VKM_CUSTOMER": "customer:env"}):
             self.assertEqual(self.show(self.checkout)[1]["customer"], "customer:env")
 
     def test_shared_file_assigns_folders_outside_git(self):
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=None), \
-                patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=None), \
+                patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError):
             self.assertEqual(self.call("repo", "bind", "--customer", "customer:A"), 1)
             self.assertIn("--shared", self.stderr.getvalue())
             self.assertEqual(self.call("repo", "bind", "--shared", "--customer", "customer:A"), 0)
@@ -243,25 +243,25 @@ class CustomerCliTests(unittest.TestCase):
         home = self.home / "users" / "me"  # Its parent stays inside the sandbox even if the refusal regresses.
         home.mkdir(parents=True)
         for root in (home, home.parent):
-            with self.subTest(root=root), patch("llm_credential_mapping.customers.Path.home", return_value=home), \
-                    patch("llm_credential_mapping.cli.find_checkout", return_value=Checkout(root, self.repository, None)), \
-                    patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+            with self.subTest(root=root), patch("virtual_key_mapper.customers.Path.home", return_value=home), \
+                    patch("virtual_key_mapper.cli.find_checkout", return_value=Checkout(root, self.repository, None)), \
+                    patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError):
                 self.assertEqual(self.call("repo", "bind", "--shared", "--customer", "customer:A"), 1)
                 self.assertIn("would be ignored", self.stderr.getvalue())
-                self.assertFalse((root / ".llm-customer").exists())
+                self.assertFalse((root / ".vkm").exists())
 
     def test_picker_prefers_the_rules_catalogue_and_saves_a_personal_override(self):
         rules = self.home / "rules.json"
         rules.write_text(json.dumps({"version": 1, "customers": [{"id": "customer:central"}]}), encoding="utf-8")
         self.call("profile", "update", "consulting", "--rules", str(rules))
         stdin = io.StringIO("1\n")
-        with patch("llm_credential_mapping.cli.find_checkout", return_value=self.checkout), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as manager, \
-                patch("llm_credential_mapping.cli.sys.stdin", stdin), \
+        with patch("virtual_key_mapper.cli.find_checkout", return_value=self.checkout), \
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as manager, \
+                patch("virtual_key_mapper.cli.sys.stdin", stdin), \
                 patch.object(stdin, "isatty", return_value=True), \
-                patch("llm_credential_mapping.gateways.litellm.list_tags", side_effect=AssertionError), \
-                patch("llm_credential_mapping.cli.launch", return_value=0) as launch:
+                patch("virtual_key_mapper.gateways.litellm.list_tags", side_effect=AssertionError), \
+                patch("virtual_key_mapper.cli.launch", return_value=0) as launch:
             manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(self.call("run", "claude"), 0)
         self.assertEqual(launch.call_args.args[2].customer, "customer:central")
@@ -278,6 +278,6 @@ class CustomerCliTests(unittest.TestCase):
                 self.assertEqual(self.call("profile", "update", "consulting", "--rules", location), 1)
 
     def test_invalid_customer_fails_before_keyring_or_launch(self):
-        with patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError), \
-                patch("llm_credential_mapping.cli.launch", side_effect=AssertionError):
+        with patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError), \
+                patch("virtual_key_mapper.cli.launch", side_effect=AssertionError):
             self.assertEqual(self.call("run", "--customer", "customer:A,customer:B", "claude"), 1)

@@ -1,11 +1,18 @@
 {
-  "name": "llm-credentials-local",
-  "displayName": "LLM Credentials: local sign-in",
-  "description": "Relays your local llm-credentials sign-in into dev containers and other remote windows; nothing is stored there.",
+  "name": "vkm-local",
+  "displayName": "Virtual Key Mapper: local sign-in",
+  "description": "Relays your local vkm sign-in into dev containers and other remote windows; nothing is stored there.",
   "version": "0.2.0",
-  "publisher": "llm-credentials",
+  "publisher": "cbs-consulting",
+  "icon": "images/icon.png",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cbs-consulting/virtual-key-mapper"
+  },
+  "homepage": "https://github.com/cbs-consulting/virtual-key-mapper#readme",
+  "bugs": "https://github.com/cbs-consulting/virtual-key-mapper/issues",
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -17,23 +24,23 @@
   ],
   "main": "./out/src/extension.js",
   "activationEvents": [
-    "onCommand:llmCredentials.local.request",
-    "onCommand:llmCredentials.local.signIn"
+    "onCommand:vkm.local.request",
+    "onCommand:vkm.local.signIn"
   ],
   "contributes": {
     "configuration": {
-      "title": "LLM Credentials: local sign-in",
+      "title": "Virtual Key Mapper: local sign-in",
       "properties": {
-        "llmCredentials.localCommand": {
+        "vkm.localCommand": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
           "scope": "application",
-          "markdownDescription": "How to run the `llm-credentials` CLI on this computer, also for dev container and SSH windows, e.g. `[\"C:\\\\path\\\\to\\\\venv\\\\Scripts\\\\python.exe\", \"-m\", \"llm_credential_mapping\"]`. Empty: `llmCredentials.command`, else `llm-credentials` from PATH."
+          "markdownDescription": "How to run the `vkm` CLI on this computer, also for dev container and SSH windows, e.g. `[\"C:\\\\path\\\\to\\\\venv\\\\Scripts\\\\python.exe\", \"-m\", \"virtual_key_mapper\"]`. Empty: `vkm.command`, else `vkm` from PATH."
         },
-        "llmCredentials.localProfiles": {
+        "vkm.localProfiles": {
           "type": "array",
           "items": {
             "type": "string"
@@ -46,15 +53,15 @@
     },
     "commands": [
       {
-        "command": "llmCredentials.local.signIn",
+        "command": "vkm.local.signIn",
         "title": "Sign in on this computer",
-        "category": "LLM Credentials"
+        "category": "Virtual Key Mapper"
       }
     ]
   },
   "scripts": {
     "compile": "node ../node_modules/typescript/bin/tsc -p .",
     "test": "node ../node_modules/typescript/bin/tsc -p . && node --test \"out/test/*.test.js\"",
-    "package": "node ../node_modules/typescript/bin/tsc -p . && node ../node_modules/@vscode/vsce/vsce package --no-dependencies --allow-missing-repository --skip-license --out llm-credentials-local.vsix"
+    "package": "node ../node_modules/typescript/bin/tsc -p . && node ../node_modules/@vscode/vsce/vsce package --no-dependencies --out vkm-local.vsix"
   }
 }

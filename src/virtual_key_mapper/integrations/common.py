@@ -9,8 +9,10 @@ from ..adapters import IntegrationContext
 from ..customers import Attribution
 from ..errors import CredentialError
 
-TOKEN_VARIABLE = "LLM_CREDENTIAL_MAPPING_TOKEN"
-CUSTOMER_VARIABLE = "LLM_CREDENTIAL_MAPPING_CUSTOMER"
+TOKEN_VARIABLE = "VKM_TOKEN"
+# The customer a launcher chose for its child. Not VKM_CUSTOMER: that one is the user's explicit override,
+# and the resolver must not mistake every launched tool for an explicit choice.
+CUSTOMER_VARIABLE = "VKM_LAUNCH_CUSTOMER"
 
 
 def child_environment(context: IntegrationContext, attribution: Attribution | None) -> dict[str, str]:
@@ -52,7 +54,7 @@ def shell_command(argv: Sequence[str]) -> str:
 
 def header_variable(name: str) -> str:
     """A fixed environment variable for one attribution header, for tools that read header values from the environment."""
-    return "LLM_CREDENTIALS_HEADER_" + re.sub(r"[^A-Z0-9]", "_", name.upper())
+    return "VKM_HEADER_" + re.sub(r"[^A-Z0-9]", "_", name.upper())
 
 
 def run(name: str, command: list[str], env: dict[str, str]) -> int:

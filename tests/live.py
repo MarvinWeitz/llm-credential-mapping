@@ -1,14 +1,14 @@
 """Opt-in tests against real tools and shells.
 
 Locally these tests skip when a tool is missing. CI lists what must be present in
-LLM_CREDENTIAL_MAPPING_REQUIRE (comma-separated: claude, codex, opencode, bash, zsh, fish, pwsh),
+VKM_REQUIRE (comma-separated: claude, codex, opencode, bash, zsh, fish, pwsh),
 so a missing tool fails there instead of passing silently as a skip.
 """
 
 import os
 import unittest
 
-REQUIRE_VARIABLE = "LLM_CREDENTIAL_MAPPING_REQUIRE"
+REQUIRE_VARIABLE = "VKM_REQUIRE"
 
 
 def required(name: str) -> bool:

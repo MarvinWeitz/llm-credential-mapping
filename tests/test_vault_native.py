@@ -1,7 +1,7 @@
 """Opt-in: the real OS credential vault (Windows Credential Manager, macOS Keychain, Secret Service).
 
 These tests write and remove entries in the vault of whoever runs them, under unique accounts, so they
-run only with LLM_CREDENTIAL_MAPPING_TEST_VAULT=1. CI sets it on every platform (on Linux inside a
+run only with VKM_TEST_VAULT=1. CI sets it on every platform (on Linux inside a
 D-Bus session with an unlocked GNOME keyring). The sign-in uses a local fake gateway; no secrets.
 """
 
@@ -15,9 +15,9 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.auth.litellm_sso import SessionManager, vault_account
-from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.storage import NativeKeyring
+from virtual_key_mapper.auth.litellm_sso import SessionManager, vault_account
+from virtual_key_mapper.profiles import Profile, ProfileStore
+from virtual_key_mapper.storage import NativeKeyring
 from live import binary_tests
 from test_oauth import OAuthFixture
 
@@ -36,7 +36,7 @@ class Clock:
         return self.now
 
 
-@binary_tests("vault", "LLM_CREDENTIAL_MAPPING_TEST_VAULT")
+@binary_tests("vault", "VKM_TEST_VAULT")
 class NativeVaultTests(unittest.TestCase):
     def setUp(self):
         self.vault = NativeKeyring()
@@ -113,7 +113,7 @@ class NativeVaultTests(unittest.TestCase):
             clock = Clock()
             manager = SessionManager(store, self.vault, clock=clock)
             self.accounts.append(vault_account(store.home, profile))
-            with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", fixture.browser):
+            with patch("virtual_key_mapper.auth.litellm_oauth.webbrowser.open", fixture.browser):
                 session = manager.login(profile, lambda message: None, timeout=10)
             self.assertEqual(session.user_id, "employee")
             self.assertEqual(manager.token(profile), fixture.access_token)

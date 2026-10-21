@@ -7,7 +7,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export const AGENT_VARIABLE = "LLM_CREDENTIALS_AGENT";
+export const AGENT_VARIABLE = "VKM_AGENT";
 export const OPERATIONS = ["token", "profile"] as const;
 const MAX_REQUEST = 65536;
 
@@ -22,9 +22,9 @@ export type Forward = (request: AgentRequest) => Promise<unknown>;
 /** The socket path; must match agent_path() in the CLI. */
 export function agentPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env[AGENT_VARIABLE]) return env[AGENT_VARIABLE]!;
-  if (env.XDG_RUNTIME_DIR) return path.join(env.XDG_RUNTIME_DIR, "llm-credentials", "agent.sock");
+  if (env.XDG_RUNTIME_DIR) return path.join(env.XDG_RUNTIME_DIR, "vkm", "agent.sock");
   const user = typeof process.getuid === "function" ? process.getuid() : os.userInfo().username;
-  return path.join(os.tmpdir(), `llm-credentials-${user}`, "agent.sock");
+  return path.join(os.tmpdir(), `vkm-${user}`, "agent.sock");
 }
 
 export function parseRequest(raw: string): AgentRequest {
@@ -38,7 +38,7 @@ export function parseRequest(raw: string): AgentRequest {
     value?.version !== 1 || !OPERATIONS.includes(value.operation) || typeof value.profile !== "string"
     || !/^([A-Za-z0-9][A-Za-z0-9._-]{0,63})?$/.test(value.profile)
   ) {
-    throw new Error("Unsupported request; update the llm-credentials CLI and the VS Code extensions together.");
+    throw new Error("Unsupported request; update the vkm CLI and the VS Code extensions together.");
   }
   return { operation: value.operation, profile: value.profile };
 }

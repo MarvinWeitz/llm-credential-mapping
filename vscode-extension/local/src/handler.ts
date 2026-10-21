@@ -1,4 +1,4 @@
-// Answers relay requests from remote windows with the local llm-credentials CLI; no vscode import, so it is testable.
+// Answers relay requests from remote windows with the local vkm CLI; no vscode import, so it is testable.
 // Only two operations exist, and only nonsecret profile details and short-lived access tokens are returned.
 
 export type Run = (args: string[]) => Promise<string>;
@@ -11,7 +11,7 @@ export type Answer = { ok: true; result: object } | { ok: false; error: string; 
 const PROFILE = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63})?$/;
 
 const notRelayed = (name: string) => new RunError(
-  `Profile '${name}' is not relayed from this computer; add it to llmCredentials.localProfiles in your local user settings.`);
+  `Profile '${name}' is not relayed from this computer; add it to vkm.localProfiles in your local user settings.`);
 
 /**
  * `allowed` comes from the local user settings, so neither the container nor a workspace can widen it. Empty allows
@@ -23,7 +23,7 @@ export async function answer(request: unknown, run: Run, allowed: string[]): Pro
     typeof value !== "object" || value === null || !["token", "profile"].includes(value.operation as string)
     || typeof value.profile !== "string" || !PROFILE.test(value.profile)
   ) {
-    return { ok: false, error: "Unsupported request; update both LLM Credentials extensions.", login: false, profile: "" };
+    return { ok: false, error: "Unsupported request; update both Virtual Key Mapper extensions.", login: false, profile: "" };
   }
   const requested = value.profile;
   const profile = allowed.length ? requested || allowed[0] : "";
@@ -42,7 +42,7 @@ export async function answer(request: unknown, run: Run, allowed: string[]): Pro
     check(shown.name);
     return { ok: true, result: { name: shown.name, gateway: shown.gateway, endpoints: shown.endpoints, rules: shown.rules ?? null } };
   } catch (error) {
-    const message = error instanceof RunError ? error.message : "The local llm-credentials CLI gave an unreadable answer.";
+    const message = error instanceof RunError ? error.message : "The local vkm CLI gave an unreadable answer.";
     return { ok: false, error: message, login: /\blogin\b/.test(message), profile };
   }
 }

@@ -1,11 +1,18 @@
 {
-  "name": "llm-credentials-vscode",
-  "displayName": "LLM Credentials for Copilot Chat",
-  "description": "Gateway models in Copilot Chat with your llm-credentials sign-in and each workspace's customer.",
+  "name": "vkm",
+  "displayName": "Virtual Key Mapper for Copilot Chat",
+  "description": "Gateway models in Copilot Chat with your vkm sign-in and each workspace's customer.",
   "version": "0.2.0",
-  "publisher": "llm-credentials",
+  "publisher": "cbs-consulting",
+  "icon": "images/icon.png",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cbs-consulting/virtual-key-mapper"
+  },
+  "homepage": "https://github.com/cbs-consulting/virtual-key-mapper#readme",
+  "bugs": "https://github.com/cbs-consulting/virtual-key-mapper/issues",
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -20,58 +27,58 @@
   "contributes": {
     "languageModelChatProviders": [
       {
-        "vendor": "llm-credentials",
-        "displayName": "LLM Credentials"
+        "vendor": "vkm",
+        "displayName": "Virtual Key Mapper"
       }
     ],
     "commands": [
       {
-        "command": "llmCredentials.showCustomer",
+        "command": "vkm.showCustomer",
         "title": "Show or choose the customer for Copilot Chat",
-        "category": "LLM Credentials"
+        "category": "Virtual Key Mapper"
       },
       {
-        "command": "llmCredentials.signIn",
+        "command": "vkm.signIn",
         "title": "Sign in",
-        "category": "LLM Credentials"
+        "category": "Virtual Key Mapper"
       },
       {
-        "command": "llmCredentials.refresh",
+        "command": "vkm.refresh",
         "title": "Refresh models and customer",
-        "category": "LLM Credentials"
+        "category": "Virtual Key Mapper"
       }
     ],
     "configuration": {
-      "title": "LLM Credentials",
+      "title": "Virtual Key Mapper",
       "properties": {
-        "llmCredentials.command": {
+        "vkm.command": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [
-            "llm-credentials"
+            "vkm"
           ],
           "scope": "machine",
-          "markdownDescription": "How to run the `llm-credentials` CLI on this machine (remote windows use the remote machine's own value), e.g. `[\"/path/to/venv/bin/llm-credentials\"]` or `[\"python\", \"-m\", \"llm_credential_mapping\"]`."
+          "markdownDescription": "How to run the `vkm` CLI on this machine (remote windows use the remote machine's own value), e.g. `[\"/path/to/venv/bin/vkm\"]` or `[\"python\", \"-m\", \"virtual_key_mapper\"]`."
         },
-        "llmCredentials.profile": {
+        "vkm.profile": {
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
           "description": "Profile to use; empty for the CLI's selected default."
         },
-        "llmCredentials.maxInputTokens": {
+        "vkm.maxInputTokens": {
           "type": "number",
           "default": 128000,
           "description": "Context size advertised to Copilot for gateway models (not discovered from the gateway)."
         },
-        "llmCredentials.maxOutputTokens": {
+        "vkm.maxOutputTokens": {
           "type": "number",
           "default": 16384,
           "description": "Output limit advertised to Copilot for gateway models."
         },
-        "llmCredentials.imageInput": {
+        "vkm.imageInput": {
           "type": "boolean",
           "default": false,
           "description": "Advertise image input; enable only if your gateway models accept images."
@@ -83,7 +90,7 @@
     "compile": "tsc -p .",
     "test": "tsc -p . && node --test \"out/test/*.test.js\"",
     "test:host": "tsc -p . && node test-host/run.js",
-    "package": "tsc -p . && vsce package --no-dependencies --allow-missing-repository --skip-license --out llm-credentials.vsix"
+    "package": "tsc -p . && vsce package --no-dependencies --out vkm.vsix"
   },
   "devDependencies": {
     "@types/node": "20.19.0",

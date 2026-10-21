@@ -8,17 +8,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.adapters import Credential, IntegrationContext
-from llm_credential_mapping.cli import main
-from llm_credential_mapping.customers import Attribution
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.integrations.claude import Claude, settings_path
-from llm_credential_mapping.integrations.common import CUSTOMER_VARIABLE, shell_command
-from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.registry import gateway_for
+from virtual_key_mapper.adapters import Credential, IntegrationContext
+from virtual_key_mapper.cli import main
+from virtual_key_mapper.customers import Attribution
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.integrations.claude import Claude, settings_path
+from virtual_key_mapper.integrations.common import CUSTOMER_VARIABLE, shell_command
+from virtual_key_mapper.profiles import Profile, ProfileStore
+from virtual_key_mapper.registry import gateway_for
 from isolation import isolate_tool_configuration
 
-ATTRIBUTION = Attribution("customer:A", "file", "/repo/.llm-customer", "github.com/acme/web")
+ATTRIBUTION = Attribution("customer:A", "file", "/repo/.vkm", "github.com/acme/web")
 HEADERS = 'x-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {"customer_source":"file","repository":"github.com/acme/web"}'
 
 
@@ -32,7 +32,7 @@ class ClaudeTestCase(unittest.TestCase):
         self.home = self.root / "credentials"
         self.home.mkdir()
         for name in (
-            "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "LLM_CREDENTIALS_CUSTOMER",
+            "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "VKM_CUSTOMER",
             CUSTOMER_VARIABLE, "CLAUDE_PROJECT_DIR",
         ):
             os.environ.pop(name, None)
@@ -58,7 +58,7 @@ class SetupTests(ClaudeTestCase):
         self.assertEqual(data["theme"], "dark")
         self.assertEqual(data["env"], {"OTHER": "1", "ANTHROPIC_BASE_URL": "https://gateway.example"})
         self.assertEqual(data["model"], "alias")
-        self.assertIn(shell_command(["llm_credential_mapping", "--home", str(self.home), "token", "--profile", "unit"]), data["apiKeyHelper"])
+        self.assertIn(shell_command(["virtual_key_mapper", "--home", str(self.home), "token", "--profile", "unit"]), data["apiKeyHelper"])
         commands = [hook["command"] for entry in data["hooks"]["UserPromptSubmit"] for hook in entry["hooks"]]
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0], "other-hook")
@@ -73,7 +73,7 @@ class SetupTests(ClaudeTestCase):
                     self.claude.setup(self.context)
                 self.assertEqual(self.read(), existing)
                 self.claude.setup(self.context, replace=True)
-                self.assertIn("llm_credential_mapping", self.read()["apiKeyHelper"])
+                self.assertIn("virtual_key_mapper", self.read()["apiKeyHelper"])
 
     def test_invalid_settings_are_never_replaced(self):
         self.config.mkdir()
@@ -268,7 +268,7 @@ class CliTests(ClaudeTestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
                 patch("sys.stdin", io.StringIO(stdin)), patch.dict(os.environ, environ or {}), \
-                patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError):
+                patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError):
             result = main(["--home", str(self.home), *args])
         return result, stdout.getvalue(), stderr.getvalue()
 
@@ -303,15 +303,15 @@ class CliTests(ClaudeTestCase):
         self.assertFalse((nested / ".claude").exists())
 
     def test_guard_fails_closed(self):
-        (self.repo / ".llm-customer").write_text("customer = 'a,b'", encoding="utf-8")
-        self.assertIn(".llm-customer", self.guard())
-        with patch("llm_credential_mapping.cli.find_checkout", side_effect=RuntimeError("boom")):
+        (self.repo / ".vkm").write_text("customer = 'a,b'", encoding="utf-8")
+        self.assertIn(".vkm", self.guard())
+        with patch("virtual_key_mapper.cli.find_checkout", side_effect=RuntimeError("boom")):
             self.assertIn("could not check", self.guard())
 
     def test_setup_needs_a_sign_in_and_can_be_removed(self):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            with patch("llm_credential_mapping.cli.NativeKeyring"), patch("llm_credential_mapping.cli.auth_for") as auth:
+            with patch("virtual_key_mapper.cli.NativeKeyring"), patch("virtual_key_mapper.cli.auth_for") as auth:
                 auth.return_value.credential.side_effect = CredentialError("No login for 'unit'")
                 self.assertEqual(main(["--home", str(self.home), "setup", "claude"]), 1)
                 auth.return_value.credential.side_effect = None

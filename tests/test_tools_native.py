@@ -1,6 +1,6 @@
 """Optional: real Codex and OpenCode binaries against a local fake gateway, configured by setup and run.
 
-Set LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY and/or LLM_CREDENTIAL_MAPPING_TEST_OPENCODE_BINARY. Every tool
+Set VKM_TEST_CODEX_BINARY and/or VKM_TEST_OPENCODE_BINARY. Every tool
 folder is temporary. Only the credential step is a stub (a real token needs a signed-in vault): for Codex
 it enforces the customer variables like 'token --require-attribution-env'; for OpenCode it answers
 'token --json' and passes everything else (repo show) to the real CLI.
@@ -20,15 +20,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.adapters import Credential, IntegrationContext
-from llm_credential_mapping.cli import main
-from llm_credential_mapping.customers import Attribution
-from llm_credential_mapping.integrations.codex import Codex
-from llm_credential_mapping.integrations.common import header_variable
-from llm_credential_mapping.integrations.opencode import OpenCode
-from llm_credential_mapping.profiles import ProfileStore
-from llm_credential_mapping.registry import gateway_for
-from llm_credential_mapping.shells import assignments
+from virtual_key_mapper.adapters import Credential, IntegrationContext
+from virtual_key_mapper.cli import main
+from virtual_key_mapper.customers import Attribution
+from virtual_key_mapper.integrations.codex import Codex
+from virtual_key_mapper.integrations.common import header_variable
+from virtual_key_mapper.integrations.opencode import OpenCode
+from virtual_key_mapper.profiles import ProfileStore
+from virtual_key_mapper.registry import gateway_for
+from virtual_key_mapper.shells import assignments
 from live import binary_tests
 
 STUB = """
@@ -117,7 +117,7 @@ class NativeToolCase(unittest.TestCase):
         self.home = self.root / "credentials"
         self.environment = {
             key: value for key, value in os.environ.items()
-            if not key.startswith(("OPENAI", "CODEX", "OPENCODE", "LLM_CREDENTIALS", "XDG_"))
+            if not key.startswith(("OPENAI", "CODEX", "OPENCODE", "VKM_", "XDG_"))
         }
         self.environment.update({
             "CODEX_HOME": str(self.root / "codex-home"), "OPENCODE_DISABLE_AUTOUPDATE": "1",
@@ -125,7 +125,7 @@ class NativeToolCase(unittest.TestCase):
         })
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        (self.repo / ".llm-customer").write_text('customer = "customer:live"\n', encoding="utf-8")
+        (self.repo / ".vkm").write_text('customer = "customer:live"\n', encoding="utf-8")
         self.unmapped = self.root / "unmapped"
         self.unmapped.mkdir()
         self.cli("profile", "add", "native", "--gateway", self.gateway.origin, "--team-id", "t", "--allow-insecure-localhost")
@@ -137,15 +137,15 @@ class NativeToolCase(unittest.TestCase):
     def cli(self, *args):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
                 patch.dict(os.environ, self.environment, clear=True), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as auth, \
-                patch("llm_credential_mapping.customers.Path.home", return_value=self.root):
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as auth, \
+                patch("virtual_key_mapper.customers.Path.home", return_value=self.root):
             auth.return_value.credential.return_value = Credential("setup-token")
             self.assertEqual(main(["--home", str(self.home), *args]), 0)
 
     def stub_context(self) -> IntegrationContext:
         return IntegrationContext(
-            self.profile, gateway_for(self.profile), "unused", self.home, cli=(sys.executable, str(self.stub), sys.executable, "-I", "-m", "llm_credential_mapping"),
+            self.profile, gateway_for(self.profile), "unused", self.home, cli=(sys.executable, str(self.stub), sys.executable, "-I", "-m", "virtual_key_mapper"),
         )
 
     def run_tool(self, argv, directory, environment=None):
@@ -168,15 +168,15 @@ class NativeToolCase(unittest.TestCase):
             self.assertIn("customer_source", headers["x-litellm-spend-logs-metadata"])
 
 
-@binary_tests("codex", "LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY")
+@binary_tests("codex", "VKM_TEST_CODEX_BINARY")
 class NativeCodexTests(NativeToolCase):
     def setUp(self):
         super().setUp()
-        self.binary = os.environ["LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY"]
+        self.binary = os.environ["VKM_TEST_CODEX_BINARY"]
         self.cli("setup", "codex", "--model", "alias")
         # Replace only the token command; everything else stays as setup wrote it.
         path = Path(self.environment["CODEX_HOME"]) / "config.toml"
-        auth = tomllib.loads(path.read_text(encoding="utf-8"))["model_providers"]["llm-credentials"]["auth"]
+        auth = tomllib.loads(path.read_text(encoding="utf-8"))["model_providers"]["vkm"]["auth"]
         text = path.read_text(encoding="utf-8").replace(
             "args = " + json.dumps(auth["args"]), "args = " + json.dumps([str(self.stub), *([auth["command"]] + auth["args"])]),
         )
@@ -186,7 +186,7 @@ class NativeCodexTests(NativeToolCase):
         """What the shell-init hook exports in a directory (via the real 'repo show --env')."""
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), patch.dict(os.environ, self.environment, clear=True), \
-                patch("llm_credential_mapping.customers.Path.home", return_value=self.root):
+                patch("virtual_key_mapper.customers.Path.home", return_value=self.root):
             main(["--home", str(self.home), "repo", "show", "--env", "bash", "--directory", str(directory)])
         values = {}
         for line in stdout.getvalue().splitlines():
@@ -272,21 +272,21 @@ class NativeCodexTests(NativeToolCase):
     def test_run_passes_its_own_customer(self):
         argv, env = Codex().command(self.stub_context(), Attribution("customer:cli", "explicit", "--customer"),
                                     ["exec", "--skip-git-repo-check", "Say OK"], "alias")
-        output = self.run_tool([self.binary, *argv[1:]], self.unmapped, {k: v for k, v in env.items() if k.startswith("LLM_")})
+        output = self.run_tool([self.binary, *argv[1:]], self.unmapped, {k: v for k, v in env.items() if k.startswith("VKM_")})
         self.assert_tagged(output, "customer:cli")
 
 
-@binary_tests("opencode", "LLM_CREDENTIAL_MAPPING_TEST_OPENCODE_BINARY")
+@binary_tests("opencode", "VKM_TEST_OPENCODE_BINARY")
 class NativeOpenCodeTests(NativeToolCase):
     def setUp(self):
         super().setUp()
-        self.binary = os.environ["LLM_CREDENTIAL_MAPPING_TEST_OPENCODE_BINARY"]
+        self.binary = os.environ["VKM_TEST_OPENCODE_BINARY"]
         with patch.dict(os.environ, {"PATH": str(Path(self.binary).parent) + os.pathsep + os.environ.get("PATH", "")}):
             self.cli("setup", "opencode", "--model", "alias")
         self.stub_plugin()
 
     def stub_plugin(self):
-        plugin = self.home / "opencode" / "llm-credentials-native.js"
+        plugin = self.home / "opencode" / "vkm-native.js"
         text = plugin.read_text(encoding="utf-8")
         settings = json.loads(text.split("const SETTINGS = ", 1)[1].split(";\n", 1)[0])
         stubbed = {**settings, "cli": [sys.executable, str(self.stub), *settings["cli"]]}
@@ -306,6 +306,6 @@ class NativeOpenCodeTests(NativeToolCase):
         argv, env = OpenCode().command(self.stub_context(), Attribution("customer:cli", "explicit", "--customer"),
                                        ["run", "Say OK"], "alias")
         self.stub_plugin()
-        environment = {k: v for k, v in env.items() if k.startswith(("LLM_", "OPENCODE_CONFIG_CONTENT"))}
+        environment = {k: v for k, v in env.items() if k.startswith(("VKM_", "OPENCODE_CONFIG_CONTENT"))}
         output = self.run_tool([self.binary, *argv[1:]], self.unmapped, environment)
         self.assert_tagged(output, "customer:cli")

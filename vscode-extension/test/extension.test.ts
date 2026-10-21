@@ -93,13 +93,13 @@ const until = async (condition: () => boolean) => {
 };
 
 test("closing the sign-in terminal lists the models again", () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "llmc-ext-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vkm-ext-"));
   const { api, vscode } = fakeVscode(undefined, fakeCli(directory), {});
   const context = activate(vscode);
   let changes = 0;
   api.provider.onDidChangeLanguageModelChatInformation(() => (changes += 1));
-  api.commands["llmCredentials.signIn"]();
-  assert.deepEqual(api.terminals.map((terminal) => terminal.name), ["llm-credentials login"]);
+  api.commands["vkm.signIn"]();
+  assert.deepEqual(api.terminals.map((terminal) => terminal.name), ["vkm login"]);
   api.fire("closeTerminal", { name: "some other terminal" });
   assert.equal(changes, 0);
   api.fire("closeTerminal", api.terminals[0]);
@@ -109,7 +109,7 @@ test("closing the sign-in terminal lists the models again", () => {
 });
 
 test("a 401 that survived the retry offers 'Sign in'", async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "llmc-ext-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vkm-ext-"));
   const { api, vscode } = fakeVscode(undefined, fakeCli(directory), {});
   const context = activate(vscode);
   api.provider.services.onError(new GatewayError("The gateway answered HTTP 401: invalid key", 401));
@@ -121,12 +121,12 @@ test("a 401 that survived the retry offers 'Sign in'", async () => {
 
 test("in a remote window, a new profile and a local sign-in list the models again",
   { skip: process.platform === "win32" && "the relay needs a Unix socket" }, async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "llmc-ext-"));
-    const previous = process.env.LLM_CREDENTIALS_AGENT;
-    process.env.LLM_CREDENTIALS_AGENT = path.join(directory, "relay", "agent.sock");
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vkm-ext-"));
+    const previous = process.env.VKM_AGENT;
+    process.env.VKM_AGENT = path.join(directory, "relay", "agent.sock");
     const local = {
-      "llmCredentials.local.request": () => ({ ok: true, result: { name: "work", gateway: { type: "litellm", url: "https://gateway.example" } } }),
-      "llmCredentials.local.signIn": () => undefined,
+      "vkm.local.request": () => ({ ok: true, result: { name: "work", gateway: { type: "litellm", url: "https://gateway.example" } } }),
+      "vkm.local.signIn": () => undefined,
     };
     const { api, vscode } = fakeVscode("dev-container", fakeCli(directory), local);
     let changes = 0;
@@ -135,12 +135,12 @@ test("in a remote window, a new profile and a local sign-in list the models agai
       api.provider.onDidChangeLanguageModelChatInformation(() => (changes += 1));
       await until(() => changes > 0);
       assert.equal(changes, 1, "creating the profile lists the models again");
-      await api.commands["llmCredentials.signIn"]();
+      await api.commands["vkm.signIn"]();
       assert.equal(changes, 2, "a local sign-in lists the models again");
     } finally {
       context.subscriptions.forEach((item) => item.dispose());
-      if (previous === undefined) delete process.env.LLM_CREDENTIALS_AGENT;
-      else process.env.LLM_CREDENTIALS_AGENT = previous;
+      if (previous === undefined) delete process.env.VKM_AGENT;
+      else process.env.VKM_AGENT = previous;
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });

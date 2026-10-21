@@ -23,10 +23,10 @@ class SecretStore(Protocol):
 class NativeKeyring:
     """Store complete sessions in an OS vault; callers must serialize same-account access."""
 
-    SERVICE = "llm-credential-mapping"
+    SERVICE = "virtual-key-mapper"
     ENTRY_CHARS = 1280
     MAX_CHARS = 1_048_576
-    MANIFEST = "_llm_credential_mapping_vault"
+    MANIFEST = "_virtual_key_mapper_vault"
     ALLOWED = {
         ("keyring.backends.Windows", "WinVaultKeyring"),
         ("keyring.backends.macOS", "Keyring"),
@@ -163,7 +163,7 @@ class NativeKeyring:
             except CredentialError:
                 logging.getLogger(__name__).warning(
                     "Could not remove an unused OS-vault fragment. Remove obsolete entries "
-                    "under llm-credential-mapping from the vault manually."
+                    "under virtual-key-mapper from the vault manually."
                 )
 
     def _restore(self, root: str, account: str, previous: str | None) -> None:
@@ -182,7 +182,7 @@ class NativeKeyring:
             manifest = self._manifest(self._object(raw))
         except CredentialError:
             logging.getLogger(__name__).warning(
-                "Found a damaged OS-vault entry and overwrote or removed it; obsolete entries under llm-credential-mapping may remain in the vault."
+                "Found a damaged OS-vault entry and overwrote or removed it; obsolete entries under virtual-key-mapper may remain in the vault."
             )
             return []
         return self._fragment_services(account, manifest) if manifest else []

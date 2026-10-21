@@ -8,11 +8,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.adapters import IntegrationContext
-from llm_credential_mapping.customers import Attribution
-from llm_credential_mapping.integrations.claude import Claude
-from llm_credential_mapping.profiles import Profile
-from llm_credential_mapping.registry import gateway_for
+from virtual_key_mapper.adapters import IntegrationContext
+from virtual_key_mapper.customers import Attribution
+from virtual_key_mapper.integrations.claude import Claude
+from virtual_key_mapper.profiles import Profile
+from virtual_key_mapper.registry import gateway_for
 
 # Stands in for Claude Code: settings come from --settings, the credential from the apiKeyHelper command.
 FAKE_CLAUDE = """
@@ -57,7 +57,7 @@ class ParallelCustomerTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         profile = Profile("unit", f"http://127.0.0.1:{server.server_port}", {"team_id": "business-unit"}, allow_http=True)
-        # The helper prints a fixed token, standing in for 'llm-credentials token'.
+        # The helper prints a fixed token, standing in for 'vkm token'.
         context = IntegrationContext(
             profile, gateway_for(profile), "unused", cli=(sys.executable, "-c", "print('shared-token')"),
         )
@@ -72,7 +72,7 @@ class ParallelCustomerTests(unittest.TestCase):
                 return Claude().launch(context, Attribution(customer, "explicit", "--customer"), [], None)
 
             try:
-                with patch("llm_credential_mapping.integrations.claude.run", run), \
+                with patch("virtual_key_mapper.integrations.claude.run", run), \
                         ThreadPoolExecutor(max_workers=2) as executor:
                     a = executor.submit(launch, "customer:A")
                     self.assertTrue(first_a.wait(20), "First process did not reach the fixture.")

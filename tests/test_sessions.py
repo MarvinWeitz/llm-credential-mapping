@@ -9,12 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from llm_credential_mapping.auth import litellm_sso as sessions
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.auth.litellm_oauth import IdentityChanged, Session
-from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.auth.litellm_sso import SessionManager, refresh_margin
-from llm_credential_mapping.transport import HTTP_ERROR_ADVICE, GatewayError
+from virtual_key_mapper.auth import litellm_sso as sessions
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.auth.litellm_oauth import IdentityChanged, Session
+from virtual_key_mapper.profiles import Profile, ProfileStore
+from virtual_key_mapper.auth.litellm_sso import SessionManager, refresh_margin
+from virtual_key_mapper.transport import HTTP_ERROR_ADVICE, GatewayError
 
 
 class MemoryStore:

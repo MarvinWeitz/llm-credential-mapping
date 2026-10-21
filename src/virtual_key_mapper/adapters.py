@@ -69,7 +69,7 @@ class IntegrationContext:
     gateway: Gateway
     token: str = field(repr=False)
     home: Path | None = None
-    cli: tuple[str, ...] = (sys.executable, "-I", "-m", "llm_credential_mapping")
+    cli: tuple[str, ...] = (sys.executable, "-I", "-m", "virtual_key_mapper")
 
     def cli_command(self, *args: str) -> tuple[str, ...]:
         """This CLI with the integration's configuration folder, e.g. ``cli_command("token", "--profile", "a")``."""

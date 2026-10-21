@@ -2,7 +2,7 @@
 // unchanged) on the CLI's socket, forwarding to the companion like extension.ts's askLocal does,
 // and creating the container's profile from the local one like ensureRemoteProfile does.
 //
-//   LLMC_COMPANION=http://127.0.0.1:PORT LLM_CREDENTIALS_AGENT=/path/agent.sock node relay.mjs
+//   VKM_CI_COMPANION=http://127.0.0.1:PORT VKM_AGENT=/path/agent.sock node relay.mjs
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 
@@ -11,7 +11,7 @@ const { agentPath, serve } = require("../../vscode-extension/out/src/agent.js");
 const { remoteProfileArgs } = require("../../vscode-extension/out/src/cli.js");
 
 async function askLocal(request) {
-  const response = await fetch(process.env.LLMC_COMPANION, { method: "POST", body: JSON.stringify(request) });
+  const response = await fetch(process.env.VKM_CI_COMPANION, { method: "POST", body: JSON.stringify(request) });
   const answer = await response.json();
   if (answer?.ok === true) return answer.result;
   throw new Error(answer?.error ?? "The local companion did not answer.");
@@ -22,5 +22,5 @@ await serve(socketPath, askLocal);
 console.log(`relay listening on ${socketPath}`);
 
 const local = await askLocal({ operation: "profile", profile: "" });
-execFileSync("python", ["-m", "llm_credential_mapping", ...remoteProfileArgs(local).args], { stdio: "inherit" });
+execFileSync("python", ["-m", "virtual_key_mapper", ...remoteProfileArgs(local).args], { stdio: "inherit" });
 console.log(`relay: created profile '${local.name}' from the local one`);

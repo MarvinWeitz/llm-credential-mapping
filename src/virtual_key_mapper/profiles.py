@@ -126,13 +126,13 @@ class Profile:
 
 
 def default_home() -> Path:
-    if override := os.environ.get("LLM_CREDENTIAL_MAPPING_HOME"):
+    if override := os.environ.get("VKM_HOME"):
         return Path(override).expanduser().resolve()
     if os.name == "nt":
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "llm-credential-mapping"
+    return root / "virtual-key-mapper"
 
 
 def atomic_write_json(path: Path, value: dict) -> None:

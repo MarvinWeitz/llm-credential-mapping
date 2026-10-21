@@ -6,9 +6,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.profiles import ProfileStore
-from llm_credential_mapping.repositories import RepositoryStore, find_checkout, repository_identity
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.profiles import ProfileStore
+from virtual_key_mapper.repositories import RepositoryStore, find_checkout, repository_identity
 
 
 class RepositoryTests(unittest.TestCase):
@@ -154,20 +154,20 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual((checkout.root.resolve(), checkout.origin, checkout.upstream), (root.resolve(), self.repository, None))
 
     def test_missing_git_no_checkout_or_no_origin_are_not_errors(self):
-        with patch("llm_credential_mapping.repositories.subprocess.run", side_effect=FileNotFoundError("secret")):
+        with patch("virtual_key_mapper.repositories.subprocess.run", side_effect=FileNotFoundError("secret")):
             self.assertIsNone(find_checkout(self.home, None))
         results = [
             subprocess.CompletedProcess([], 0, str(self.home), ""),
             subprocess.CompletedProcess([], 1, "", "fatal: secret-no-remote"),
             subprocess.CompletedProcess([], 0, "file:///secret/local", ""),
         ]
-        with patch("llm_credential_mapping.repositories.subprocess.run", side_effect=results):
+        with patch("virtual_key_mapper.repositories.subprocess.run", side_effect=results):
             checkout = find_checkout(self.home, None)
         self.assertEqual((checkout.origin, checkout.upstream), (None, None))
 
     def test_dubious_ownership_is_an_error_without_raw_stderr(self):
         result = subprocess.CompletedProcess([], 128, "", "fatal: detected dubious ownership secret-path")
-        with patch("llm_credential_mapping.repositories.subprocess.run", return_value=result):
+        with patch("virtual_key_mapper.repositories.subprocess.run", return_value=result):
             with self.assertRaises(CredentialError) as error:
                 find_checkout(self.home, None)
         self.assertIn("dubious ownership", str(error.exception))
@@ -216,7 +216,7 @@ class RepositoryTests(unittest.TestCase):
 
     def test_failed_atomic_replacement_preserves_previous_mapping(self):
         self.store.bind(self.gateway, self.repository, "customer:A")
-        with patch("llm_credential_mapping.profiles.os.replace", side_effect=OSError("full")):
+        with patch("virtual_key_mapper.profiles.os.replace", side_effect=OSError("full")):
             with self.assertRaises(CredentialError):
                 self.store.bind(self.gateway, self.repository, "customer:B", replace=True)
         self.assertEqual(self.store.get(self.gateway, self.repository), "customer:A")

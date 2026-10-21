@@ -11,7 +11,7 @@
 | `vscode-extension` | Windows, macOS, Linux | Both extensions' unit tests, a real VS Code extension host with a fake CLI and gateway, and the relay against the real CLI (Linux, macOS). VSIX packages are built on Linux. |
 | `latest-agents` (weekly) | Windows, macOS, Linux | The `live` tests with the newest agent releases, to catch vendor changes before bumping `ci/agents`. |
 
-`LLM_CREDENTIAL_MAPPING_REQUIRE` lists what a job must have (`claude`, `codex`, `opencode`, `bash`, `zsh`,
+`VKM_REQUIRE` lists what a job must have (`claude`, `codex`, `opencode`, `bash`, `zsh`,
 `fish`, `pwsh`, `vault`, `devcontainer`, `relay`). Locally a missing tool skips its tests; in CI it fails.
 
 ## Running parts locally
@@ -23,7 +23,7 @@ cd ci/agents && npm ci && cd ../..                            # live agent tests
 export $(node ci/agents/locate.mjs)
 python -m unittest discover -s tests -v
 
-LLM_CREDENTIAL_MAPPING_TEST_VAULT=1 \
+VKM_TEST_VAULT=1 \
   python -m unittest discover -s tests -p test_vault_native.py -v   # writes test entries to YOUR vault
 
 cd vscode-extension && npm ci && npm test && npm run test:host     # extensions (downloads VS Code)
@@ -38,12 +38,20 @@ The dev container test needs Docker and runs as in CI: compile both extensions
 CI cannot drive the VS Code UI, other remote kinds or your gateway. Check these when changing the
 corresponding parts, and before a release:
 
-- **Copilot Chat** (desktop VS Code): the LLM Credentials models appear in the model picker and in agent
+- **Copilot Chat** (desktop VS Code): the Virtual Key Mapper models appear in the model picker and in agent
   mode; a chat in a mapped repository shows the customer in the status bar; an unmapped folder offers
   "Assign customer"; the organization's "Bring Your Own Language Model Key" policy allows it.
 - **Interactive Codex on Windows** (CI drives the interactive UI only on Linux and macOS): in a new
   PowerShell window with the hook, plain `codex` in a mapped repository answers with the customer, also
   after `codex app-server daemon start` from another folder (the hook's `codex` adds `--no-daemon`).
+- **Windows PowerShell 5.1 where scripts are blocked** (CI runs PowerShell 7 with a bypassed policy): the
+  `vkm shell-init pwsh --terminal` command line in a Windows Terminal or VS Code profile loads the hook,
+  and `Get-Command codex` shows `Function`.
+- **OpenCode v2** (CI pins OpenCode v1): `vkm run opencode` in a mapped repository answers with the
+  customer; `vkm setup opencode` refuses v2.
+- **OpenCode in a dev container** (the dev container job runs Claude Code and Codex): `opencode run` in
+  the container answers with the customer.
+- **KWallet** (CI uses GNOME Keyring): `vkm login`, a renewal and `vkm logout` on a KDE desktop.
 - **Claude Code extension**: after `setup claude` and `claudeCode.disableLoginPrompt`, a new conversation
   works without a Claude login; an unmapped repository is blocked with the guard's message; the launch
   folder in multi-root workspaces resolves the expected customer.

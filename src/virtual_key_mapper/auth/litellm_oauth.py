@@ -295,7 +295,7 @@ class LiteLLMClient:
                 "POST",
                 discovery.registration_endpoint,
                 {
-                    "client_name": "LLM Credential Mapping",
+                    "client_name": "Virtual Key Mapper",
                     "redirect_uris": [callback.redirect_uri],
                     "token_endpoint_auth_method": "none",
                     "grant_types": ["authorization_code", "refresh_token"],

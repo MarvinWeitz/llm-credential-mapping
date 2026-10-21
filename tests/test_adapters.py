@@ -12,13 +12,13 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
-from llm_credential_mapping import registry
-from llm_credential_mapping.adapters import Api, Credential, IntegrationContext
-from llm_credential_mapping.cli import main
-from llm_credential_mapping.customers import Attribution
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.integrations.common import header_variable, shell_command
-from llm_credential_mapping.profiles import Profile
+from virtual_key_mapper import registry
+from virtual_key_mapper.adapters import Api, Credential, IntegrationContext
+from virtual_key_mapper.cli import main
+from virtual_key_mapper.customers import Attribution
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.integrations.common import header_variable, shell_command
+from virtual_key_mapper.profiles import Profile
 
 
 class FakeGateway:
@@ -100,7 +100,7 @@ class FakeAdapterTests(unittest.TestCase):
 
     def test_codex_maps_every_attribution_header_to_its_variable(self):
         args, env = self.command("codex")
-        provider = "model_providers.llm-credentials."
+        provider = "model_providers.vkm."
         self.assertIn(provider + 'base_url="https://fake.example/openai/responses"', args)
         for name, value in (("x-test-customer", "customer:A"), ("x-test-source", "explicit")):
             self.assertIn(f'{provider}env_http_headers.{name}="{header_variable(name)}"', args)
@@ -109,7 +109,7 @@ class FakeAdapterTests(unittest.TestCase):
     def test_opencode_plugin_targets_the_gateway_chat_endpoint(self):
         _, env = self.command("opencode")
         config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        self.assertEqual(config["provider"]["llm-credentials"]["options"]["baseURL"], "https://fake.example/openai/chat")
+        self.assertEqual(config["provider"]["vkm"]["options"]["baseURL"], "https://fake.example/openai/chat")
         plugin = Path(url2pathname(urlsplit(config["plugin"][-1]).path)).read_text(encoding="utf-8")
         self.assertIn('"baseURL": "https://fake.example/openai/chat"', plugin)
         self.assertNotIn("litellm", plugin.lower())
@@ -138,10 +138,10 @@ class FakeAdapterTests(unittest.TestCase):
                     return main(["--home", home, *args])
 
             completed = subprocess.CompletedProcess([], 0)
-            with patch("llm_credential_mapping.cli.NativeKeyring"), \
-                    patch("llm_credential_mapping.cli.find_checkout", return_value=None), \
-                    patch("llm_credential_mapping.integrations.common.shutil.which", return_value="claude"), \
-                    patch("llm_credential_mapping.integrations.common.subprocess.run", return_value=completed) as run:
+            with patch("virtual_key_mapper.cli.NativeKeyring"), \
+                    patch("virtual_key_mapper.cli.find_checkout", return_value=None), \
+                    patch("virtual_key_mapper.integrations.common.shutil.which", return_value="claude"), \
+                    patch("virtual_key_mapper.integrations.common.subprocess.run", return_value=completed) as run:
                 self.assertEqual(call(
                     "profile", "add", "fake", "--gateway", "https://fake.example",
                     "--gateway-type", "fake", "--auth", "fixed",

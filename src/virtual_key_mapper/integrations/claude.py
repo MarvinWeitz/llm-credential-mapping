@@ -1,8 +1,8 @@
 """Claude Code (CLI and the official VS Code extension) configured through its own settings files.
 
-User level (``setup claude``): ``apiKeyHelper`` runs ``llm-credentials token``, so Claude renews the
+User level (``setup claude``): ``apiKeyHelper`` runs ``vkm token``, so Claude renews the
 credential itself; ``env.ANTHROPIC_BASE_URL`` points at the gateway; a ``UserPromptSubmit`` hook runs
-``llm-credentials claude guard`` before every prompt.
+``vkm claude guard`` before every prompt.
 
 Per repository: the guard writes the gateway's attribution headers to ``.claude/settings.local.json``
 (``env.ANTHROPIC_CUSTOM_HEADERS``), which Claude reloads live, and blocks prompts that would be sent
@@ -24,7 +24,7 @@ from ..profiles import atomic_write_text
 from .common import CUSTOMER_VARIABLE, attribution_headers, run, shell_command
 
 LOCAL_SETTINGS = Path(".claude") / "settings.local.json"
-_MARKER = "llm_credential_mapping"
+_MARKER = "virtual_key_mapper"
 _CLEARED = (
     "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
@@ -263,7 +263,7 @@ class Claude:
             _write_json(path, data, original, follow_symlinks=True)
         state_path.unlink(missing_ok=True)
         return [
-            f"Removed the llm-credentials configuration from {path}. Restart Claude sessions; "
+            f"Removed the vkm configuration from {path}. Restart Claude sessions; "
             "remove claudeCode.disableLoginPrompt from VS Code to get Claude's own sign-in back.",
         ]
 

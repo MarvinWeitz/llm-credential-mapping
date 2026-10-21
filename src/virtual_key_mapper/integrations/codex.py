@@ -25,10 +25,10 @@ from ..errors import CredentialError
 from ..profiles import atomic_write_text
 from .common import CUSTOMER_VARIABLE, attribution_headers, header_variable, run
 
-PROVIDER = "llm-credentials"
+PROVIDER = "vkm"
 REQUIRE_ENV = "--require-attribution-env"
-_TOP = ("# >>> llm-credentials: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials <<<")
-_TABLES = ("# >>> llm-credentials tables: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials tables <<<")
+_TOP = ("# >>> vkm: managed by 'vkm setup codex' >>>", "# <<< vkm <<<")
+_TABLES = ("# >>> vkm tables: managed by 'vkm setup codex' >>>", "# <<< vkm tables <<<")
 _CLEARED = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
 NO_DAEMON = "--no-daemon"
 
@@ -64,7 +64,7 @@ class Codex:
                 raise CredentialError("The gateway adapter produced an invalid attribution header name.")
         command = context.cli_command("token", "--profile", context.profile.name, REQUIRE_ENV)
         return {
-            "name": "llm-credentials",
+            "name": "vkm",
             "base_url": context.gateway.endpoint(Api.OPENAI_RESPONSES),
             "wire_api": "responses",
             "env_http_headers": headers,
@@ -166,9 +166,9 @@ class Codex:
         return [
             f"Configured {path} for profile '{context.profile.name}'. Codex renews the credential itself.",
             "Codex reads the customer from the environment: add the hook printed by "
-            "'llm-credentials shell-init bash|zsh|fish|pwsh' to your shell profile, or start Codex with "
-            "'llm-credentials run codex'. Without a customer, Codex gets no credential and the gateway refuses the request. "
-            "Where PowerShell may not run scripts (no profile), 'llm-credentials shell-init pwsh --terminal' prints a "
+            "'vkm shell-init bash|zsh|fish|pwsh' to your shell profile, or start Codex with "
+            "'vkm run codex'. Without a customer, Codex gets no credential and the gateway refuses the request. "
+            "Where PowerShell may not run scripts (no profile), 'vkm shell-init pwsh --terminal' prints a "
             "terminal command line that loads the hook instead.",
             "If a Codex daemon is already running, stop it once: 'codex app-server daemon stop'.",
             *notes,
@@ -178,6 +178,6 @@ class Codex:
         path = config_path()
         original, rest, _ = self._read(path)
         if original is None or not any(marker in original for marker in (_TOP[0], _TABLES[0])):
-            return [f"{path} has no llm-credentials configuration."]
+            return [f"{path} has no vkm configuration."]
         self._write(path, rest, original)
-        return [f"Removed the llm-credentials configuration from {path}."]
+        return [f"Removed the vkm configuration from {path}."]

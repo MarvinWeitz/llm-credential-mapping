@@ -60,11 +60,11 @@ test("anything else is refused without running the CLI", async () => {
 
 test("CLI errors come back with a sign-in hint for the profile that needs a login", async () => {
   const result = await answer({ operation: "token", profile: "" }, async () => {
-    throw new RunError("No login for 'work'; run 'llm-credentials login --profile work'.");
+    throw new RunError("No login for 'work'; run 'vkm login --profile work'.");
   }, []);
-  assert.deepEqual(result, { ok: false, error: "No login for 'work'; run 'llm-credentials login --profile work'.", login: true, profile: "" });
+  assert.deepEqual(result, { ok: false, error: "No login for 'work'; run 'vkm login --profile work'.", login: true, profile: "" });
   const named = await answer({ operation: "token", profile: "corp" }, async () => {
-    throw new RunError("No login for 'corp'; run 'llm-credentials login --profile corp'.");
+    throw new RunError("No login for 'corp'; run 'vkm login --profile corp'.");
   }, ["dev", "corp"]);
   assert.equal(!named.ok && named.profile, "corp");
   const unreadable = await answer({ operation: "token", profile: "" }, async () => "not json", []);

@@ -7,12 +7,12 @@ import { TokenCache } from "./credentials";
 import { GatewayError } from "./gateway";
 import { Provider, VENDOR, type Services } from "./provider";
 
-const CHOSEN_FOLDER = "llmCredentials.chosenFolder";
-const LOGIN_TERMINAL = "llm-credentials login";
-/** Commands of the companion extension "LLM Credentials: local sign-in", which runs on the local machine. */
-const LOCAL_REQUEST = "llmCredentials.local.request";
-const LOCAL_SIGN_IN = "llmCredentials.local.signIn";
-const LOCAL_MISSING = "Install the extension 'LLM Credentials: local sign-in' in your local VS Code; "
+const CHOSEN_FOLDER = "vkm.chosenFolder";
+const LOGIN_TERMINAL = "vkm login";
+/** Commands of the companion extension "Virtual Key Mapper: local sign-in", which runs on the local machine. */
+const LOCAL_REQUEST = "vkm.local.request";
+const LOCAL_SIGN_IN = "vkm.local.signIn";
+const LOCAL_MISSING = "Install the extension 'Virtual Key Mapper: local sign-in' in your local VS Code; "
   + "it relays your local sign-in into this window.";
 
 /** Ask the companion extension on the local machine; its answer is {ok, result} or {ok: false, error}. */
@@ -69,7 +69,7 @@ async function ensureRemoteProfile(
   } catch (error) {
     if (error instanceof cli.CliError && /Cannot run/.test(error.message)) {
       void vscode.window.showWarningMessage(
-        "llm-credentials: install the CLI in this container, e.g. 'pip install <path or URL of llm-credential-mapping>'.",
+        "vkm: install the CLI in this container, e.g. 'pip install <path or URL of virtual-key-mapper>'.",
       );
       return;
     }
@@ -81,7 +81,7 @@ async function ensureRemoteProfile(
     output.appendLine(`Created profile '${local.name}' here; it uses the sign-in of your local machine.`);
     if (skippedRules) {
       output.appendLine(`Its central customer rules (${skippedRules}) are a local file; set them here with `
-        + `'llm-credentials profile update ${local.name} --rules URL_OR_PATH'.`);
+        + `'vkm profile update ${local.name} --rules URL_OR_PATH'.`);
     }
     onCreated(); // The first model listing ran without a profile and found nothing.
   } catch (error) {
@@ -90,14 +90,14 @@ async function ensureRemoteProfile(
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel("LLM Credentials");
+  const output = vscode.window.createOutputChannel("Virtual Key Mapper");
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  status.command = "llmCredentials.showCustomer";
-  status.name = "LLM Credentials customer";
+  status.command = "vkm.showCustomer";
+  status.name = "Virtual Key Mapper customer";
   let lastError = "";
 
-  const settings = () => vscode.workspace.getConfiguration("llmCredentials");
-  const command = () => settings().get<string[]>("command", ["llm-credentials"]);
+  const settings = () => vscode.workspace.getConfiguration("vkm");
+  const command = () => settings().get<string[]>("command", ["vkm"]);
   const profileName = () => settings().get<string>("profile", "").trim();
 
   const terminal = (name: string, args: string[]) => {
@@ -108,12 +108,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const showChoice = (choice: Choice) => {
     if (choice.kind === "folder") {
       status.text = `$(tag) ${choice.attribution.customer}`;
-      status.tooltip = `Copilot Chat requests with llm-credentials models use customer ${choice.attribution.customer}\n`
+      status.tooltip = `Copilot Chat requests with vkm models use customer ${choice.attribution.customer}\n`
         + `${choice.attribution.source}: ${choice.attribution.detail}\nFolder: ${choice.folder}`;
       status.backgroundColor = undefined;
     } else {
       status.text = choice.kind === "none" ? "$(tag) no folder" : "$(warning) choose customer";
-      status.tooltip = "llm-credentials: no customer for this window; click to choose";
+      status.tooltip = "vkm: no customer for this window; click to choose";
       status.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
     }
     status.show();
@@ -128,9 +128,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const needsLogin = (error instanceof cli.CliError && error.needsLogin) || (error instanceof GatewayError && error.status === 401);
     const actions = needsLogin ? ["Sign in"]
       : error instanceof cli.CliError && error.unassigned ? ["Assign customer"] : [];
-    void vscode.window.showWarningMessage(`llm-credentials: ${message}`, ...actions).then((action) => {
-      if (action === "Sign in") vscode.commands.executeCommand("llmCredentials.signIn");
-      if (action === "Assign customer") vscode.commands.executeCommand("llmCredentials.showCustomer");
+    void vscode.window.showWarningMessage(`vkm: ${message}`, ...actions).then((action) => {
+      if (action === "Sign in") vscode.commands.executeCommand("vkm.signIn");
+      if (action === "Assign customer") vscode.commands.executeCommand("vkm.showCustomer");
     });
   };
 
@@ -172,13 +172,13 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     output, status,
     vscode.lm.registerLanguageModelChatProvider(VENDOR, provider),
-    vscode.workspace.onDidChangeConfiguration((event) => event.affectsConfiguration("llmCredentials") && reset()),
+    vscode.workspace.onDidChangeConfiguration((event) => event.affectsConfiguration("vkm") && reset()),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshStatus()),
     vscode.window.onDidChangeActiveTextEditor(() => void refreshStatus()),
-    vscode.commands.registerCommand("llmCredentials.refresh", reset),
+    vscode.commands.registerCommand("vkm.refresh", reset),
     // After a sign-in, list the models again: a listing without a sign-in found none.
     vscode.window.onDidCloseTerminal((closed) => closed.name === LOGIN_TERMINAL && reset()),
-    vscode.commands.registerCommand("llmCredentials.signIn", async () => {
+    vscode.commands.registerCommand("vkm.signIn", async () => {
       if (!vscode.env.remoteName) return terminal(LOGIN_TERMINAL, cli.loginArgs(profileName()));
       try {
         await vscode.commands.executeCommand(LOCAL_SIGN_IN); // Remote windows sign in on the local machine.
@@ -187,7 +187,7 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage(LOCAL_MISSING);
       }
     }),
-    vscode.commands.registerCommand("llmCredentials.showCustomer", async () => {
+    vscode.commands.registerCommand("vkm.showCustomer", async () => {
       const folders = vscode.workspace.workspaceFolders ?? [];
       current.customers.clear();
       const items = await Promise.all(folders.map(async (folder) => {
@@ -204,7 +204,7 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       if (!picked) return;
       if (picked.description === "no customer") {
-        terminal("llm-credentials repo bind", cli.bindArgs(profileName(), picked.folder.uri.fsPath));
+        terminal("vkm repo bind", cli.bindArgs(profileName(), picked.folder.uri.fsPath));
         return;
       }
       await context.workspaceState.update(CHOSEN_FOLDER, picked.folder.uri.fsPath);

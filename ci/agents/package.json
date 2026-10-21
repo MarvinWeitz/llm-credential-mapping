@@ -1,5 +1,5 @@
 {
-  "name": "llm-credentials-ci-agents",
+  "name": "vkm-ci-agents",
   "private": true,
   "description": "Pinned AI coding agents for the live CI tests. Update the versions here and run npm install to refresh the lockfile.",
   "dependencies": {
