@@ -74,6 +74,31 @@ export async function attribution(run: Runner, profileName: string, directory: s
   );
 }
 
+export interface LocalProfile {
+  name: string;
+  gateway: { type: string; url: string };
+  rules?: string | null;
+}
+
+/**
+ * Arguments to create the container's profile from the local one, signing in through the relay. Central rules are
+ * copied when they are a URL; a local file path does not exist in the container, so it is returned to warn about.
+ */
+export function remoteProfileArgs(local: LocalProfile): { args: string[]; skippedRules: string | null } {
+  const insecure = local.gateway.url.startsWith("http:");
+  const rules = typeof local.rules === "string" ? local.rules : null;
+  const url = rules !== null && (rules.startsWith("https://") || (insecure && rules.startsWith("http://")));
+  return {
+    args: [
+      "profile", "add", local.name, "--gateway", local.gateway.url, "--gateway-type", local.gateway.type,
+      "--auth", "forwarded", "--host-profile", local.name,
+      ...(insecure ? ["--allow-insecure-localhost"] : []),
+      ...(url ? ["--rules", rules] : []),
+    ],
+    skippedRules: rules !== null && !url ? rules : null,
+  };
+}
+
 /** Arguments to sign in or assign a customer interactively in a terminal. */
 export const loginArgs = (profileName: string) => ["login", ...option(profileName)];
 export const bindArgs = (profileName: string, directory: string) => ["repo", "bind", "--directory", directory, ...option(profileName)];

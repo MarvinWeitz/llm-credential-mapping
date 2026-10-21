@@ -12,6 +12,7 @@ answered by ``{"ok": true, "result": {...}}`` or ``{"ok": false, "error": "..."}
 import json
 import os
 import socket
+import stat
 import tempfile
 from pathlib import Path
 from typing import Callable, Mapping
@@ -45,9 +46,23 @@ def agent_path(environ: Mapping[str, str] | None = None) -> str:
     return str(Path(tempfile.gettempdir()) / f"llm-credentials-{user}" / "agent.sock")
 
 
+def _check_owner(path: str) -> None:
+    """Refuse a socket another user could have placed: it must be ours, in a real directory only we (or root) can write."""
+    directory, sock = os.lstat(os.path.dirname(path) or "."), os.lstat(path)
+    if (
+        not stat.S_ISDIR(directory.st_mode) or directory.st_uid not in (os.getuid(), 0) or directory.st_mode & 0o022
+        or not stat.S_ISSOCK(sock.st_mode) or sock.st_uid != os.getuid() or sock.st_mode & 0o022
+    ):
+        raise CredentialError(
+            f"Refusing the sign-in socket {path}: it must belong to you, in a directory nobody else can write to."
+        )
+
+
 def _connect(path: str) -> socket.socket:
     if not hasattr(socket, "AF_UNIX"):
         raise CredentialError("Forwarded sign-in needs a Unix socket; it is meant for Linux dev containers.")
+    if hasattr(os, "getuid"):
+        _check_owner(path)
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.settimeout(TIMEOUT_SECONDS)
     connection.connect(path)
@@ -110,7 +125,7 @@ class Forwarded:
             "there, in a local terminal."
         )
 
-    def logout(self) -> None:
+    def logout(self, notify: Callable[[str], None]) -> None:
         raise CredentialError(
             f"Profile '{self.profile.name}' uses the sign-in of your local machine: run 'llm-credentials logout' there."
         )

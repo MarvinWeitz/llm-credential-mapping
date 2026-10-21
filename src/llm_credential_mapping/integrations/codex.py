@@ -5,6 +5,11 @@ attribution header values come from environment variables, set per directory by 
 ``run codex``. The token command is called with ``--require-attribution-env`` and refuses without them.
 Codex then sends the request without a credential, which the gateway rejects: nothing goes through
 untagged. Codex reruns the command every ``refresh_interval_ms`` and once after a 401.
+
+Both must come from the session's own environment. Interactive Codex (0.162+) otherwise runs sessions
+in a shared background daemon that keeps the environment of the terminal that started it: requests
+then carry no customer, or another folder's. So ``run codex`` and the shell hook start Codex with
+``--no-daemon``, and setup turns off ``features.daemon_auto_start``.
 """
 
 import json
@@ -25,6 +30,7 @@ REQUIRE_ENV = "--require-attribution-env"
 _TOP = ("# >>> llm-credentials: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials <<<")
 _TABLES = ("# >>> llm-credentials tables: managed by 'llm-credentials setup codex' >>>", "# <<< llm-credentials tables <<<")
 _CLEARED = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
+NO_DAEMON = "--no-daemon"
 
 
 def config_path(environ: Mapping[str, str] | None = None) -> Path:
@@ -84,7 +90,7 @@ class Codex:
                 settings.update({f"model_providers.{PROVIDER}.{key}.{item}": entry for item, entry in value.items()})
             else:
                 settings[f"model_providers.{PROVIDER}.{key}"] = value
-        command = ["codex"]
+        command = ["codex", NO_DAEMON]
         for key, value in settings.items():
             command.extend(["-c", key + "=" + json.dumps(value)])
         if model:
@@ -123,7 +129,7 @@ class Codex:
                 raise CredentialError(f"{path} changed while it was being updated; nothing was changed, retry.")
             permissions = path.stat().st_mode & 0o777 if path.exists() else None
             path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(path, text, permissions=permissions)
+            atomic_write_text(path, text, permissions=permissions, follow_symlinks=True)
         except OSError:
             raise CredentialError(f"Cannot write {path}; nothing was changed.") from None
 
@@ -139,6 +145,14 @@ class Codex:
             raise CredentialError(f"{path} already defines [model_providers.{PROVIDER}] outside the managed block.")
         top = [f"model_provider = {json.dumps(PROVIDER)}"]
         notes = []
+        features = parsed.get("features")
+        if features is None:
+            top.append("features.daemon_auto_start = false")
+        elif not isinstance(features, dict) or features.get("daemon_auto_start") is not False:
+            notes.append(
+                f"Note: {path} has its own [features]; add daemon_auto_start = false there, otherwise a shared "
+                "Codex daemon can send requests with another folder's customer."
+            )
         if model and "model" not in parsed:
             top.append(f"model = {json.dumps(model)}")
         elif model:
@@ -153,7 +167,10 @@ class Codex:
             f"Configured {path} for profile '{context.profile.name}'. Codex renews the credential itself.",
             "Codex reads the customer from the environment: add the hook printed by "
             "'llm-credentials shell-init bash|zsh|fish|pwsh' to your shell profile, or start Codex with "
-            "'llm-credentials run codex'. Without a customer, Codex gets no credential and the gateway refuses the request.",
+            "'llm-credentials run codex'. Without a customer, Codex gets no credential and the gateway refuses the request. "
+            "Where PowerShell may not run scripts (no profile), 'llm-credentials shell-init pwsh --terminal' prints a "
+            "terminal command line that loads the hook instead.",
+            "If a Codex daemon is already running, stop it once: 'codex app-server daemon stop'.",
             *notes,
         ]
 

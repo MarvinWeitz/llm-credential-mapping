@@ -52,6 +52,8 @@ llm-credentials repo show
 The gateway address is its root URL (no `/v1`); the team ID is the exact ID from the gateway,
 not its display name. Your sign-in renews itself; sign in again only after logging out, a
 long pause or a change of team membership.
+The gateway must be served at its host root with LiteLLM's `PROXY_BASE_URL` set to that URL
+(see [Gateway requirements](docs/architecture.md#11-gateway-requirements)).
 
 ## Customers
 
@@ -63,7 +65,8 @@ The customer of a directory is chosen in this order (first match wins):
    clone shares it;
 3. the nearest committed `.llm-customer` file (`customer = "NAME"`), written with
    `repo bind --shared`; a file in a parent folder such as `~/src/acme/` covers all
-   repositories below it; the search stops at your home directory;
+   repositories below it; the search stops below your home directory, so a file in it or
+   above it never applies (`repo bind --shared` refuses to write one there);
 4. central rules of the profile (`profile add --rules URL|PATH` or `profile update NAME --rules ...`):
    ```json
    {"version": 1,
@@ -71,12 +74,16 @@ The customer of a directory is chosen in this order (first match wins):
     "rules": [{"match": "github.com/acme-*/**", "customer": "customer-acme"}]}
    ```
    `**` spans path segments, `*`/`?` stay within one; the first matching rule wins, tried
-   against `origin`, then `upstream`.
+   against `origin`, then `upstream`. Write the repository as `repo show` prints it
+   (lowercase, `%20` decoded to a space).
 
 Nothing is sent without a customer: unassigned folders are blocked with an explanation.
 `repo show` tells you which customer applies and why; `repo list` / `repo unbind` manage your
 personal assignments. Customer tags and repository mappings are attribution, not access
 control: enforce allowed customers on the gateway if you need that.
+Gateway settings that break or leak attribution (tag routing, client-side tag rejection,
+header forwarding) and why the picker needs the rules' `customers` list are listed in
+[Gateway requirements](docs/architecture.md#11-gateway-requirements).
 
 ## Tools
 
@@ -100,8 +107,17 @@ llm-credentials setup codex [--model ALIAS] [--remove]
 eval "$(llm-credentials shell-init bash)"     # add to ~/.bashrc; also zsh, fish, pwsh
 ```
 
+On Windows, add `llm-credentials shell-init pwsh | Out-String | Invoke-Expression` to your PowerShell
+`$PROFILE`. Where the execution policy blocks scripts (common on company PCs, "running scripts is
+disabled on this system"), a profile cannot load; run `llm-credentials shell-init pwsh --terminal`
+instead and paste its command line into Windows Terminal (Settings → your PowerShell profile →
+Command line) or its snippet into your VS Code user settings. Check in a new terminal:
+`Get-Command codex` shows `Function`.
+
 Codex reads the customer from environment variables that the shell hook sets per directory.
-Without them, Codex gets no credential and the gateway refuses the request.
+Without them, Codex gets no credential and the gateway refuses the request. The hook also makes
+`codex` start with `--no-daemon`: Codex's shared background daemon would keep the variables of the
+terminal that started it. If one is running from before, stop it once: `codex app-server daemon stop`.
 
 ### OpenCode
 
@@ -144,7 +160,8 @@ long-lived is stored inside it.
 
 1. Local VS Code: install `vscode-extension/local/llm-credentials-local.vsix`
    ("LLM Credentials: local sign-in") and set `llmCredentials.localCommand` in your user
-   settings to the local CLI command.
+   settings to the local CLI command. Containers get tokens only for your local default
+   profile; list others in `llmCredentials.localProfiles` (user settings) to allow them.
 2. In the container: install the CLI, e.g.
    `uv tool install --python 3.12 "git+https://github.com/MarvinWeitz/llm-credential-mapping@BRANCH_OR_COMMIT"`
    (or a Dev Container feature), and install `vscode-extension/llm-credentials.vsix` into

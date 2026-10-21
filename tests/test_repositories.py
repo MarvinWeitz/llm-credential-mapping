@@ -62,6 +62,59 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(repository_identity("git@-oProxyCommand=x:company/repo", resolve), "-oproxycommand=x/company/repo")
         self.assertEqual(seen, ["github-work", "github-work"])
 
+    def test_ssh_over_443_endpoints_keep_the_forge_identity(self):
+        # GitHub's documented port-443 workaround: Host github.com / HostName ssh.github.com / Port 443.
+        endpoints = {"github.com": "ssh.github.com", "gitlab.com": "altssh.gitlab.com", "bitbucket.org": "altssh.bitbucket.org"}
+        for remote, identity in (
+            ("git@github.com:company/repo.git", self.repository),
+            ("ssh://git@ssh.github.com:443/company/repo.git", self.repository),
+            ("git@gitlab.com:group/sub/repo.git", "gitlab.com/group/sub/repo"),
+            ("ssh://git@altssh.gitlab.com:443/group/sub/repo.git", "gitlab.com/group/sub/repo"),
+            ("git@bitbucket.org:team/repo.git", "bitbucket.org/team/repo"),
+        ):
+            with self.subTest(remote=remote):
+                self.assertEqual(repository_identity(remote, endpoints.get), identity)
+        self.assertEqual(repository_identity("https://ssh.github.com/company/repo"), "ssh.github.com/company/repo")
+
+    def test_bitbucket_server_https_scm_prefix_matches_the_ssh_form(self):
+        for remote in (
+            "https://bitbucket.example.com/scm/proj/repo.git",
+            "https://user@bitbucket.example.com/scm/PROJ/repo.git",
+            "ssh://git@bitbucket.example.com:7999/proj/repo.git",
+        ):
+            with self.subTest(remote=remote):
+                self.assertEqual(repository_identity(remote), "bitbucket.example.com/proj/repo")
+        self.assertEqual(repository_identity("https://bitbucket.example.com/scm/~me/repo.git"), "bitbucket.example.com/~me/repo")
+        # Only the three-segment Bitbucket Server form on self-hosted forges; cloud forges keep their paths.
+        for remote, identity in (
+            ("https://git.example/scm/repo.git", "git.example/scm/repo"),
+            ("https://git.example/scm/a/b/repo.git", "git.example/scm/a/b/repo"),
+            ("https://gitlab.com/scm/sub/repo.git", "gitlab.com/scm/sub/repo"),
+            ("https://dev.azure.com/scm/project/_git/repo", "dev.azure.com/scm/project/repo"),
+        ):
+            with self.subTest(remote=remote):
+                self.assertEqual(repository_identity(remote), identity)
+
+    def test_common_forge_identities_are_unchanged_so_existing_assignments_keep_their_keys(self):
+        # repositories.json keys are hashes of these identities; changing them orphans assignments.
+        for remote, identity in (
+            ("https://github.com/Company/Repo.git", "github.com/company/repo"),
+            ("git@github.com:company/repo.git", "github.com/company/repo"),
+            ("https://gitlab.com/group/sub/repo.git", "gitlab.com/group/sub/repo"),
+            ("git@gitlab.com:group/sub/repo.git", "gitlab.com/group/sub/repo"),
+            ("https://gitlab.example/group/repo.git", "gitlab.example/group/repo"),
+            ("git@gitlab.example:group/repo.git", "gitlab.example/group/repo"),
+            ("https://dev.azure.com/org/project/_git/repo", "dev.azure.com/org/project/repo"),
+            ("git@ssh.dev.azure.com:v3/org/project/repo", "dev.azure.com/org/project/repo"),
+            ("https://dev.azure.com/org/My%20Project/_git/My%20Repo", "dev.azure.com/org/my project/my repo"),
+        ):
+            with self.subTest(remote=remote):
+                self.assertEqual(repository_identity(remote, lambda host: host), identity)
+                self.assertEqual(
+                    RepositoryStore._key(self.gateway, repository_identity(remote)),
+                    RepositoryStore._key(self.gateway, identity),
+                )
+
     def test_find_checkout_reads_origin_and_upstream_without_network(self):
         root = self.home / "fork"
         root.mkdir()

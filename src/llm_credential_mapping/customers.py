@@ -26,7 +26,8 @@ _MAX_RULES_BYTES = 1_048_576
 def validate_customer(value: str) -> str:
     """Validate one exact customer name; reject empty, padded, non-ASCII or comma-containing values.
 
-    The rules are strict enough for any gateway's request header, so no gateway needs its own.
+    The rules are strict enough for any gateway's request header, so no gateway needs its own. A leading
+    ``!`` or ``&`` is refused because LiteLLM's tag routing reads it as an exclude/require directive.
     """
     if (
         not isinstance(value, str)
@@ -34,10 +35,11 @@ def validate_customer(value: str) -> str:
         or len(value) > 256
         or value != value.strip()
         or "," in value
+        or value[0] in "!&"
         or any(not 32 <= ord(char) <= 126 for char in value)
     ):
         raise CredentialError(
-            "Customer must be 1-256 printable ASCII characters, without commas or surrounding whitespace. "
+            "Customer must be 1-256 printable ASCII characters, without commas, surrounding whitespace or a leading ! or &. "
             "Use the exact name the gateway expects; no prefix is added."
         )
     return value
@@ -106,8 +108,14 @@ def read_customer_file(path: Path) -> str:
         raise CredentialError(f"{path}: {error}") from None
 
 
-def write_customer_file(directory: Path, customer: str) -> Path:
+def write_customer_file(directory: Path, customer: str, home: Path | None = None) -> Path:
     path = directory / CUSTOMER_FILE
+    home = (home or Path.home()).resolve()
+    if directory.resolve() in (home, *home.parents):
+        raise CredentialError(
+            f"{path} would be ignored: the home directory and folders above it never assign a customer. "
+            "Run 'repo bind --shared' in a project folder, or a folder below home such as ~/src/acme."
+        )
     content = (
         "# Customer for AI agent usage in this folder and below (llm-credentials).\n"
         f"customer = {json.dumps(validate_customer(customer))}\n"
@@ -162,7 +170,9 @@ class Rules:
             if (
                 not isinstance(rule, dict) or set(rule) != {"match", "customer"}
                 or not isinstance(rule["match"], str) or not 0 < len(rule["match"]) <= 512
-                or any(char.isspace() or ord(char) < 32 for char in rule["match"])
+                # Spaces are allowed inside: identities are percent-decoded (Azure "My Project").
+                or rule["match"] != rule["match"].strip()
+                or any((char.isspace() and char != " ") or ord(char) < 32 for char in rule["match"])
             ):
                 raise CredentialError(f"Invalid rule in the customer rules document: {source}.")
             rules.append((rule["match"].lower(), validate_customer(rule["customer"])))
@@ -254,7 +264,12 @@ class RulesLoader:
                 return cached["document"]  # Stale rules beat no rules during an outage.
             raise
         document, etag = fetched if fetched is not None else (cached["document"], cached["etag"])
-        Rules.parse(document, url)
+        try:
+            Rules.parse(document, url)
+        except CredentialError:
+            if cached is not None:
+                return cached["document"]  # A broken publication must not block those with valid rules.
+            raise
         path = self._cache_path(url)
         try:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

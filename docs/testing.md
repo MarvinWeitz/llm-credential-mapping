@@ -41,6 +41,9 @@ corresponding parts, and before a release:
 - **Copilot Chat** (desktop VS Code): the LLM Credentials models appear in the model picker and in agent
   mode; a chat in a mapped repository shows the customer in the status bar; an unmapped folder offers
   "Assign customer"; the organization's "Bring Your Own Language Model Key" policy allows it.
+- **Interactive Codex on Windows** (CI drives the interactive UI only on Linux and macOS): in a new
+  PowerShell window with the hook, plain `codex` in a mapped repository answers with the customer, also
+  after `codex app-server daemon start` from another folder (the hook's `codex` adds `--no-daemon`).
 - **Claude Code extension**: after `setup claude` and `claudeCode.disableLoginPrompt`, a new conversation
   works without a Claude login; an unmapped repository is blocked with the guard's message; the launch
   folder in multi-root workspaces resolves the expected customer.

@@ -41,7 +41,8 @@ def _claude_headers(existing: str, headers: dict[str, str], replaced: set[str] |
         name, separator, value = line.partition(":")
         if not separator or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
             raise CredentialError("Existing ANTHROPIC_CUSTOM_HEADERS contains an invalid header.")
-        if name.lower() in ("authorization", "x-api-key", "host"):
+        # Any *api-key header: gateways read their own key header (LiteLLM's even before Authorization).
+        if name.lower() in ("authorization", "host") or name.lower().endswith("api-key"):
             raise CredentialError("Remove authentication/routing overrides from ANTHROPIC_CUSTOM_HEADERS before launch.")
         if any(not 32 <= ord(char) <= 126 for char in value):
             raise CredentialError("Existing ANTHROPIC_CUSTOM_HEADERS contains an invalid header value.")
@@ -83,7 +84,7 @@ def _read_json(path: Path) -> tuple[str | None, dict]:
     return raw, value
 
 
-def _write_json(path: Path, value: dict, original: str | None) -> None:
+def _write_json(path: Path, value: dict, original: str | None, follow_symlinks: bool = False) -> None:
     """Replace ``path`` atomically, keeping its permissions, unless someone changed it since it was read."""
     try:
         current = path.read_text(encoding="utf-8") if path.exists() else None
@@ -91,7 +92,9 @@ def _write_json(path: Path, value: dict, original: str | None) -> None:
             raise CredentialError(f"{path} changed while it was being updated; nothing was changed, retry.")
         permissions = path.stat().st_mode & 0o777 if path.exists() else None
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, json.dumps(value, indent=2) + "\n", permissions=permissions)
+        atomic_write_text(
+            path, json.dumps(value, indent=2) + "\n", permissions=permissions, follow_symlinks=follow_symlinks,
+        )
     except OSError:
         raise CredentialError(f"Cannot write {path}; nothing was changed.") from None
 
@@ -177,6 +180,14 @@ class Claude:
             raise CredentialError("Claude setup needs the configuration folder.")
         return context.home / "claude.json"
 
+    def _load_state(self, context: IntegrationContext) -> dict:
+        """What the last setup wrote; empty when unknown."""
+        try:
+            state = json.loads(self._state(context).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return state if isinstance(state, dict) else {}
+
     def setup(self, context: IntegrationContext, model: str | None = None, replace: bool = False) -> list[str]:
         """Configure Claude's user settings for this profile; refuse to replace another tool's credential setup."""
         path = settings_path()
@@ -191,21 +202,33 @@ class Claude:
         hooks = data.setdefault("hooks", {})
         if not isinstance(hooks, dict) or not isinstance(hooks.get("UserPromptSubmit", []), list):
             raise CredentialError(f"{path} has invalid hooks; nothing was changed.")
-        data["apiKeyHelper"] = self.helper(context)
-        env["ANTHROPIC_BASE_URL"] = base_url
-        if model:
-            data["model"] = model
-        hooks["UserPromptSubmit"] = [entry for entry in hooks.get("UserPromptSubmit", []) if not _our_hook(entry)] + [
-            {"hooks": [{"type": "command", "command": self.guard_command(context)}]},
-        ]
-        _write_json(path, data, original)
-        state = {"version": 1, "settings": str(path), "profile": context.profile.name, "base_url": base_url, "model": model}
-        atomic_write_text(self._state(context), json.dumps(state, indent=2) + "\n")
         notes = [
             f"Configured {path} for profile '{context.profile.name}'. New Claude sessions renew credentials "
             "themselves and get the customer of each repository; running sessions pick it up on the next prompt.",
             'For the VS Code extension, add to your VS Code user settings: {"claudeCode.disableLoginPrompt": true}',
         ]
+        # Record only values this setup owns, so remove never deletes the user's own (identical) ones.
+        previous = self._load_state(context)
+        owns_url = env.get("ANTHROPIC_BASE_URL") != base_url or previous.get("base_url") == base_url
+        data["apiKeyHelper"] = self.helper(context)
+        env["ANTHROPIC_BASE_URL"] = base_url
+        if model and data.get("model") in (None, previous.get("model")):
+            data["model"] = model
+        elif model:
+            if data["model"] != model:
+                notes.append(f"Note: {path} already sets a model; it was left unchanged.")
+            model = None
+        elif previous.get("model") is not None and data.get("model") == previous["model"]:
+            model = previous["model"]  # Still ours from an earlier setup: keep it so remove can undo it.
+        hooks["UserPromptSubmit"] = [entry for entry in hooks.get("UserPromptSubmit", []) if not _our_hook(entry)] + [
+            {"hooks": [{"type": "command", "command": self.guard_command(context)}]},
+        ]
+        _write_json(path, data, original, follow_symlinks=True)
+        state = {
+            "version": 1, "settings": str(path), "profile": context.profile.name,
+            "base_url": base_url if owns_url else None, "model": model,
+        }
+        atomic_write_text(self._state(context), json.dumps(state, indent=2) + "\n")
         for name in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
             if os.environ.get(name):
                 notes.append(f"Warning: {name} is set in this environment and takes precedence over the helper; unset it.")
@@ -216,12 +239,7 @@ class Claude:
         path = settings_path()
         original, data = _read_json(path)
         state_path = self._state(context)
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            if not isinstance(state, dict):
-                state = {}
-        except (OSError, ValueError):
-            state = {}
+        state = self._load_state(context)
         env = data.get("env", {})
         helper_was_ours = _ours(data.get("apiKeyHelper"))
         if helper_was_ours:
@@ -242,7 +260,7 @@ class Claude:
         if "env" in data and not data["env"]:
             del data["env"]
         if original is not None:
-            _write_json(path, data, original)
+            _write_json(path, data, original, follow_symlinks=True)
         state_path.unlink(missing_ok=True)
         return [
             f"Removed the llm-credentials configuration from {path}. Restart Claude sessions; "
@@ -296,16 +314,20 @@ class Claude:
     ) -> str | None:
         """Decide a prompt before it is sent: None allows it, a string blocks it with that reason.
 
-        Allows a session whose headers already match the customer, or whose attribution headers come
-        from elsewhere (e.g. ``claude --settings``, a deliberate override). Otherwise writes the local
-        settings file and blocks once, because Claude only uses the reloaded file from the next prompt.
+        Allows a session whose headers already match the customer, or that ``run claude`` started with
+        its own customer (a deliberate override). Otherwise writes the local settings file and blocks
+        once, because Claude only uses the reloaded file from the next prompt. Other headers are stale:
+        Claude keeps a header in its environment after the file stops setting it.
         """
         names = {name.lower() for name in context.gateway.attribution_header_names()}
         present = _header_values(environ.get("ANTHROPIC_CUSTOM_HEADERS", ""), names)
+        # Only a session whose headers carry the override's customer: tools that `run` starts set the
+        # variable too, and a Claude launched from them inherits it while its own headers go stale.
+        override = environ.get(CUSTOMER_VARIABLE)
+        if present and override and override in present.values():
+            return None
         path = self.local_settings(directory, root)
         written = self._written(context, path)
-        if present and present != written:
-            return None
         if attribution is None:
             if written:
                 self.write_local(context, path, None, root)

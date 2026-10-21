@@ -129,7 +129,8 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(provider["auth"]["timeout_ms"], 30000)
 
     def test_claude_invalid_or_auth_overriding_headers_fail_without_secrets(self):
-        for header in ("invalid-secret", "X-Trace: secret\x01", "Authorization: secret", "X-API-Key: secret", "Host: secret"):
+        for header in ("invalid-secret", "X-Trace: secret\x01", "Authorization: secret", "X-API-Key: secret", "Host: secret",
+                       "X-LiteLLM-API-Key: Bearer secret", "api-key: secret"):
             with self.subTest(header=header), patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": header}):
                 with self.assertRaises(CredentialError) as error:
                     agent_command("claude", self.profile, "secret", [], customer="customer:A")

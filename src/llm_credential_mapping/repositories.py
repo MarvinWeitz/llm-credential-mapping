@@ -14,6 +14,10 @@ from .customers import validate_customer
 
 _SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}")
 _AZURE_SSH_HOSTS = ("ssh.dev.azure.com", "vs-ssh.visualstudio.com")
+# Cloud forges whose HTTPS paths never carry Bitbucket Server's /scm/ prefix.
+_NO_SCM_PREFIX = ("github.com", "gitlab.com", "bitbucket.org", "dev.azure.com")
+# SSH-over-port-443 endpoints, reached directly or through a 'HostName' in ~/.ssh/config.
+_SSH_ENDPOINTS = {"ssh.github.com": "github.com", "altssh.gitlab.com": "gitlab.com", "altssh.bitbucket.org": "bitbucket.org"}
 
 
 def _azure_path(host: str, path: str) -> tuple[str, str]:
@@ -35,7 +39,8 @@ def _azure_path(host: str, path: str) -> tuple[str, str]:
 def repository_identity(remote: str, resolve_ssh_host: Callable[[str], str | None] | None = None) -> str:
     """Normalize a Git remote to a lowercase host/path identity shared by its HTTPS and SSH forms.
 
-    Credentials, ports and a trailing .git are removed; Azure DevOps forms are collapsed. SSH host
+    Credentials, ports and a trailing .git are removed; Azure DevOps forms are collapsed, as are
+    forge SSH-over-443 endpoints and the /scm/ prefix of Bitbucket Server HTTPS remotes. SSH host
     aliases are resolved with ``resolve_ssh_host`` when given. Local or ambiguous remotes are rejected.
     """
     if (
@@ -64,6 +69,8 @@ def repository_identity(remote: str, resolve_ssh_host: Callable[[str], str | Non
     if ssh and resolve_ssh_host is not None and _SSH_HOST.fullmatch(host):
         host = resolve_ssh_host(host) or host
     host = host.lower()
+    if ssh:
+        host = _SSH_ENDPOINTS.get(host, host)
     path = unquote(path).strip("/").lower()
     if path.endswith(".git"):
         path = path[:-4]
@@ -74,6 +81,8 @@ def repository_identity(remote: str, resolve_ssh_host: Callable[[str], str | Non
     ):
         raise CredentialError("Git origin has an ambiguous repository path; use --customer.")
     host, path = _azure_path(host, path)
+    if not ssh and host not in _NO_SCM_PREFIX and path.startswith("scm/") and path.count("/") == 2:
+        path = path[4:]  # Bitbucket Server: https://host/scm/project/repo is ssh://host/project/repo.
     host = f"[{host}]" if ":" in host else host
     return f"{host}/{path}"
 

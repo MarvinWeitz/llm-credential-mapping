@@ -19,7 +19,7 @@ from llm_credential_mapping.integrations.common import header_variable
 from llm_credential_mapping.integrations.opencode import OpenCode, PLACEHOLDER_KEY, config_path as opencode_config
 from llm_credential_mapping.profiles import Profile, ProfileStore
 from llm_credential_mapping.registry import gateway_for
-from llm_credential_mapping.shells import SHELLS, assignments, hook
+from llm_credential_mapping.shells import SHELLS, assignments, hook, without_daemon
 from isolation import isolate_tool_configuration
 from live import unavailable
 
@@ -68,6 +68,25 @@ class CodexSetupTests(ToolTestCase):
         notes = Codex().setup(self.context, "alias")
         self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["model"], "mine")
         self.assertTrue(any("left unchanged" in note for note in notes))
+
+
+    def test_setup_and_run_keep_codex_out_of_its_shared_daemon(self):
+        # A shared daemon keeps the environment of the terminal that started it: another folder's customer.
+        path = codex_config()
+        path.parent.mkdir(parents=True)
+        Codex().setup(self.context)
+        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["features"], {"daemon_auto_start": False})
+        argv, _ = Codex().command(self.context, None, ["exec", "hi"], None)
+        self.assertEqual(argv[:2], ["codex", "--no-daemon"])
+        self.assertEqual(argv[-2:], ["exec", "hi"])
+        Codex().remove(self.context)
+        own = "[features]\nweb_search = true\n"
+        path.write_text(own, encoding="utf-8")
+        notes = Codex().setup(self.context)
+        self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8"))["features"], {"web_search": True})
+        self.assertTrue(any("daemon_auto_start = false" in note for note in notes))
+        Codex().remove(self.context)
+        self.assertEqual(path.read_text(encoding="utf-8"), own)
 
 
 class OpenCodeSetupTests(ToolTestCase):
@@ -160,6 +179,24 @@ class CliTests(ToolTestCase):
         self.assertIn(f"set -e {TAG}", stdout)
         self.assertIn(".llm-customer", stderr)
 
+    def test_terminal_command_loads_the_hook_without_a_script_file(self):
+        # For machines whose execution policy blocks profiles: -Command is not a script file.
+        result, stdout, _, _ = self.call("shell-init", "pwsh", "--terminal", "--profile", "unit")
+        self.assertEqual(result, 0)
+        settings = json.loads("{" + stdout.split("(JSON):\n", 1)[1] + "}")
+        args = settings["terminal.integrated.profiles.windows"]["PowerShell (llm-credentials)"]["args"]
+        self.assertEqual(args[:2], ["-NoExit", "-Command"])
+        self.assertIn(f'-NoExit -Command "{args[2]}"', stdout)
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if executable is None:
+            unavailable(self, "pwsh", "pwsh is not installed")
+        check = subprocess.run(
+            [executable, "-NoProfile", "-Command", args[2] + "; [Console]::Write((Get-Command codex).CommandType)"],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        self.assertEqual(check.stdout.strip(), "Function", check.stderr)
+        self.assertEqual(self.call("shell-init", "bash", "--terminal")[0], 1)
+
     def test_shell_init_embeds_this_cli_and_profile(self):
         for shell in SHELLS:
             with self.subTest(shell=shell):
@@ -181,11 +218,11 @@ class ShellTests(unittest.TestCase):
             found = str(candidate) if candidate.is_file() else shutil.which("bash", path=r"C:\Program Files\Git\bin")
         return found
 
-    def run_shell(self, name, script):
+    def run_shell(self, name, script, environment=None):
         executable = self.shell(name)
         if executable is None:
             unavailable(self, name, f"{name} is not installed")
-        environment = {**os.environ, "LLM_CREDENTIALS_TEST_B": "stale"}
+        environment = {**os.environ, "LLM_CREDENTIALS_TEST_B": "stale", **(environment or {})}
         with tempfile.TemporaryDirectory() as directory:
             # No user startup files: they could change the environment under test.
             command = {
@@ -235,3 +272,29 @@ class ShellTests(unittest.TestCase):
                         argv = [Path(arg).as_posix() if index < 2 else arg for index, arg in enumerate(argv)]
                     output = self.run_shell(name, hook(name, argv) + "\n" + cd + "\n" + printer_line)
                     self.assertEqual(Path(output.strip()).resolve(), folder)
+
+    def test_codex_starts_without_the_shared_daemon(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            # A stand-in codex that prints its arguments: a script for POSIX shells, a .cmd for PowerShell on Windows.
+            (folder / "codex").write_text('#!/bin/sh\nprintf "%s " "$@"\n', encoding="utf-8")
+            (folder / "codex").chmod(0o755)
+            (folder / "codex.cmd").write_text("@echo %*\r\n", encoding="utf-8")
+            path = {"PATH": str(folder) + os.pathsep + os.environ.get("PATH", "")}
+            for name in ("bash", "zsh", "fish", "pwsh"):
+                with self.subTest(shell=name):
+                    output = self.run_shell(name, without_daemon(name) + "\ncodex exec hi", path)
+                    self.assertEqual(output.split(), ["--no-daemon", "exec", "hi"])
+
+    def test_pwsh_hook_survives_loading_the_profile_twice(self):
+        # '. $PROFILE' after an edit must not make the wrapper call itself.
+        snippet = hook("pwsh", [sys.executable, "-c", "pass"])
+        script = "function global:prompt { 'PS> ' }\n" + snippet + "\n" + snippet + "\n[Console]::Write((prompt) + '|')"
+        # A profile that defines its own prompt again (a prompt framework) keeps the new one.
+        script += "\nfunction global:prompt { 'NEW> ' }\n" + snippet + "\n[Console]::Write((prompt))"
+        self.assertEqual(self.run_shell("pwsh", script), "PS> |NEW> ")
+
+    def test_bash_hook_keeps_the_exit_status_for_later_prompt_commands(self):
+        # Prompt frameworks after the hook in PROMPT_COMMAND show the last command's status from $?.
+        script = hook("bash", ["true"]) + '\n(exit 7); __llm_credentials_hook; printf "%s|" "$?"'
+        self.assertEqual(self.run_shell("bash", script + '; (exit 3); __llm_credentials_hook; printf "%s" "$?"'), "7|3")

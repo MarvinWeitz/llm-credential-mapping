@@ -98,7 +98,9 @@ export type StreamEvent =
 /** Decode a streamed Chat Completions response (server-sent events) into text and complete tool calls. */
 export class StreamDecoder {
   private buffer = "";
-  private readonly calls = new Map<number, { id: string; name: string; arguments: string }>();
+  /** Tool calls in arrival order; `current` maps a stream index to the call it now continues. */
+  private readonly calls: Array<{ index: number; id: string; name: string; arguments: string }> = [];
+  private readonly current = new Map<number, { index: number; id: string; name: string; arguments: string }>();
 
   push(chunk: string): StreamEvent[] {
     this.buffer += chunk;
@@ -121,11 +123,16 @@ export class StreamDecoder {
         if (typeof delta.content === "string" && delta.content) events.push({ kind: "text", text: delta.content });
         for (const call of delta.tool_calls ?? []) {
           const index = typeof call.index === "number" ? call.index : 0;
-          const entry = this.calls.get(index) ?? { id: "", name: "", arguments: "" };
+          let entry = this.current.get(index);
+          // A new id at a known index is another call: some gateways give every parallel call index 0.
+          if (!entry || (call.id && entry.id && call.id !== entry.id)) {
+            entry = { index, id: "", name: "", arguments: "" };
+            this.calls.push(entry);
+            this.current.set(index, entry);
+          }
           entry.id ||= call.id ?? "";
           entry.name ||= call.function?.name ?? "";
           entry.arguments += call.function?.arguments ?? "";
-          this.calls.set(index, entry);
         }
         if (choice?.finish_reason) events.push(...this.flush());
       }
@@ -136,7 +143,8 @@ export class StreamDecoder {
   /** Emit tool calls still pending when the stream ends. */
   flush(): StreamEvent[] {
     const events: StreamEvent[] = [];
-    for (const [index, call] of [...this.calls.entries()].sort(([a], [b]) => a - b)) {
+    for (const call of [...this.calls].sort((a, b) => a.index - b.index)) {
+      const index = call.index;
       let input: object = {};
       if (call.arguments.trim()) {
         try {
@@ -147,13 +155,19 @@ export class StreamDecoder {
       }
       events.push({ kind: "toolCall", callId: call.id || `call_${index}`, name: call.name, input });
     }
-    this.calls.clear();
+    this.calls.length = 0;
+    this.current.clear();
     return events;
   }
 }
 
+/** About what one full-size image costs upstream; its base64 length says nothing about its tokens. */
+export const IMAGE_TOKENS = 1600;
+
 /** A rough token estimate (about four characters per token); the gateway's tokenizer is not available locally. */
 export function estimateTokens(value: string | InputMessage): number {
-  const content = typeof value === "string" ? value : JSON.stringify(toOpenAIMessages([value]));
-  return Math.ceil(content.length / 4);
+  if (typeof value === "string") return Math.ceil(value.length / 4);
+  const images = value.content.filter(isImage).length;
+  const rest = { role: value.role, content: value.content.filter((part) => !isImage(part)) };
+  return Math.ceil(JSON.stringify(toOpenAIMessages([rest])).length / 4) + images * IMAGE_TOKENS;
 }

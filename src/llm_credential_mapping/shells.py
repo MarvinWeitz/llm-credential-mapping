@@ -43,7 +43,8 @@ def hook(shell: str, argv: list[str]) -> str:
         return "\n".join([
             "# llm-credentials: set the customer for tools started from this directory.",
             "$global:__LlmCredentialsDirectory = $null",
-            "$global:__LlmCredentialsPrompt = $function:prompt",
+            "# Loading the profile again must not wrap the wrapper (it would call itself).",
+            "if (\"$function:prompt\" -notmatch '__LlmCredentialsPrompt') { $global:__LlmCredentialsPrompt = $function:prompt }",
             "function global:prompt {",
             "    if ($PWD.Path -ne $global:__LlmCredentialsDirectory) {",
             "        $global:__LlmCredentialsDirectory = $PWD.Path",
@@ -72,13 +73,38 @@ def hook(shell: str, argv: list[str]) -> str:
     return "\n".join([
         "# llm-credentials: set the customer for tools started from this directory.",
         "__llm_credentials_hook() {",
+        "    local status=$?  # Keep $? for prompt commands that run after this one.",
         '    if [ "$PWD" != "${__llm_credentials_directory-}" ]; then',
         '        __llm_credentials_directory="$PWD"',
         f'        eval "$({command} --directory "$PWD")"',
         "    fi",
+        '    return "$status"',
         "}",
         'case ";${PROMPT_COMMAND-};" in',
         '    *";__llm_credentials_hook;"*) ;;',
         '    *) PROMPT_COMMAND="__llm_credentials_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;',
         "esac",
     ])
+
+
+def without_daemon(shell: str, tool: str = "codex") -> str:
+    """Make ``tool`` start ``--no-daemon``: a shared daemon would keep another terminal's customer variables."""
+    if shell == "pwsh":
+        return "\n".join([
+            f"function global:{tool} {{",
+            f"    & (Get-Command {tool} -CommandType Application | Select-Object -First 1) --no-daemon @args",
+            "}",
+        ])
+    if shell == "fish":
+        return f"function {tool} --wraps {tool}\n    command {tool} --no-daemon $argv\nend"
+    return f'{tool}() {{ command {tool} --no-daemon "$@"; }}'
+
+
+def pwsh_loader(argv: list[str]) -> list[str]:
+    """PowerShell arguments that load the hook printed by ``argv`` without any script file.
+
+    For machines whose execution policy blocks profiles and other .ps1 files: the policy does not
+    apply to commands passed with -Command, so a terminal can load the hook when it starts.
+    """
+    command = "& " + " ".join(_single_quoted(arg, "pwsh") for arg in argv) + " | Out-String | Invoke-Expression"
+    return ["-NoExit", "-Command", command]
