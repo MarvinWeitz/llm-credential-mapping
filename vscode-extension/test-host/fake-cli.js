@@ -1,6 +1,6 @@
-// Stands in for the llm-credentials CLI in extension-host tests: answers profile show, token and repo show.
+// Stands in for the vkm CLI in extension-host tests: answers profile show, token and repo show.
 const args = process.argv.slice(2);
-const gateway = process.env.LLM_CREDENTIALS_TEST_GATEWAY;
+const gateway = process.env.VKM_TEST_GATEWAY;
 const fail = (message) => {
   process.stderr.write(`Error: ${message}\n`);
   process.exit(1);

@@ -16,8 +16,8 @@ from .errors import CredentialError
 from .profiles import Profile, ProfileStore, atomic_write_text, gateway_origin
 from .transport import REQUEST_TIMEOUT_SECONDS, NoRedirects
 
-CUSTOMER_FILE = ".llm-customer"
-OVERRIDE_VARIABLE = "LLM_CREDENTIALS_CUSTOMER"
+CUSTOMER_FILE = ".vkm"
+OVERRIDE_VARIABLE = "VKM_CUSTOMER"
 RULES_CACHE_SECONDS = 3600
 _MAX_FILE_BYTES = 4096
 _MAX_RULES_BYTES = 1_048_576
@@ -77,7 +77,7 @@ class Attribution:
 
 
 def find_customer_file(directory: Path, home: Path | None = None) -> Path | None:
-    """Return the nearest .llm-customer in ``directory`` or a parent.
+    """Return the nearest .vkm in ``directory`` or a parent.
 
     Inside the home directory the search stops below it: the home directory itself and folders
     above it (often shared, like C:\\Users or /home) never assign a customer.
@@ -117,7 +117,7 @@ def write_customer_file(directory: Path, customer: str, home: Path | None = None
             "Run 'repo bind --shared' in a project folder, or a folder below home such as ~/src/acme."
         )
     content = (
-        "# Customer for AI agent usage in this folder and below (llm-credentials).\n"
+        "# Customer for AI agent usage in this folder and below (vkm).\n"
         f"customer = {json.dumps(validate_customer(customer))}\n"
     )
     try:
@@ -318,9 +318,9 @@ def resolve_customer(
 ) -> Attribution | None:
     """Choose the customer for a directory; first match wins.
 
-    1. ``explicit`` (--customer) or the LLM_CREDENTIALS_CUSTOMER environment variable;
+    1. ``explicit`` (--customer) or the VKM_CUSTOMER environment variable;
     2. the developer's local override (``repo bind``) for the origin, then the upstream remote;
-    3. the nearest committed .llm-customer file;
+    3. the nearest committed .vkm file;
     4. the profile's central rules, matched against origin, then upstream.
 
     ``checkout`` is the ``repositories.Checkout`` for ``directory`` or None outside Git. Return None when
@@ -359,7 +359,7 @@ def unmapped_error(directory: Path, checkout) -> CredentialError:
         else f"folder {directory}"
     )
     return CredentialError(
-        f"No customer is assigned to {where}. Run 'llm-credentials repo bind' in a terminal "
-        "(only for you), 'llm-credentials repo bind --shared' (writes a .llm-customer file to commit for the team), "
+        f"No customer is assigned to {where}. Run 'vkm repo bind' in a terminal "
+        "(only for you), 'vkm repo bind --shared' (writes a .vkm file to commit for the team), "
         "or ask for a central rule; use --customer NAME for a single launch. Nothing was sent untagged."
     )

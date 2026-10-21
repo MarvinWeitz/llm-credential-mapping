@@ -11,15 +11,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.adapters import Credential, IntegrationContext
-from llm_credential_mapping.cli import main
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.integrations.codex import Codex, config_path as codex_config
-from llm_credential_mapping.integrations.common import header_variable
-from llm_credential_mapping.integrations.opencode import OpenCode, PLACEHOLDER_KEY, config_path as opencode_config
-from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.registry import gateway_for
-from llm_credential_mapping.shells import SHELLS, assignments, hook, without_daemon
+from virtual_key_mapper.adapters import Credential, IntegrationContext
+from virtual_key_mapper.cli import main
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.integrations.codex import Codex, config_path as codex_config
+from virtual_key_mapper.integrations.common import header_variable
+from virtual_key_mapper.integrations.opencode import OpenCode, PLACEHOLDER_KEY, config_path as opencode_config
+from virtual_key_mapper.profiles import Profile, ProfileStore
+from virtual_key_mapper.registry import gateway_for
+from virtual_key_mapper.shells import SHELLS, assignments, hook, without_daemon
 from isolation import isolate_tool_configuration
 from live import unavailable
 
@@ -45,21 +45,21 @@ class CodexSetupTests(ToolTestCase):
         Codex().setup(self.context, "alias")
         Codex().setup(self.context, "alias")
         config = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual((config["model_provider"], config["model"], config["approval_policy"]), ("llm-credentials", "alias", "never"))
-        provider = config["model_providers"]["llm-credentials"]
+        self.assertEqual((config["model_provider"], config["model"], config["approval_policy"]), ("vkm", "alias", "never"))
+        provider = config["model_providers"]["vkm"]
         self.assertEqual(provider["base_url"], "https://gateway.example/v1")
         self.assertEqual(provider["env_http_headers"], {"x-litellm-tags": TAG, "x-litellm-spend-logs-metadata": METADATA})
         self.assertEqual(provider["auth"]["command"], sys.executable)
         self.assertEqual(provider["auth"]["args"][-4:], ["token", "--profile", "unit", "--require-attribution-env"])
         self.assertIn(str(self.home), provider["auth"]["args"])
-        self.assertEqual(path.read_text(encoding="utf-8").count("llm-credentials tables"), 2)
+        self.assertEqual(path.read_text(encoding="utf-8").count("vkm tables"), 2)
         Codex().remove(self.context)
         self.assertEqual(path.read_text(encoding="utf-8"), original)
 
     def test_setup_refuses_another_provider_and_keeps_an_existing_model(self):
         path = codex_config()
         path.parent.mkdir(parents=True)
-        for content in ('model_provider = "openai"\n', '[model_providers.llm-credentials]\nname = "x"\n', "not toml ="):
+        for content in ('model_provider = "openai"\n', '[model_providers.vkm]\nname = "x"\n', "not toml ="):
             path.write_text(content, encoding="utf-8")
             with self.subTest(content=content), self.assertRaises(CredentialError):
                 Codex().setup(self.context)
@@ -92,8 +92,8 @@ class CodexSetupTests(ToolTestCase):
 class OpenCodeSetupTests(ToolTestCase):
     def setup_opencode(self, model="alias", listed=None):
         response = {"data": [{"id": name} for name in (listed or [])]} if listed is not None else None
-        with patch("llm_credential_mapping.integrations.opencode.shutil.which", return_value=None), \
-                patch("llm_credential_mapping.integrations.opencode.JsonTransport.request",
+        with patch("virtual_key_mapper.integrations.opencode.shutil.which", return_value=None), \
+                patch("virtual_key_mapper.integrations.opencode.JsonTransport.request",
                       return_value=response, side_effect=None if response else CredentialError("offline")) as request:
             notes = OpenCode().setup(self.context, model)
         return notes, request
@@ -105,12 +105,12 @@ class OpenCodeSetupTests(ToolTestCase):
         _, request = self.setup_opencode(listed=["alias", "other-model"])
         self.assertEqual(request.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
         config = json.loads(path.read_text(encoding="utf-8"))
-        provider = config["provider"]["llm-credentials"]
+        provider = config["provider"]["vkm"]
         self.assertEqual(provider["options"], {"baseURL": "https://gateway.example/v1", "apiKey": PLACEHOLDER_KEY})
         self.assertEqual(sorted(provider["models"]), ["alias", "other-model"])
-        self.assertEqual(config["model"], "llm-credentials/alias")
+        self.assertEqual(config["model"], "vkm/alias")
         self.assertEqual(config["plugin"][0], "other-plugin")
-        plugin = self.home / "opencode" / "llm-credentials-unit.js"
+        plugin = self.home / "opencode" / "vkm-unit.js"
         self.assertEqual(config["plugin"][1], plugin.as_uri())
         self.assertIn('"profile": "unit"', plugin.read_text(encoding="utf-8"))
         self.assertNotIn("secret", plugin.read_text(encoding="utf-8"))
@@ -121,7 +121,7 @@ class OpenCodeSetupTests(ToolTestCase):
 
     def test_without_a_model_list_the_given_model_is_used_or_setup_fails(self):
         self.setup_opencode("alias", listed=None)
-        self.assertEqual(list(json.loads(opencode_config().read_text(encoding="utf-8"))["provider"]["llm-credentials"]["models"]), ["alias"])
+        self.assertEqual(list(json.loads(opencode_config().read_text(encoding="utf-8"))["provider"]["vkm"]["models"]), ["alias"])
         with self.assertRaises(CredentialError):
             self.setup_opencode(None, listed=None)
 
@@ -147,10 +147,10 @@ class CliTests(ToolTestCase):
     def call(self, *args, environ=None):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), patch.dict(os.environ, environ or {}), \
-                patch("llm_credential_mapping.cli.find_checkout", return_value=None), \
-                patch("llm_credential_mapping.customers.Path.home", return_value=self.root), \
-                patch("llm_credential_mapping.cli.NativeKeyring"), \
-                patch("llm_credential_mapping.cli.auth_for") as auth:
+                patch("virtual_key_mapper.cli.find_checkout", return_value=None), \
+                patch("virtual_key_mapper.customers.Path.home", return_value=self.root), \
+                patch("virtual_key_mapper.cli.NativeKeyring"), \
+                patch("virtual_key_mapper.cli.auth_for") as auth:
             auth.return_value.credential.return_value = Credential("token-secret")
             result = main(["--home", str(self.home), *args])
         return result, stdout.getvalue(), stderr.getvalue(), auth
@@ -169,22 +169,22 @@ class CliTests(ToolTestCase):
         result, stdout, stderr, _ = self.call("repo", "show", "--env", "bash", "--directory", str(self.folder))
         self.assertEqual((result, stderr), (0, ""))
         self.assertEqual(stdout.splitlines(), [f"unset {TAG}", f"unset {METADATA}"])
-        (self.folder / ".llm-customer").write_text("customer = \"customer:A\"\n", encoding="utf-8")
+        (self.folder / ".vkm").write_text("customer = \"customer:A\"\n", encoding="utf-8")
         _, stdout, _, _ = self.call("repo", "show", "--env", "pwsh", "--directory", str(self.folder))
         self.assertIn(f"$env:{TAG} = 'customer:A'", stdout)
         self.assertIn(f"$env:{METADATA} = '{{\"customer_source\":\"file\"}}'", stdout)
-        (self.folder / ".llm-customer").write_text("customer = 'a,b'\n", encoding="utf-8")
+        (self.folder / ".vkm").write_text("customer = 'a,b'\n", encoding="utf-8")
         result, stdout, stderr, _ = self.call("repo", "show", "--env", "fish", "--directory", str(self.folder))
         self.assertEqual(result, 0)
         self.assertIn(f"set -e {TAG}", stdout)
-        self.assertIn(".llm-customer", stderr)
+        self.assertIn(".vkm", stderr)
 
     def test_terminal_command_loads_the_hook_without_a_script_file(self):
         # For machines whose execution policy blocks profiles: -Command is not a script file.
         result, stdout, _, _ = self.call("shell-init", "pwsh", "--terminal", "--profile", "unit")
         self.assertEqual(result, 0)
         settings = json.loads("{" + stdout.split("(JSON):\n", 1)[1] + "}")
-        args = settings["terminal.integrated.profiles.windows"]["PowerShell (llm-credentials)"]["args"]
+        args = settings["terminal.integrated.profiles.windows"]["PowerShell (vkm)"]["args"]
         self.assertEqual(args[:2], ["-NoExit", "-Command"])
         self.assertIn(f'-NoExit -Command "{args[2]}"', stdout)
         executable = shutil.which("pwsh") or shutil.which("powershell")
@@ -207,7 +207,7 @@ class CliTests(ToolTestCase):
 
 
 class ShellTests(unittest.TestCase):
-    VALUES = {"LLM_CREDENTIALS_TEST_A": "it's \"quoted\" $HOME `x` \\n", "LLM_CREDENTIALS_TEST_B": None}
+    VALUES = {"VKM_TEST_A": "it's \"quoted\" $HOME `x` \\n", "VKM_TEST_B": None}
 
     def shell(self, name):
         if name == "pwsh":
@@ -222,7 +222,7 @@ class ShellTests(unittest.TestCase):
         executable = self.shell(name)
         if executable is None:
             unavailable(self, name, f"{name} is not installed")
-        environment = {**os.environ, "LLM_CREDENTIALS_TEST_B": "stale", **(environment or {})}
+        environment = {**os.environ, "VKM_TEST_B": "stale", **(environment or {})}
         with tempfile.TemporaryDirectory() as directory:
             # No user startup files: they could change the environment under test.
             command = {
@@ -238,15 +238,15 @@ class ShellTests(unittest.TestCase):
 
     def test_assignments_survive_quotes_and_unset_stale_values(self):
         printers = {
-            "bash": 'printf "%s|%s" "$LLM_CREDENTIALS_TEST_A" "${LLM_CREDENTIALS_TEST_B-unset}"',
-            "zsh": 'printf "%s|%s" "$LLM_CREDENTIALS_TEST_A" "${LLM_CREDENTIALS_TEST_B-unset}"',
-            "fish": 'printf "%s|" "$LLM_CREDENTIALS_TEST_A"; set -q LLM_CREDENTIALS_TEST_B; and printf set; or printf unset',
-            "pwsh": '[Console]::Write($env:LLM_CREDENTIALS_TEST_A + "|" + $(if ($env:LLM_CREDENTIALS_TEST_B) { "set" } else { "unset" }))',
+            "bash": 'printf "%s|%s" "$VKM_TEST_A" "${VKM_TEST_B-unset}"',
+            "zsh": 'printf "%s|%s" "$VKM_TEST_A" "${VKM_TEST_B-unset}"',
+            "fish": 'printf "%s|" "$VKM_TEST_A"; set -q VKM_TEST_B; and printf set; or printf unset',
+            "pwsh": '[Console]::Write($env:VKM_TEST_A + "|" + $(if ($env:VKM_TEST_B) { "set" } else { "unset" }))',
         }
         for name, printer in printers.items():
             with self.subTest(shell=name):
                 output = self.run_shell(name, assignments(name, self.VALUES) + "\n" + printer)
-                self.assertEqual(output.strip(), self.VALUES["LLM_CREDENTIALS_TEST_A"] + "|unset")
+                self.assertEqual(output.strip(), self.VALUES["VKM_TEST_A"] + "|unset")
 
     def test_hooks_run_the_command_with_the_current_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -254,17 +254,17 @@ class ShellTests(unittest.TestCase):
             printer = Path(directory) / "printer.py"
             printer.write_text(
                 "import sys\nshell, folder = sys.argv[1], sys.argv[sys.argv.index('--directory') + 1]\n"
-                "values = {'LLM_CREDENTIALS_TEST_A': folder}\n"
+                "values = {'VKM_TEST_A': folder}\n"
                 "sys.path.insert(0, " + json.dumps(str(Path(__file__).resolve().parents[1] / "src")) + ")\n"
-                "from llm_credential_mapping.shells import assignments\nprint(assignments(shell, values))\n",
+                "from virtual_key_mapper.shells import assignments\nprint(assignments(shell, values))\n",
                 encoding="utf-8",
             )
             for name, cd, printer_line in (
-                ("bash", f"cd {json.dumps(folder.as_posix())} && __llm_credentials_hook", 'printf "%s" "$LLM_CREDENTIALS_TEST_A"'),
-                ("pwsh", f"Set-Location -LiteralPath '{folder}'; prompt | Out-Null", "[Console]::Write($env:LLM_CREDENTIALS_TEST_A)"),
+                ("bash", f"cd {json.dumps(folder.as_posix())} && __vkm_hook", 'printf "%s" "$VKM_TEST_A"'),
+                ("pwsh", f"Set-Location -LiteralPath '{folder}'; prompt | Out-Null", "[Console]::Write($env:VKM_TEST_A)"),
                 # zsh (chpwd) and fish (PWD variable event) run the hook on cd, also in scripts.
-                ("zsh", f"cd {json.dumps(folder.as_posix())}", 'printf "%s" "$LLM_CREDENTIALS_TEST_A"'),
-                ("fish", f"cd {json.dumps(folder.as_posix())}", 'printf "%s" "$LLM_CREDENTIALS_TEST_A"'),
+                ("zsh", f"cd {json.dumps(folder.as_posix())}", 'printf "%s" "$VKM_TEST_A"'),
+                ("fish", f"cd {json.dumps(folder.as_posix())}", 'printf "%s" "$VKM_TEST_A"'),
             ):
                 with self.subTest(shell=name):
                     argv = [sys.executable, str(printer), name]
@@ -296,5 +296,5 @@ class ShellTests(unittest.TestCase):
 
     def test_bash_hook_keeps_the_exit_status_for_later_prompt_commands(self):
         # Prompt frameworks after the hook in PROMPT_COMMAND show the last command's status from $?.
-        script = hook("bash", ["true"]) + '\n(exit 7); __llm_credentials_hook; printf "%s|" "$?"'
-        self.assertEqual(self.run_shell("bash", script + '; (exit 3); __llm_credentials_hook; printf "%s" "$?"'), "7|3")
+        script = hook("bash", ["true"]) + '\n(exit 7); __vkm_hook; printf "%s|" "$?"'
+        self.assertEqual(self.run_shell("bash", script + '; (exit 3); __vkm_hook; printf "%s" "$?"'), "7|3")

@@ -49,11 +49,11 @@ Decisions made:
 ## Target architecture
 
 ```text
-one-time per machine   llm-credentials profile add / login
-                       llm-credentials setup claude|codex|opencode   (user-level config, reversible)
+one-time per machine   vkm profile add / login
+                       vkm setup claude|codex|opencode   (user-level config, reversible)
                        install the VS Code extension (Copilot)
-per repository         nothing if a central rule matches; otherwise one committed .llm-customer
-per request            each tool calls `llm-credentials token` (cached, renewed early)
+per repository         nothing if a central rule matches; otherwise one committed .vkm
+per request            each tool calls `vkm token` (cached, renewed early)
                        and sends the gateway's attribution headers for the resolved customer
                        (LiteLLM: x-litellm-tags + x-litellm-spend-logs-metadata)
 ```
@@ -62,9 +62,9 @@ per request            each tool calls `llm-credentials token` (cached, renewed 
   and renews it. Tools never get a static token; they run a credential helper.
 - **Customer resolver** (one function used by every integration), first match
   wins:
-  1. explicit `--customer` or `LLM_CREDENTIALS_CUSTOMER`
+  1. explicit `--customer` or `VKM_CUSTOMER`
   2. personal local override (`repositories.json`, written only by `repo bind`)
-  3. nearest committed `.llm-customer` (walking up from the working directory;
+  3. nearest committed `.vkm` (walking up from the working directory;
      skip `$HOME` itself)
   4. central rules (glob on the normalized Git origin, then `upstream`)
   5. unmapped → terminal picker in a TTY, otherwise block
@@ -97,7 +97,7 @@ LiteLLM gateway, but a fixed key (a LiteLLM virtual key or any bearer key) works
 with every gateway. A profile names one of each, and an auth kind can restrict
 which gateway kinds it accepts (`litellm-sso` → `litellm` only).
 
-Interfaces (`src/llm_credential_mapping/adapters.py`, the only abstraction layer):
+Interfaces (`src/virtual_key_mapper/adapters.py`, the only abstraction layer):
 
 ```python
 class Api(StrEnum):            # what a tool speaks; a gateway maps each to a base URL
@@ -133,7 +133,7 @@ GATEWAYS = {"litellm": ...}
 INTEGRATIONS = {"claude": ..., "codex": ..., "opencode": ...}
 
 # Attribution and Tag are core types (customers.py). IntegrationContext bundles
-# the profile, its Gateway instance and the `llm-credentials token` helper command.
+# the profile, its Gateway instance and the `vkm token` helper command.
 ```
 
 The signatures are a starting point; adjust them while implementing step 2 as
@@ -224,7 +224,7 @@ no token. The review covered these lenses:
 - Security: `token --json` output, error messages never contain response bodies,
   concurrent logins revoke the right grant.
 - Regressions: every old CLI option still exists (compare with
-  `git show ee72c6b:src/llm_credential_mapping/cli.py`); Windows/macOS file locking.
+  `git show ee72c6b:src/virtual_key_mapper/cli.py`); Windows/macOS file locking.
 
 **Step 2 done (2026-10-08), 298 tests passing on Windows.** Layout now:
 `adapters.py` (interfaces), `registry.py` (the three tables plus
@@ -250,7 +250,7 @@ no token. The review covered these lenses:
 **Step 3 done (2026-10-08), 320 tests passing on Windows.** Implemented as
 described below, with these differences:
 
-- The `.llm-customer` search stops *at* the home directory instead of only
+- The `.vkm` search stops *at* the home directory instead of only
   skipping it: folders above home (`C:\Users`, `/home`) are often shared, and a
   file there must not assign customers to everyone's projects. Folders outside
   home are searched up to the filesystem root.
@@ -260,7 +260,7 @@ described below, with these differences:
   and `profile update NAME --rules X | --no-rules` keeps the vault account.
 - `run` and `repo show` resolve in the current directory; `repo show --json`
   prints `customer`, `source`, `detail`, `repository` and `headers`.
-- `repo bind --shared` overwrites an existing `.llm-customer` and warns when a
+- `repo bind --shared` overwrites an existing `.vkm` and warns when a
   personal or environment override still takes precedence there.
 - Rule order decides (changed from "origin against all rules before
   upstream"): each rule is tried against origin, then upstream, before the
@@ -271,7 +271,7 @@ described below, with these differences:
 see below). `integrations/claude.py` now has `setup`/`remove`, the prompt
 `guard`, the `.claude/settings.local.json` writer and `run claude` via
 `--settings`. Deleted: the `claude.py` wrapper, `windows_process.py`,
-`editor_settings.py`, `workspaces.py`, the `llm-credentials-claude` entry point
+`editor_settings.py`, `workspaces.py`, the `vkm-claude` entry point
 and their tests. `request_context.py` stays for the Copilot bridge (step 7).
 
 - Commands: `setup claude [--profile P] [--model M] [--replace] [--remove]`
@@ -282,7 +282,7 @@ and their tests. `request_context.py` stays for the Copilot bridge (step 7).
 - `repo bind`/`unbind` rewrite `.claude/settings.local.json` files this tool
   wrote (checkout root and the given directory), so running sessions follow.
 - Live test `tests/test_claude_native.py` (set
-  `LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY`; temporary `CLAUDE_CONFIG_DIR`,
+  `VKM_TEST_CLAUDE_BINARY`; temporary `CLAUDE_CONFIG_DIR`,
   fake gateway, stub helper). Passed with the VS Code extension's bundled
   Claude Code 2.1.292 on Windows: unmapped repo blocked with zero gateway
   requests; assignment blocks once, then every request carries the tag and
@@ -307,22 +307,22 @@ and their tests. `request_context.py` stays for the Copilot bridge (step 7).
 
 **Step 5 done (2026-10-08), 254 tests passing on Windows** (plus 6 live tests
 in `tests/test_tools_native.py` with Codex 0.161.0 and OpenCode 1.18.34; set
-`LLM_CREDENTIAL_MAPPING_TEST_CODEX_BINARY` / `..._OPENCODE_BINARY`).
+`VKM_TEST_CODEX_BINARY` / `..._OPENCODE_BINARY`).
 
 - Codex: `setup codex` writes two marker-delimited blocks into
   `${CODEX_HOME:-~/.codex}/config.toml` (refuses another `model_provider`,
   keeps an existing `model`); `run codex` passes the same provider with `-c`
-  and no token in the environment. Provider id is `llm-credentials` for all
+  and no token in the environment. Provider id is `vkm` for all
   tools. **Verified on the wire: when the token command fails, Codex sends the
   request without any Authorization header** (not a hard stop); the gateway
   rejects it, so nothing untagged is billed, but the prompt text reaches the
   gateway. A gateway-side tag requirement remains the real safety net.
 - `token --require-attribution-env`, `repo show --env SHELL` and
   `shell-init bash|zsh|fish|pwsh` (new `shells.py`) set only the nonsecret
-  `LLM_CREDENTIALS_HEADER_*` variables per directory. Bash and Windows
+  `VKM_HEADER_*` variables per directory. Bash and Windows
   PowerShell hooks are tested in real shells; PowerShell reads multi-line
   functions correctly only from a script file (as a profile is).
-- OpenCode v1: a generated plugin (`<home>/opencode/llm-credentials-PROFILE.js`)
+- OpenCode v1: a generated plugin (`<home>/opencode/vkm-PROFILE.js`)
   hooks `chat.headers`. Verified with 1.18.34: plugins load from a `file://`
   URL in `plugin`; the hook input has `model.providerID` and
   `provider.options.baseURL` (the plugin refuses other base URLs); setting
@@ -332,7 +332,7 @@ in `tests/test_tools_native.py` with Codex 0.161.0 and OpenCode 1.18.34; set
   `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` (models from the
   gateway's OpenAI model list, or `--model`); `run opencode` uses the same
   plugin via `OPENCODE_CONFIG_CONTENT`, passing `--customer` as
-  `LLM_CREDENTIALS_CUSTOMER` to the plugin's resolver.
+  `VKM_CUSTOMER` to the plugin's resolver.
 - OpenCode v2 (different plugin API, not installed here): `setup` refuses;
   `run` keeps the previous launch-time token with fixed headers.
 - Not covered: the Codex IDE extension (no per-repository environment).
@@ -343,7 +343,7 @@ in `tests/test_tools_native.py` with Codex 0.161.0 and OpenCode 1.18.34; set
 
 **Step 6 done (2026-10-08).** `vscode-extension/` (TypeScript, written from
 scratch rather than forked, so it contains no LiteLLM paths or headers; license
-`UNLICENSED` like the repository). It registers vendor `llm-credentials` with
+`UNLICENSED` like the repository). It registers vendor `vkm` with
 the stable `LanguageModelChatProvider` API (VS Code 1.104+) and uses only the
 CLI's JSON contracts: `profile show --json` (the `openai-chat` endpoint),
 `token --json` (cached until 60 s before expiry, at most 4 min; one retry
@@ -352,7 +352,7 @@ after a 401) and `repo show --json --directory FOLDER` (cached 30 s).
 - Folder choice: the only folder; else the active editor's folder; else the
   folder chosen in the status bar; else, if all folders share a customer, that
   one; otherwise requests fail and the status bar asks for a choice.
-- Notifications offer "Sign in" (a terminal running `llm-credentials login`)
+- Notifications offer "Sign in" (a terminal running `vkm login`)
   or "Assign customer" (a terminal running `repo bind --directory FOLDER`).
 - Models from `<openai-chat endpoint>/models`; token limits and image input
   come from settings (not discovered). Requests stream
@@ -379,7 +379,7 @@ Review against the goals:
 
 1. Interaction: once per machine (`profile add`, `login`, `setup` per tool, the Codex shell
    hook, the VS Code extensions); per repository nothing when a central rule or committed
-   `.llm-customer` applies, otherwise one `repo bind`.
+   `.vkm` applies, otherwise one `repo bind`.
 2. Tools: Claude Code CLI, Codex and OpenCode v1 verified live; Copilot Chat verified by the
    user locally and in a Dev Container; Dev Containers verified by the user. Not verified:
    the Claude Code VS Code extension UI, macOS, SSH/WSL, Claude/Codex/OpenCode inside a
@@ -401,24 +401,24 @@ access). The refresh grant stays in the local OS vault; containers only get
 short-lived access tokens on request. No service, no network port.
 
 - CLI: auth kind `forwarded` (`auth/forwarded.py`, any gateway kind): asks a
-  Unix socket (`$LLM_CREDENTIALS_AGENT`, else
-  `$XDG_RUNTIME_DIR/llm-credentials/agent.sock`, else
-  `/tmp/llm-credentials-<uid>/agent.sock`) with one JSON line
+  Unix socket (`$VKM_AGENT`, else
+  `$XDG_RUNTIME_DIR/vkm/agent.sock`, else
+  `/tmp/vkm-<uid>/agent.sock`) with one JSON line
   `{"version":1,"operation":"token"|"profile","profile":NAME}`. `login`/`logout`
   point to the local machine. `profile add ... --auth forwarded
   [--host-profile NAME]`. Auth kinds now get a vault *factory*, so commands in
   containers never open an OS vault (there is none).
 - Main extension (`vscode-extension/src/agent.ts`): in remote windows it serves
   that socket (directory must be ours and private, socket 0600; a second window
-  on the same container waits and takes over), sets `LLM_CREDENTIALS_AGENT` for
+  on the same container waits and takes over), sets `VKM_AGENT` for
   terminals, relays each request with `vscode.commands.executeCommand`, and
   creates a `forwarded` profile from the local one when the container has none.
-  `llmCredentials.command` is now machine-scoped, so the local value does not
+  `vkm.command` is now machine-scoped, so the local value does not
   leak into containers.
-- Companion `vscode-extension/local/` ("LLM Credentials: local sign-in",
-  `extensionKind: ui`): commands `llmCredentials.local.request` (token or
+- Companion `vscode-extension/local/` ("Virtual Key Mapper: local sign-in",
+  `extensionKind: ui`): commands `vkm.local.request` (token or
   nonsecret profile description, via the local CLI) and
-  `llmCredentials.local.signIn` (runs `login` locally with a progress note).
+  `vkm.local.signIn` (runs `login` locally with a progress note).
 - The CLI must be installed in the container (`pip install`); packaging it as
   a Dev Container feature is done by the user, outside this repository.
 - Tests: Python client against a socket pair; relay server on a Windows named
@@ -463,7 +463,7 @@ Today LiteLLM leaks into the core: `Profile.team_id` (`profiles.py`),
    gateway + auth, so changing any of them gives a separate vault entry.
    Including the folder (decided 2026-10-08) fixes a race: today the lock file
    lives in the configuration folder but the vault entry does not, so two
-   folders (`--home`, `LLM_CREDENTIAL_MAPPING_HOME`) with the same profile share
+   folders (`--home`, `VKM_HOME`) with the same profile share
    one sign-in without sharing a lock, and concurrent renewals can lose a
    rotated grant without revoking it. Cost: reaching the same folder through two
    different paths means signing in twice. Add a test with two folders and one
@@ -504,7 +504,7 @@ header), `cli.py`, tests.
    - `find_checkout(directory) -> Checkout(root, origin, upstream) | None`
      (None outside Git; dubious ownership is an error; invalid remotes become None).
    - Update `tests/test_repositories.py` (old expectations keep ports and case).
-2. **`.llm-customer`** (TOML, exactly `customer = "TAG"`, ≤ 4 KiB), nearest
+2. **`.vkm`** (TOML, exactly `customer = "TAG"`, ≤ 4 KiB), nearest
    ancestor wins, `$HOME` itself ignored. `repo bind --shared` writes it at the
    checkout root (or the given directory outside Git).
 3. **Central rules** (`customers.Rules`, `RulesLoader`, draft ready):
@@ -576,10 +576,10 @@ Implementation (in `integrations/claude.py`; it uses only the gateway's
 `anthropic-messages` endpoint, its attribution headers and the helper command,
 so it works unchanged with another gateway or a fixed-key profile):
 
-1. `llm-credentials setup claude [--profile P] [--model M] [--remove]` edits
+1. `vkm setup claude [--profile P] [--model M] [--remove]` edits
    `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json` (strict JSON, file lock,
    atomic write, keep permissions):
-   - `apiKeyHelper` = `<sys.executable> -I -m llm_credential_mapping token --profile P`
+   - `apiKeyHelper` = `<sys.executable> -I -m virtual_key_mapper token --profile P`
      (quote with `shlex.join`; Windows `subprocess.list2cmdline`, reject
      `%!^&|<>"` in the interpreter path);
    - `env.ANTHROPIC_BASE_URL` = `gateway.endpoint(Api.ANTHROPIC_MESSAGES)`; optional `model`;
@@ -589,7 +589,7 @@ so it works unchanged with another gateway or a fixed-key profile):
      `--replace`; warn when `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` are set
      in the environment (they take precedence over the helper);
    - print the VS Code user setting `{"claudeCode.disableLoginPrompt": true}`.
-2. `llm-credentials claude guard --profile P` (hook; reads hook JSON from stdin,
+2. `vkm claude guard --profile P` (hook; reads hook JSON from stdin,
    uses its `cwd`):
    - attribution headers present in `ANTHROPIC_CUSTOM_HEADERS` and not written
      by us → allow (user override, e.g. `claude --settings`);
@@ -609,7 +609,7 @@ so it works unchanged with another gateway or a fixed-key profile):
 4. Delete: `claude.py` wrapper code (`wrapper_main`, `wrapped_command`,
    `ClaudeContext`, `project_directory`, `verify_wrapper`, `helper_token`),
    `windows_process.py`, `editor_settings.py`, `workspaces.py`,
-   `request_context.py` (if unused), the `llm-credentials-claude` entry point,
+   `request_context.py` (if unused), the `vkm-claude` entry point,
    their tests (`test_claude_adapter.py`, `test_claude_disable.py`,
    `test_editor_settings.py`, `test_workspaces.py`, `test_windows_process.py`,
    rewrite `test_claude_native.py`).
@@ -639,24 +639,24 @@ header names and URLs come from the profile's gateway adapter, never literals):
 
 Codex reads header values from environment variables named in its config, so
 each attribution header gets a fixed variable name derived from the header
-name: `LLM_CREDENTIALS_HEADER_` + the header name in upper case with every other
-character replaced by `_` (`x-litellm-tags` → `LLM_CREDENTIALS_HEADER_X_LITELLM_TAGS`).
+name: `VKM_HEADER_` + the header name in upper case with every other
+character replaced by `_` (`x-litellm-tags` → `VKM_HEADER_X_LITELLM_TAGS`).
 Setup and `shell-init` both derive the names, so they always agree.
 
 1. `setup codex [--profile P] [--model M] [--remove]` writes
    `${CODEX_HOME:-~/.codex}/config.toml` with two marker-delimited managed
-   blocks: top-level keys at the top (`model_provider = "llm-credentials"`,
+   blocks: top-level keys at the top (`model_provider = "vkm"`,
    optional `model`) and tables at the end. Output for a LiteLLM profile:
    ```toml
-   [model_providers.llm-credentials]
-   name = "llm-credentials (P)"
+   [model_providers.vkm]
+   name = "vkm (P)"
    base_url = "<gateway.endpoint(openai-responses)>"
    wire_api = "responses"
-   env_http_headers = { "x-litellm-tags" = "LLM_CREDENTIALS_HEADER_X_LITELLM_TAGS", "x-litellm-spend-logs-metadata" = "LLM_CREDENTIALS_HEADER_X_LITELLM_SPEND_LOGS_METADATA" }
+   env_http_headers = { "x-litellm-tags" = "VKM_HEADER_X_LITELLM_TAGS", "x-litellm-spend-logs-metadata" = "VKM_HEADER_X_LITELLM_SPEND_LOGS_METADATA" }
 
-   [model_providers.llm-credentials.auth]
+   [model_providers.vkm.auth]
    command = "<abs python>"
-   args = ["-I", "-m", "llm_credential_mapping", "token", "--profile", "P", "--require-attribution-env"]
+   args = ["-I", "-m", "virtual_key_mapper", "token", "--profile", "P", "--require-attribution-env"]
    timeout_ms = 30000
    refresh_interval_ms = 240000
    ```
@@ -666,11 +666,11 @@ Setup and `shell-init` both derive the names, so they always agree.
 2. `token --require-attribution-env` fails (no token) when any of the
    gateway's header variables is missing → fail closed even though Codex would
    drop the header.
-3. `llm-credentials shell-init bash|zsh|fish|pwsh [--profile P]` prints a hook
+3. `vkm shell-init bash|zsh|fish|pwsh [--profile P]` prints a hook
    that on directory change runs `repo show --env` and exports/unsets only the
-   non-secret `LLM_CREDENTIALS_HEADER_*` variables (quote safely per shell;
+   non-secret `VKM_HEADER_*` variables (quote safely per shell;
    values may contain `'`). These variables are *not* read by the resolver
-   (`LLM_CREDENTIALS_CUSTOMER` is the explicit override).
+   (`VKM_CUSTOMER` is the explicit override).
 4. `run codex`: same provider via `-c` overrides plus the header variables; no
    token in the environment.
 5. OpenCode: global plugin (verified in source, `anomalyco/opencode`):
@@ -678,7 +678,7 @@ Setup and `shell-init` both derive the names, so they always agree.
      LLM request and its headers are merged last (exact key `Authorization`).
    - v2.0.24+: default export `{id, setup|effect}`; session hook
      `model.request` can set headers and `baseURL`; context has `location`.
-   - The plugin calls `llm-credentials token --json` (cache until shortly before
+   - The plugin calls `vkm token --json` (cache until shortly before
      expiry; `expires_at: null` means no expiry) and
      `repo show --json --directory <worktree>`, and sends that output's
      `headers` as they are. It sends the bearer only to the profile's endpoint
@@ -711,8 +711,8 @@ Verified (VS Code source/docs, `microsoft/vscode`, `vscode-docs`):
 Implementation:
 
 1. `vscode-extension/` (TypeScript, MIT notice from the fork). Settings:
-   `llmCredentials.command` (path to `llm-credentials`), `llmCredentials.profile`.
-2. Token: `llm-credentials token --json` (cache until 60 s before expiry or
+   `vkm.command` (path to `vkm`), `vkm.profile`.
+2. Token: `vkm token --json` (cache until 60 s before expiry or
    indefinitely when `expires_at` is null, retry once on 401). Customer:
    `repo show --json --directory <workspace folder>` per window; multi-root:
    use the folder of the active editor, auto-select if all folders resolve to
@@ -723,7 +723,7 @@ Implementation:
    from `<openai-chat endpoint>/models` (check that LiteLLM session tokens work
    there; drop the fork's LiteLLM-only `/model_group/info` discovery).
 4. Status bar shows the customer; notification "Sign in" runs
-   `llm-credentials login` when the CLI reports re-login.
+   `vkm login` when the CLI reports re-login.
 5. Optional command: set `claudeCode.disableLoginPrompt` for the Claude extension.
 6. Build with npm/tsc, unit tests for conversion and resolution, `vsce package`
    for a VSIX, CI job. Pilot in real VS Code (cannot be tested headless).

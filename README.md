@@ -1,14 +1,14 @@
-# LLM Credentials
+# Virtual Key Mapper
 
-`llm-credentials` signs you in to your company's LLM gateway once and lets your coding
+`vkm` signs you in to your company's LLM gateway once and lets your coding
 tools use it: every request carries a short-lived credential and the **customer** of the
 repository you are working in, so gateway spend can be attributed per customer.
 
 | Tool | How it is connected |
 | --- | --- |
-| Claude Code (CLI and VS Code extension) | `llm-credentials setup claude` |
-| Codex CLI | `llm-credentials setup codex` + a shell hook |
-| OpenCode (v1) | `llm-credentials setup opencode` |
+| Claude Code (CLI and VS Code extension) | `vkm setup claude` |
+| Codex CLI | `vkm setup codex` + a shell hook |
+| OpenCode (v1) | `vkm setup opencode` |
 | GitHub Copilot Chat in VS Code | the VS Code extension in `vscode-extension/` |
 | Dev Containers (and SSH/WSL windows) | the companion extension relays your local sign-in |
 
@@ -23,30 +23,30 @@ Keychain, or Secret Service/KWallet on Linux). From a checkout:
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -e .          # Windows: .venv\Scripts\python.exe -m pip install -e .
-.venv/bin/python -m llm_credential_mapping --help
+.venv/bin/python -m virtual_key_mapper --help
 ```
 
-`llm-credentials` is the installed command. If your machine blocks pip-generated `.exe`
-launchers (some Windows policies do), use `python -m llm_credential_mapping` everywhere
+`vkm` is the installed command. If your machine blocks pip-generated `.exe`
+launchers (some Windows policies do), use `python -m virtual_key_mapper` everywhere
 instead; it accepts the same arguments.
 
 ## Quickstart
 
 ```bash
 # 1. Once per machine: a profile for your gateway and your business-unit team, then sign in.
-llm-credentials profile add work --gateway https://llm.company.example --team-id YOUR_TEAM_ID
-llm-credentials login          # browser sign-in; choose the same team there
-llm-credentials status         # "state": "ready"
+vkm profile add work --gateway https://llm.company.example --team-id YOUR_TEAM_ID
+vkm login          # browser sign-in; choose the same team there
+vkm status         # "state": "ready"
 
 # 2. Once per machine: connect your tools.
-llm-credentials setup claude --model YOUR_CLAUDE_ALIAS
-llm-credentials setup codex --model YOUR_CODEX_ALIAS
-llm-credentials setup opencode
+vkm setup claude --model YOUR_CLAUDE_ALIAS
+vkm setup codex --model YOUR_CODEX_ALIAS
+vkm setup opencode
 
-# 3. Once per repository (unless a central rule or a committed .llm-customer covers it):
+# 3. Once per repository (unless a central rule or a committed .vkm covers it):
 cd ~/src/some-repo
-llm-credentials repo bind --customer customer-acme
-llm-credentials repo show
+vkm repo bind --customer customer-acme
+vkm repo show
 ```
 
 The gateway address is its root URL (no `/v1`); the team ID is the exact ID from the gateway,
@@ -59,11 +59,11 @@ The gateway must be served at its host root with LiteLLM's `PROXY_BASE_URL` set 
 
 The customer of a directory is chosen in this order (first match wins):
 
-1. `--customer NAME` (for `run`) or the environment variable `LLM_CREDENTIALS_CUSTOMER`;
-2. your personal assignment: `llm-credentials repo bind --customer NAME`, stored only for you
+1. `--customer NAME` (for `run`) or the environment variable `VKM_CUSTOMER`;
+2. your personal assignment: `vkm repo bind --customer NAME`, stored only for you
    (`repositories.json`), keyed by the repository's `origin`/`upstream` address, so every
    clone shares it;
-3. the nearest committed `.llm-customer` file (`customer = "NAME"`), written with
+3. the nearest committed `.vkm` file (`customer = "NAME"`), written with
    `repo bind --shared`; a file in a parent folder such as `~/src/acme/` covers all
    repositories below it; the search stops below your home directory, so a file in it or
    above it never applies (`repo bind --shared` refuses to write one there);
@@ -90,11 +90,11 @@ header forwarding) and why the picker needs the rules' `customers` list are list
 ### Claude Code (CLI and the official VS Code extension)
 
 ```bash
-llm-credentials setup claude [--model ALIAS] [--replace] [--remove]
+vkm setup claude [--model ALIAS] [--replace] [--remove]
 ```
 
 Writes `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`): an `apiKeyHelper` that runs
-`llm-credentials token`, the gateway address, and a prompt hook. Before each prompt the hook
+`vkm token`, the gateway address, and a prompt hook. Before each prompt the hook
 looks up the customer, writes it to the repository's `.claude/settings.local.json` (excluded
 from Git) and asks you once to send the prompt again; prompts without a customer are blocked.
 For the VS Code extension also set `"claudeCode.disableLoginPrompt": true` in your VS Code
@@ -103,13 +103,13 @@ user settings. `--remove` undoes exactly what setup wrote.
 ### Codex CLI
 
 ```bash
-llm-credentials setup codex [--model ALIAS] [--remove]
-eval "$(llm-credentials shell-init bash)"     # add to ~/.bashrc; also zsh, fish, pwsh
+vkm setup codex [--model ALIAS] [--remove]
+eval "$(vkm shell-init bash)"     # add to ~/.bashrc; also zsh, fish, pwsh
 ```
 
-On Windows, add `llm-credentials shell-init pwsh | Out-String | Invoke-Expression` to your PowerShell
+On Windows, add `vkm shell-init pwsh | Out-String | Invoke-Expression` to your PowerShell
 `$PROFILE`. Where the execution policy blocks scripts (common on company PCs, "running scripts is
-disabled on this system"), a profile cannot load; run `llm-credentials shell-init pwsh --terminal`
+disabled on this system"), a profile cannot load; run `vkm shell-init pwsh --terminal`
 instead and paste its command line into Windows Terminal (Settings → your PowerShell profile →
 Command line) or its snippet into your VS Code user settings. Check in a new terminal:
 `Get-Command codex` shows `Function`.
@@ -122,17 +122,17 @@ terminal that started it. If one is running from before, stop it once: `codex ap
 ### OpenCode
 
 ```bash
-llm-credentials setup opencode [--model ALIAS] [--remove]
+vkm setup opencode [--model ALIAS] [--remove]
 ```
 
 Adds a provider with the gateway's models and a small plugin to
 `~/.config/opencode/opencode.json`; the plugin adds a fresh credential and the folder's
-customer to every request. OpenCode v2 is supported only through `llm-credentials run opencode`.
+customer to every request. OpenCode v2 is supported only through `vkm run opencode`.
 
 ### One-off launches
 
 ```bash
-llm-credentials run [--customer NAME] [--model ALIAS] claude|codex|opencode [-- TOOL ARGUMENTS]
+vkm run [--customer NAME] [--model ALIAS] claude|codex|opencode [-- TOOL ARGUMENTS]
 ```
 
 Starts the tool with child-only configuration, without changing your setup; `--customer`
@@ -144,11 +144,11 @@ Build and install the extension (`vscode-extension/`, see its README):
 
 ```bash
 cd vscode-extension && npm ci && npm run package
-code --install-extension llm-credentials.vsix   # or Extensions → ··· → Install from VSIX
+code --install-extension vkm.vsix   # or Extensions → ··· → Install from VSIX
 ```
 
-Set `llmCredentials.command` in your VS Code user settings to how the CLI runs, e.g.
-`["/path/to/.venv/bin/python", "-m", "llm_credential_mapping"]`. Pick an "llm-credentials"
+Set `vkm.command` in your VS Code user settings to how the CLI runs, e.g.
+`["/path/to/.venv/bin/python", "-m", "virtual_key_mapper"]`. Pick an "vkm"
 model in Copilot Chat; the status bar shows the customer. If you use VS Code profiles,
 install the extension in the profile you work in. Inline completions and next-edit
 suggestions always use GitHub's models and are not attributed.
@@ -158,16 +158,16 @@ suggestions always use GitHub's models and are not attributed.
 The container gets short-lived tokens from the sign-in on your own computer; nothing
 long-lived is stored inside it.
 
-1. Local VS Code: install `vscode-extension/local/llm-credentials-local.vsix`
-   ("LLM Credentials: local sign-in") and set `llmCredentials.localCommand` in your user
+1. Local VS Code: install `vscode-extension/local/vkm-local.vsix`
+   ("Virtual Key Mapper: local sign-in") and set `vkm.localCommand` in your user
    settings to the local CLI command. Containers get tokens only for your local default
-   profile; list others in `llmCredentials.localProfiles` (user settings) to allow them.
+   profile; list others in `vkm.localProfiles` (user settings) to allow them.
 2. In the container: install the CLI, e.g.
-   `uv tool install --python 3.12 "git+https://github.com/MarvinWeitz/llm-credential-mapping@BRANCH_OR_COMMIT"`
-   (or a Dev Container feature), and install `vscode-extension/llm-credentials.vsix` into
+   `uv tool install --python 3.12 "git+https://github.com/cbs-consulting/virtual-key-mapper@BRANCH_OR_COMMIT"`
+   (or a Dev Container feature), and install `vscode-extension/vkm.vsix` into
    the container (Install from VSIX → Show Local). Reload the window.
 3. The extension creates a container profile that uses your local sign-in
-   (`llm-credentials profile list` shows `forwarded`). Do not run `login` in the container.
+   (`vkm profile list` shows `forwarded`). Do not run `login` in the container.
 
 All tools work in the container as described above. Personal `repo bind` assignments made
 inside a container live in the container.
@@ -176,7 +176,7 @@ inside a container live in the container.
 
 | What | Where |
 | --- | --- |
-| Profiles, personal assignments, rules cache, tool state | `%LOCALAPPDATA%\llm-credential-mapping` or `~/.config/llm-credential-mapping` (`--home` or `LLM_CREDENTIAL_MAPPING_HOME` to change) |
+| Profiles, personal assignments, rules cache, tool state | `%LOCALAPPDATA%\virtual-key-mapper` or `~/.config/virtual-key-mapper` (`--home` or `VKM_HOME` to change) |
 | Sign-in (access and refresh token) | the OS credential vault only; never in files |
 | Claude / Codex / OpenCode configuration | each tool's own user configuration, changed only by `setup` |
 
@@ -184,7 +184,7 @@ inside a container live in the container.
 
 `profile add|list|show|use|update`, `login`, `status`, `token [--json]`, `logout`,
 `repo show|bind|unbind|list`, `tags list`, `setup claude|codex|opencode`, `run`,
-`shell-init`, and `claude guard` (the hook). `llm-credentials COMMAND --help` explains each.
+`shell-init`, and `claude guard` (the hook). `vkm COMMAND --help` explains each.
 
 ## Development
 
@@ -199,11 +199,11 @@ the pinned versions and point the tests at them:
 
 ```bash
 cd ci/agents && npm ci && cd ../..
-export $(node ci/agents/locate.mjs)    # sets LLM_CREDENTIAL_MAPPING_TEST_{CLAUDE,CODEX,OPENCODE}_BINARY
+export $(node ci/agents/locate.mjs)    # sets VKM_TEST_{CLAUDE,CODEX,OPENCODE}_BINARY
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-`LLM_CREDENTIAL_MAPPING_TEST_VAULT=1` also runs `tests/test_vault_native.py` against your real OS vault (uniquely named test entries, removed afterwards).
+`VKM_TEST_VAULT=1` also runs `tests/test_vault_native.py` against your real OS vault (uniquely named test entries, removed afterwards).
 
 Locally, missing tools and shells skip their tests; CI requires them. CI runs everything on Windows,
 macOS and Linux: the Python suite, the live agents and shell hooks, the real OS vault, both extensions

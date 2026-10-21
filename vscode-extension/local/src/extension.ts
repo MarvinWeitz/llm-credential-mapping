@@ -5,15 +5,15 @@ import * as vscode from "vscode";
 import { answer, RunError, type Run } from "./handler";
 
 /**
- * The local CLI. `llmCredentials.localCommand` is application-scoped, so it is read from the local user settings in
- * every window; the main extension's machine-scoped `llmCredentials.command` is hidden in remote windows.
+ * The local CLI. `vkm.localCommand` is application-scoped, so it is read from the local user settings in
+ * every window; the main extension's machine-scoped `vkm.command` is hidden in remote windows.
  */
 function localCommand(): string[] {
-  const settings = vscode.workspace.getConfiguration("llmCredentials");
+  const settings = vscode.workspace.getConfiguration("vkm");
   const local = settings.get<string[]>("localCommand", []);
   if (Array.isArray(local) && local.length) return local;
   const command = settings.inspect<string[]>("command")?.globalValue;
-  return Array.isArray(command) && command.length ? command : ["llm-credentials"];
+  return Array.isArray(command) && command.length ? command : ["vkm"];
 }
 
 function runner(timeout = 60000): Run {
@@ -23,7 +23,7 @@ function runner(timeout = 60000): Run {
       if (!error) return resolve(stdout);
       const notFound = (error as NodeJS.ErrnoException).code === "ENOENT";
       reject(new RunError(notFound
-        ? `Cannot run ${command[0]} on this computer; set llmCredentials.localCommand in your user settings.`
+        ? `Cannot run ${command[0]} on this computer; set vkm.localCommand in your user settings.`
         : String(stderr || error.message).replace(/^Error: /, "").trim()));
     });
   });
@@ -31,10 +31,10 @@ function runner(timeout = 60000): Run {
 
 /**
  * The local profiles remote windows may use; empty: the local default only. Application-scoped like localCommand, so
- * neither a workspace nor the remote side can change it (`llmCredentials.profile` would be the remote window's value).
+ * neither a workspace nor the remote side can change it (`vkm.profile` would be the remote window's value).
  */
 function localProfiles(): string[] {
-  const names = vscode.workspace.getConfiguration("llmCredentials").get<string[]>("localProfiles", []);
+  const names = vscode.workspace.getConfiguration("vkm").get<string[]>("localProfiles", []);
   return Array.isArray(names) ? names.filter((name) => typeof name === "string" && name.trim()).map((name) => name.trim()) : [];
 }
 
@@ -42,20 +42,20 @@ export function activate(context: vscode.ExtensionContext): void {
   let lastPrompt = "";
   let lastProfile = ""; // The profile whose request needed a sign-in.
   context.subscriptions.push(
-    vscode.commands.registerCommand("llmCredentials.local.request", async (request: unknown) => {
+    vscode.commands.registerCommand("vkm.local.request", async (request: unknown) => {
       const result = await answer(request, runner(), localProfiles());
       if (!result.ok && result.login && result.error !== lastPrompt) {
         lastPrompt = result.error; // One prompt per distinct problem.
         lastProfile = result.profile;
-        void vscode.window.showWarningMessage(`llm-credentials: ${result.error}`, "Sign in").then((action) => {
-          if (action === "Sign in") vscode.commands.executeCommand("llmCredentials.local.signIn");
+        void vscode.window.showWarningMessage(`vkm: ${result.error}`, "Sign in").then((action) => {
+          if (action === "Sign in") vscode.commands.executeCommand("vkm.local.signIn");
         });
       }
       return result;
     }),
-    vscode.commands.registerCommand("llmCredentials.local.signIn", () =>
+    vscode.commands.registerCommand("vkm.local.signIn", () =>
       vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "llm-credentials: complete the sign-in in your browser", cancellable: false },
+        { location: vscode.ProgressLocation.Notification, title: "vkm: complete the sign-in in your browser", cancellable: false },
         async () => {
           const name = lastProfile || localProfiles()[0] || "";
           try {
@@ -63,7 +63,7 @@ export function activate(context: vscode.ExtensionContext): void {
             lastPrompt = "";
             void vscode.window.showInformationMessage(output.trim() || "Signed in.");
           } catch (error) {
-            void vscode.window.showErrorMessage(`llm-credentials: ${(error as Error).message}`);
+            void vscode.window.showErrorMessage(`vkm: ${(error as Error).message}`);
           }
         },
       )),

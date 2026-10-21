@@ -1,4 +1,4 @@
-"""A browser for `llm-credentials login` in CI (set BROWSER="python browser.py %s").
+"""A browser for `vkm login` in CI (set BROWSER="python browser.py %s").
 
 Like a real browser it returns at once: Python's webbrowser waits for this process, and the CLI only
 answers its loopback callback after that. A detached child opens the authorization URL; the fake

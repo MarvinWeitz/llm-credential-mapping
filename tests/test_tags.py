@@ -4,12 +4,12 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock, patch
 
-from llm_credential_mapping.adapters import Api, Credential
-from llm_credential_mapping.customers import Attribution, Tag, validate_customer
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.gateways.litellm import LiteLLMGateway, list_tags
-from llm_credential_mapping.profiles import Profile
-from llm_credential_mapping.transport import JsonTransport
+from virtual_key_mapper.adapters import Api, Credential
+from virtual_key_mapper.customers import Attribution, Tag, validate_customer
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.gateways.litellm import LiteLLMGateway, list_tags
+from virtual_key_mapper.profiles import Profile
+from virtual_key_mapper.transport import JsonTransport
 
 
 class TagTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class TagTests(unittest.TestCase):
         self.assertEqual(headers["x-litellm-spend-logs-metadata"], '{"customer_source":"explicit"}')
 
     def test_gateway_catalogue_uses_the_credential(self):
-        with patch("llm_credential_mapping.gateways.litellm.list_tags", return_value=[Tag("customer:A")]) as listed:
+        with patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=[Tag("customer:A")]) as listed:
             self.assertEqual(LiteLLMGateway(self.profile).visible_customers(Credential("secret")), [Tag("customer:A")])
         listed.assert_called_once_with(self.profile, "secret")
 

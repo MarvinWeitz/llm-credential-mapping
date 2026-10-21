@@ -5,13 +5,13 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from llm_credential_mapping.customers import (
+from virtual_key_mapper.customers import (
     RULES_CACHE_SECONDS, Rules, RulesLoader, find_customer_file, read_customer_file, resolve_customer,
     unmapped_error, write_customer_file,
 )
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.profiles import Profile, ProfileStore
-from llm_credential_mapping.repositories import Checkout, RepositoryStore, repository_identity
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.profiles import Profile, ProfileStore
+from virtual_key_mapper.repositories import Checkout, RepositoryStore, repository_identity
 
 DOCUMENT = {
     "version": 1,
@@ -58,7 +58,7 @@ class CustomerFileTests(unittest.TestCase):
         self.assertEqual(find_customer_file(outside, self.home), path)
 
     def test_invalid_files_are_errors_not_silently_ignored(self):
-        path = self.nested / ".llm-customer"
+        path = self.nested / ".vkm"
         for content in (
             "customer = 'a,b'", "customer = 1", "other = 'x'", "customer = 'a'\nextra = 'b'", "not toml",
             "customer = '" + "a" * 5000 + "'",
@@ -244,7 +244,7 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(self.resolve(self.checkout, rules=self.rules).customer, "customer-upstream")
         RepositoryStore(self.store).bind(self.profile.gateway, "github.com/me/fork", "customer-mine")
         self.assertEqual(self.resolve(self.checkout, rules=self.rules).customer, "customer-mine")
-        environment = {"LLM_CREDENTIALS_CUSTOMER": "customer-env"}
+        environment = {"VKM_CUSTOMER": "customer-env"}
         self.assertEqual(self.resolve(self.checkout, environ=environment).source, "explicit")
         self.assertEqual(self.resolve(self.checkout, "customer-cli", environment).customer, "customer-cli")
 

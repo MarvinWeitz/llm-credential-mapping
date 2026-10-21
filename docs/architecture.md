@@ -1,6 +1,6 @@
 # Architecture
 
-How `llm-credentials` and its two VS Code extensions work, and why they are built this way.
+How `vkm` and its two VS Code extensions work, and why they are built this way.
 Read the [README](../README.md) first for what the tool does; this document is for people
 changing or reviewing it.
 
@@ -22,7 +22,7 @@ attributing traffic the tools send to their vendors directly (Copilot inline com
 ## 2. Overview
 
 ```text
-                ┌───────────────────────────── llm-credentials (Python) ─────────────────────────────┐
+                ┌───────────────────────────── vkm (Python) ─────────────────────────────┐
  input side     │  auth adapters        litellm-sso (browser SSO, renewal)   forwarded (relay)        │
                 │  gateway adapters     litellm (endpoints, x-litellm-* headers, tag list)           │
  core           │  profiles · OS vault · customer resolver · CLI JSON contracts                      │
@@ -45,11 +45,11 @@ for both; the tools and extensions only consume its outputs.
 
 | Path | Role |
 | --- | --- |
-| `src/llm_credential_mapping/adapters.py` | Interfaces: `Auth`, `Gateway`, `Integration`, `Credential`, `Api` |
+| `src/virtual_key_mapper/adapters.py` | Interfaces: `Auth`, `Gateway`, `Integration`, `Credential`, `Api` |
 | `registry.py` | The three adapter tables, profile validation, `auth_for`, `gateway_for` |
 | `profiles.py` | Profiles (`profiles.json`), file locks, atomic writes, rules location validation |
 | `storage.py` | OS vault (`keyring`), split into fragments for Windows' size limit |
-| `customers.py` | Customer resolver, `.llm-customer`, central rules and their cache |
+| `customers.py` | Customer resolver, `.vkm`, central rules and their cache |
 | `repositories.py` | Git identity normalization, `find_checkout`, personal assignments (`repositories.json`) |
 | `auth/litellm_oauth.py`, `auth/litellm_sso.py` | LiteLLM native SSO client; session renewal and locking |
 | `auth/forwarded.py` | Credentials relayed from the local machine (Dev Containers) |
@@ -176,9 +176,9 @@ tokens cannot be revoked anyway).
 `customers.resolve_customer(directory)` is used by every integration and both extensions
 (through `repo show`). First match wins:
 
-1. `--customer` / `LLM_CREDENTIALS_CUSTOMER`;
+1. `--customer` / `VKM_CUSTOMER`;
 2. the personal assignment in `repositories.json` for the checkout's `origin`, then `upstream`;
-3. the nearest `.llm-customer` file, searching upward and stopping at the home directory;
+3. the nearest `.vkm` file, searching upward and stopping at the home directory;
 4. the profile's central rules, each rule tried against `origin`, then `upstream`.
 
 No match means the tool is blocked with an explanation; nothing is sent untagged.
@@ -263,22 +263,22 @@ relay needs code on both sides:
 
 | Extension | Kind | Runs | Responsibility |
 | --- | --- | --- | --- |
-| LLM Credentials for Copilot Chat | workspace (default) | in the container | Copilot models; in remote windows serves the socket and relays requests |
-| LLM Credentials: local sign-in | `extensionKind: ["ui"]` | on the local machine | answers relay requests with the local CLI and vault; local sign-in |
+| Virtual Key Mapper for Copilot Chat | workspace (default) | in the container | Copilot models; in remote windows serves the socket and relays requests |
+| Virtual Key Mapper: local sign-in | `extensionKind: ["ui"]` | on the local machine | answers relay requests with the local CLI and vault; local sign-in |
 
 ### Request flow
 
 ```mermaid
 sequenceDiagram
     participant Tool as Tool in container<br/>(Claude helper, Codex, plugin, CLI)
-    participant CLI as llm-credentials<br/>profile auth: forwarded
+    participant CLI as vkm<br/>profile auth: forwarded
     participant Relay as Main extension<br/>(container extension host)
     participant Local as Companion extension<br/>(local extension host)
     participant LCLI as Local CLI + OS vault
-    Tool->>CLI: llm-credentials token
+    Tool->>CLI: vkm token
     CLI->>Relay: unix socket: {"version":1,"operation":"token","profile":"work"}
-    Relay->>Local: executeCommand("llmCredentials.local.request", request)
-    Local->>LCLI: python -m llm_credential_mapping token --json --profile work
+    Relay->>Local: executeCommand("vkm.local.request", request)
+    Local->>LCLI: python -m virtual_key_mapper token --json --profile work
     LCLI-->>Local: {"access_token", "expires_at", ...} (renewed if needed)
     Local-->>Relay: {"ok": true, "result": {...}}
     Relay-->>CLI: same JSON line
@@ -288,15 +288,15 @@ sequenceDiagram
 
 ### Protocol and its safety properties
 
-- **Socket path:** `$LLM_CREDENTIALS_AGENT`, else `$XDG_RUNTIME_DIR/llm-credentials/agent.sock`,
-  else `/tmp/llm-credentials-<uid>/agent.sock`. The extension also sets
-  `LLM_CREDENTIALS_AGENT` for integrated terminals; tools started elsewhere (the Claude
+- **Socket path:** `$VKM_AGENT`, else `$XDG_RUNTIME_DIR/vkm/agent.sock`,
+  else `/tmp/vkm-<uid>/agent.sock`. The extension also sets
+  `VKM_AGENT` for integrated terminals; tools started elsewhere (the Claude
   extension, Codex) find the same default path.
 - **Privacy:** the extension creates the directory with mode 0700 and refuses to listen if it
   belongs to someone else or is accessible to others; the socket is 0600. Only the container
   user can ask for tokens. The CLI in turn refuses a socket that is not its own or that sits
   in a directory others can write to (or a symlinked one), so another user who creates
-  `/tmp/llm-credentials-<uid>` first cannot hand it tokens of their own.
+  `/tmp/vkm-<uid>` first cannot hand it tokens of their own.
 - **Messages:** one JSON line per connection,
   `{"version": 1, "operation": "token" | "profile", "profile": NAME}`, answered by
   `{"ok": true, "result": {...}}` or `{"ok": false, "error": "..."}`. Unknown versions,
@@ -304,7 +304,7 @@ sequenceDiagram
   the token fields (`access_token`, `expires_at`, `profile`, `user`) or the nonsecret profile
   description, never a refresh token.
 - **Which local profiles:** the companion answers only for the profiles in
-  `llmCredentials.localProfiles` (application scope, local user settings; the first is used
+  `vkm.localProfiles` (application scope, local user settings; the first is used
   when a request names none), or, when that is empty, only for the local default profile. A
   container process or a workspace setting cannot reach other local profiles. A failed
   request names its profile, so "Sign in" signs in to exactly that one.
@@ -330,12 +330,12 @@ container never try to open an OS vault.
 
 ### Settings across the two sides
 
-VS Code applies settings by scope. `llmCredentials.command` (main extension) is
+VS Code applies settings by scope. `vkm.command` (main extension) is
 `machine`-scoped: a Windows path in user settings must not be used inside a Linux container,
 and VS Code hides machine-scoped user values in remote windows. That hides it from the
 companion too, even though the companion runs locally, so the companion has its own
-`llmCredentials.localCommand` with `application` scope, which is always read from the local
-user settings. Inside the container the main extension uses `llm-credentials` from `PATH`
+`vkm.localCommand` with `application` scope, which is always read from the local
+user settings. Inside the container the main extension uses `vkm` from `PATH`
 unless a Remote setting says otherwise.
 
 ## 7. Tools
@@ -346,11 +346,11 @@ Claude Code reads `~/.claude/settings.json`, project `.claude/settings.json` and
 `.claude/settings.local.json`, reloads them live, and is shared by the CLI and the official
 VS Code extension. `setup claude` writes into the user settings:
 
-- `apiKeyHelper`: `<python> -I -m llm_credential_mapping --home <folder> token --profile P`.
+- `apiKeyHelper`: `<python> -I -m virtual_key_mapper --home <folder> token --profile P`.
   Claude runs it on its cache interval (5 minutes) and after a 401, so long sessions renew.
   `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` would take precedence, so setup warns about them.
 - `env.ANTHROPIC_BASE_URL`: the gateway's Anthropic endpoint; optionally `model`.
-- A `UserPromptSubmit` hook: `llm-credentials claude guard --profile P`.
+- A `UserPromptSubmit` hook: `vkm claude guard --profile P`.
 
 Claude has no way to compute request headers per request; the only source is
 `ANTHROPIC_CUSTOM_HEADERS` in settings. The guard therefore manages a local settings file:
@@ -393,16 +393,16 @@ blocks into `config.toml` (Python can read but not write TOML, so the blocks are
 result is validated with `tomllib`):
 
 ```toml
-model_provider = "llm-credentials"
+model_provider = "vkm"
 
-[model_providers.llm-credentials]
+[model_providers.vkm]
 base_url = "https://gateway.example/v1"
 wire_api = "responses"
-env_http_headers = { "x-litellm-tags" = "LLM_CREDENTIALS_HEADER_X_LITELLM_TAGS", "x-litellm-spend-logs-metadata" = "LLM_CREDENTIALS_HEADER_X_LITELLM_SPEND_LOGS_METADATA" }
+env_http_headers = { "x-litellm-tags" = "VKM_HEADER_X_LITELLM_TAGS", "x-litellm-spend-logs-metadata" = "VKM_HEADER_X_LITELLM_SPEND_LOGS_METADATA" }
 
-[model_providers.llm-credentials.auth]
+[model_providers.vkm.auth]
 command = "/path/to/python"
-args = ["-I", "-m", "llm_credential_mapping", "--home", "...", "token", "--profile", "work", "--require-attribution-env"]
+args = ["-I", "-m", "virtual_key_mapper", "--home", "...", "token", "--profile", "work", "--require-attribution-env"]
 timeout_ms = 30000
 refresh_interval_ms = 240000
 ```
@@ -429,7 +429,7 @@ whatever connects to it; stop it with `codex app-server daemon stop`.
 
 OpenCode v1 loads plugins listed as `file://` URLs. `setup opencode` writes a provider
 (OpenAI-compatible, the gateway's models, a placeholder API key) and a generated plugin
-`<config folder>/opencode/llm-credentials-PROFILE.js` into `~/.config/opencode/opencode.json`.
+`<config folder>/opencode/vkm-PROFILE.js` into `~/.config/opencode/opencode.json`.
 The plugin's `chat.headers` hook runs for each request of that provider:
 
 - refuses if the provider's `baseURL` is not the gateway (a project config could redirect it);
@@ -444,7 +444,7 @@ plugin API; `setup` refuses it and `run opencode` keeps the previous launch-time
 ### Copilot Chat (VS Code extension)
 
 The extension registers a `LanguageModelChatProvider` (stable since VS Code 1.104) for vendor
-`llm-credentials`. Copilot Chat lists these models in ask, edit and agent mode (tool calling
+`vkm`. Copilot Chat lists these models in ask, edit and agent mode (tool calling
 is declared), subject to the organization's "Bring Your Own Language Model Key" policy.
 
 - **Endpoint:** `profile show --json` → `endpoints["openai-chat"]`; models from
@@ -473,7 +473,7 @@ some agent-internal requests, which Copilot always sends to GitHub's own models.
 
 ## 8. Why not a wrapper for every launch
 
-The first version launched every tool through `llm-credentials run` and injected a token
+The first version launched every tool through `vkm run` and injected a token
 into its environment. Tokens then expired in long sessions, tools started any other way
 (the VS Code Claude extension, a plain `codex`) bypassed attribution, and the VS Code Claude
 integration needed a process wrapper, a Windows job-object supervisor and a JSONC settings

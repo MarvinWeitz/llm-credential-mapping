@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.profiles import Profile, ProfileStore, gateway_origin
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.profiles import Profile, ProfileStore, gateway_origin
 
 
 class ProfileTests(unittest.TestCase):

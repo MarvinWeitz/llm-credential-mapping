@@ -1,6 +1,6 @@
 """The forwarded auth kind: credentials come from the sign-in on the user's local machine.
 
-For dev containers and other remote VS Code windows. The LLM Credentials extension running in the
+For dev containers and other remote VS Code windows. The Virtual Key Mapper extension running in the
 remote window listens on a local socket and relays each request through VS Code to the companion
 extension on the local machine, which answers with the local CLI (and its OS vault). Only short-lived
 access tokens reach the remote side; the refresh grant never leaves the local vault.
@@ -21,7 +21,7 @@ from ..adapters import Credential
 from ..errors import CredentialError
 from ..profiles import Profile, ProfileStore, validate_profile_name
 
-AGENT_VARIABLE = "LLM_CREDENTIALS_AGENT"
+AGENT_VARIABLE = "VKM_AGENT"
 TIMEOUT_SECONDS = 120  # The local side may renew the credential first.
 _MAX_ANSWER = 1_048_576
 
@@ -41,9 +41,9 @@ def agent_path(environ: Mapping[str, str] | None = None) -> str:
     if environ.get(AGENT_VARIABLE):
         return environ[AGENT_VARIABLE]
     if environ.get("XDG_RUNTIME_DIR"):
-        return str(Path(environ["XDG_RUNTIME_DIR"]) / "llm-credentials" / "agent.sock")
+        return str(Path(environ["XDG_RUNTIME_DIR"]) / "vkm" / "agent.sock")
     user = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "user")
-    return str(Path(tempfile.gettempdir()) / f"llm-credentials-{user}" / "agent.sock")
+    return str(Path(tempfile.gettempdir()) / f"vkm-{user}" / "agent.sock")
 
 
 def _check_owner(path: str) -> None:
@@ -79,7 +79,7 @@ def request(operation: str, host_profile: str | None, path: str,
             raise
         raise CredentialError(
             "No connection to the sign-in on your local machine. Open this folder in VS Code with the "
-            "'LLM Credentials' extension in this container and 'LLM Credentials: local sign-in' in your local VS Code."
+            "'Virtual Key Mapper' extension in this container and 'Virtual Key Mapper: local sign-in' in your local VS Code."
         ) from None
     with connection:
         try:
@@ -121,13 +121,13 @@ class Forwarded:
 
     def login(self, notify: Callable[[str], None], **options) -> Credential:
         raise CredentialError(
-            f"Profile '{self.profile.name}' uses the sign-in of your local machine: run 'llm-credentials login' "
+            f"Profile '{self.profile.name}' uses the sign-in of your local machine: run 'vkm login' "
             "there, in a local terminal."
         )
 
     def logout(self, notify: Callable[[str], None]) -> None:
         raise CredentialError(
-            f"Profile '{self.profile.name}' uses the sign-in of your local machine: run 'llm-credentials logout' there."
+            f"Profile '{self.profile.name}' uses the sign-in of your local machine: run 'vkm logout' there."
         )
 
     def status(self) -> dict:

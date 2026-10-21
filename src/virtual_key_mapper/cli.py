@@ -192,7 +192,7 @@ def token(context: Context) -> None:
         if missing:
             raise CredentialError(
                 f"No customer for this session ({', '.join(missing)} not set). Add the hook from "
-                "'llm-credentials shell-init SHELL' to your shell profile, or start the tool with 'llm-credentials run'."
+                "'vkm shell-init SHELL' to your shell profile, or start the tool with 'vkm run'."
             )
     credential = context.credential()
     if not context.args.json:
@@ -239,7 +239,7 @@ def _print_environment(context: Context, shell: str, directory: Path, checkout: 
             for name, value in context.gateway.attribution_headers(attribution).items():
                 values[header_variable(name)] = value
     except CredentialError as error:
-        notify(f"llm-credentials: {error}")
+        notify(f"vkm: {error}")
     print(assignments(shell, values))
 
 
@@ -257,7 +257,7 @@ def shell_init(context: Context) -> None:
 
 def _print_pwsh_terminal(argv: list[str]) -> None:
     args = pwsh_loader(argv)
-    name = "PowerShell (llm-credentials)"
+    name = "PowerShell (vkm)"
     vscode = {
         "terminal.integrated.profiles.windows": {name: {"source": "PowerShell", "args": args}},
         "terminal.integrated.defaultProfile.windows": name,
@@ -272,7 +272,7 @@ def _origin(checkout: Checkout | None) -> str:
     if checkout is None or checkout.origin is None:
         raise CredentialError(
             "Personal overrides need a Git checkout with an HTTP/SSH origin remote. "
-            "Use 'repo bind --shared' to assign a folder with a .llm-customer file instead."
+            "Use 'repo bind --shared' to assign a folder with a .vkm file instead."
         )
     return checkout.origin
 
@@ -391,9 +391,9 @@ def claude_guard(context: Context) -> None:
             attribution, str(unmapped_error(directory, checkout)), os.environ,
         )
     except CredentialError as error:
-        reason = f"llm-credentials: {error}"
+        reason = f"vkm: {error}"
     except Exception:  # noqa: BLE001 - a crashing guard must not let the prompt through.
-        reason = "llm-credentials could not check the customer for this prompt; run 'llm-credentials repo show'."
+        reason = "vkm could not check the customer for this prompt; run 'vkm repo show'."
     if reason is not None:
         print(json.dumps({"decision": "block", "reason": reason}))
 
@@ -415,7 +415,7 @@ def _profile_option(command: argparse.ArgumentParser) -> None:
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
-        prog="llm-credentials",
+        prog="vkm",
         description="Sign in to an LLM gateway and launch agents with session-local customer attribution.",
     )
     root.add_argument("--version", action="version", version=__version__)
@@ -493,7 +493,7 @@ def parser() -> argparse.ArgumentParser:
     repo_actions = repo.add_subparsers(dest="action", required=True)
     for action, handler, text in (
         ("show", repo_show, "Show the customer for a directory and why; exit 1 when none is assigned."),
-        ("bind", repo_bind, "Assign a customer: a personal override, or with --shared a committed .llm-customer file."),
+        ("bind", repo_bind, "Assign a customer: a personal override, or with --shared a committed .vkm file."),
         ("list", repo_list, "List your personal overrides."),
         ("unbind", repo_unbind, "Remove your personal override for a repository."),
     ):
@@ -513,7 +513,7 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--tag-prefix", help="Filter the customer picker by this exact prefix.")
             command.add_argument(
                 "--shared", action="store_true",
-                help="Write .llm-customer at the checkout root (or the directory outside Git) to commit for your team.",
+                help="Write .vkm at the checkout root (or the directory outside Git) to commit for your team.",
             )
         command.set_defaults(handler=handler)
 

@@ -1,5 +1,5 @@
 // Print the native executables of the agents installed here (`npm ci`) as test environment variables:
-//   LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY=...
+//   VKM_TEST_CLAUDE_BINARY=...
 // The tests call these directly instead of npm's shims: on Windows the shims are .cmd files, and
 // cmd.exe would rewrite the JSON arguments the launcher passes.
 import { execFileSync } from "node:child_process";
@@ -35,5 +35,5 @@ for (const [name, binary] of Object.entries(binaries)) {
   if (!existsSync(binary)) throw new Error(`Missing ${name} binary: ${binary}`);
   const version = execFileSync(binary, ["--version"], { encoding: "utf8", timeout: 60_000 }).trim();
   process.stderr.write(`${name.toLowerCase()}: ${version} (${binary})\n`);
-  process.stdout.write(`LLM_CREDENTIAL_MAPPING_TEST_${name}_BINARY=${binary}\n`);
+  process.stdout.write(`VKM_TEST_${name}_BINARY=${binary}\n`);
 }

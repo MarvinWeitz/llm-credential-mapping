@@ -2,7 +2,7 @@
   // A dev container like a developer's: the CLI and the agents are installed inside, the sign-in is not.
   // Used by ci/devcontainer/host.sh with the Dev Container CLI; the host network lets the container reach
   // the host's fake gateway and the companion stand-in at 127.0.0.1.
-  "name": "llm-credentials dev container test",
+  "name": "vkm dev container test",
   "image": "mcr.microsoft.com/devcontainers/python:3.13",
   "features": {
     "ghcr.io/devcontainers/features/node:1": { "version": "22" }

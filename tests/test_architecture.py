@@ -4,7 +4,7 @@ import ast
 import unittest
 from pathlib import Path
 
-PACKAGE = Path(__file__).resolve().parents[1] / "src" / "llm_credential_mapping"
+PACKAGE = Path(__file__).resolve().parents[1] / "src" / "virtual_key_mapper"
 ADAPTER_PACKAGES = ("auth", "gateways")
 
 VENDOR_STRINGS = ("x-litellm", "/tag/list", "/v1", "litellm-cli-auth")
@@ -29,11 +29,11 @@ def imported_modules(relative: Path, tree: ast.Module):
                 module = node.module.split(".") if node.module else []
                 for alias in node.names if not module else [None]:
                     yield (*base, *module, *([alias.name] if alias else []))
-            elif node.module and node.module.startswith("llm_credential_mapping."):
+            elif node.module and node.module.startswith("virtual_key_mapper."):
                 yield tuple(node.module.split(".")[1:])
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("llm_credential_mapping."):
+                if alias.name.startswith("virtual_key_mapper."):
                     yield tuple(alias.name.split(".")[1:])
 
 
@@ -60,7 +60,7 @@ class ArchitectureTests(unittest.TestCase):
     def test_the_guard_recognizes_adapter_imports(self):
         tree = ast.parse(
             "from ..auth.litellm_sso import SessionManager\nfrom .. import gateways\n"
-            "import llm_credential_mapping.auth.litellm_oauth\nfrom .common import run\n"
+            "import virtual_key_mapper.auth.litellm_oauth\nfrom .common import run\n"
         )
         self.assertEqual(
             [module[0] for module in imported_modules(Path("integrations") / "x.py", tree)],

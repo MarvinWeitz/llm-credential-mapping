@@ -6,8 +6,8 @@ GATEWAY_PORT=47801
 COMPANION_PORT=47802
 export LLMC_GATEWAY="http://127.0.0.1:$GATEWAY_PORT"
 HOST_HOME="$(mktemp -d)"
-export LLMC_HOST_CLI="[\"python\", \"-m\", \"llm_credential_mapping\", \"--home\", \"$HOST_HOME\"]"
-cli() { python -m llm_credential_mapping --home "$HOST_HOME" "$@"; }
+export LLMC_HOST_CLI="[\"python\", \"-m\", \"virtual_key_mapper\", \"--home\", \"$HOST_HOME\"]"
+cli() { python -m virtual_key_mapper --home "$HOST_HOME" "$@"; }
 
 printf ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
 python ci/devcontainer/gateway.py "$GATEWAY_PORT" &

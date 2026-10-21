@@ -10,7 +10,7 @@ async function collect(response) {
 
 async function models() {
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    const found = await vscode.lm.selectChatModels({ vendor: "llm-credentials" });
+    const found = await vscode.lm.selectChatModels({ vendor: "vkm" });
     if (found.length) return found;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
@@ -30,7 +30,7 @@ exports.run = async function run() {
   const found = await models();
   await check("models are listed from the gateway", async () => {
     assert.deepEqual(found.map((model) => model.id).sort(), ["alias", "tool-model"]);
-    assert.equal(found[0].vendor, "llm-credentials");
+    assert.equal(found[0].vendor, "vkm");
   });
   const model = found.find((entry) => entry.id === "alias");
   await check("a chat request streams text with the credential and the customer", async () => {
@@ -52,8 +52,8 @@ exports.run = async function run() {
     assert.deepEqual(call.input, { path: "." });
   });
   await check("the extension is active", async () => {
-    assert.ok(vscode.extensions.getExtension("llm-credentials.llm-credentials-vscode").isActive);
+    assert.ok(vscode.extensions.getExtension("cbs-consulting.vkm").isActive);
   });
-  require("node:fs").writeFileSync(process.env.LLM_CREDENTIALS_TEST_RESULTS, results.join("\n") + "\n");
+  require("node:fs").writeFileSync(process.env.VKM_TEST_RESULTS, results.join("\n") + "\n");
   if (results.some((line) => line.startsWith("FAIL"))) throw new Error(results.join("\n"));
 };

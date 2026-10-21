@@ -3,28 +3,28 @@ AREA: customer-assignment
 ## CURRENT ASSESSMENT
 - The customer is chosen per developer, per repo, and stored only on that machine. `run` resolves `--customer` first, then the local repositories.json binding. If neither exists it opens an interactive picker and saves the choice locally (cli.py:315-325, the bind is at cli.py:324). Bindings are keyed by sha256(gateway, repo) in a per-user file (repositories.py:86-146). Nothing is shared with the team and there is no central source.
   IMPACT: N developers times M repos means N*M manual decisions, and different developers can pick different tags for the same repo. Fails goal 1: the target is zero per-developer steps.
-  FILES: src/llm_credential_mapping/cli.py:315-325; src/llm_credential_mapping/repositories.py:86-146
+  FILES: src/virtual_key_mapper/cli.py:315-325; src/virtual_key_mapper/repositories.py:86-146
 - The picker is fed by GET /tag/list (tags.py:197-224; cli.py:110-131). Confirmed in LiteLLM source: for internal_user roles, /tag/list is scoped to tags already used by that user's own keys. It returns [] when there are none (tag_management_endpoints.py:181-193 and 633). The list also contains automatic 'User-Agent: ...' tags. The README already hedges on this (README.md:152-153, cli.py:116).
   IMPACT: A new developer, which is exactly the case that needs the picker, gets an empty or misleading list and has to get the tag name some other way. The picker cannot be the main mechanism; it needs a central customer catalogue instead.
-  FILES: src/llm_credential_mapping/tags.py:197-224; src/llm_credential_mapping/cli.py:110-131
+  FILES: src/virtual_key_mapper/tags.py:197-224; src/virtual_key_mapper/cli.py:110-131
 - Background integrations cannot prompt. resolve_identity raises when there is no binding (request_context.py:375-380). The Claude extension wrapper fails with 'No fallback repository or customer was selected' (claude.py:331-365, README.md:501). Copilot setup needs a binding (copilot.py:227-228) and pins the checkout, which is 'not inferred from the active editor' (README.md:676). The picker also refuses to run without a TTY (cli.py:111-112).
   IMPACT: In VS Code (Claude extension, Copilot) every repo needs a prior `repo bind` in a terminal, so the integrations do not 'just work' (goal 2).
-  FILES: src/llm_credential_mapping/request_context.py:375-380; src/llm_credential_mapping/claude.py:331-365; src/llm_credential_mapping/copilot.py:212-230
+  FILES: src/virtual_key_mapper/request_context.py:375-380; src/virtual_key_mapper/claude.py:331-365; src/virtual_key_mapper/copilot.py:212-230
 - Identity comes only from the `origin` remote (repositories.py:83), and only github.com paths are lowercased (repositories.py:48-49). I ran repository_identity() on sample remotes. Azure DevOps HTTPS gives `dev.azure.com/acme/Proj/_git/foo`, while SSH gives `ssh.dev.azure.com/v3/acme/Proj/foo` and the legacy host gives `acme.visualstudio.com/Proj/_git/foo`. GitLab and GHE case variants also differ. SSH host aliases leak through (`git@github-work:acme/foo` gives `github-work/acme/foo`). Personal forks resolve to the fork, not the upstream.
   IMPACT: This is harmless for exact-match local bindings, since each developer binds their own clone. It blocks central pattern rules, which need one canonical identity per repo. Canonicalisation has to be fixed before central rules can work.
-  FILES: src/llm_credential_mapping/repositories.py:13-51, 54-83
+  FILES: src/virtual_key_mapper/repositories.py:13-51, 54-83
 - Folders that are not a Git checkout get no customer. Parent or multi-root workspaces need an exact-path, non-recursive `claude workspace bind` per developer (workspaces.py:307-311; README.md:339), even when every child repo maps to the same customer. Local/file remotes and folders outside Git need `--customer` every time (repositories.py:36-37; README.md:179).
   IMPACT: Extra per-developer steps in VS Code. There is no way to declare a customer once for a whole folder of client repos, such as ~/src/acme/.
-  FILES: src/llm_credential_mapping/workspaces.py:254-325
+  FILES: src/virtual_key_mapper/workspaces.py:254-325
 - Only the tag is sent to the gateway (agents.py:27-29, 119, 145). No repo identity is sent.
   IMPACT: Wrong or missing attribution cannot be fixed later at the gateway, so the client has to block instead of falling back to 'unassigned'. The gateway also cannot derive or check the customer itself.
-  FILES: src/llm_credential_mapping/agents.py:15-30,119,145
+  FILES: src/virtual_key_mapper/agents.py:15-30,119,145
 - Trust: the tag is supplied by the client. Confirmed in LiteLLM source: caller-supplied x-litellm-tags are always merged, with no opt-out ('No allow_client_tags opt-in', litellm_pre_call_utils.py:1947-1996). The README acknowledges that mappings are not access controls (README.md:265-273).
   IMPACT: Any developer can bill any customer. Today the only possible enforcement point is gateway-side custom logic.
   FILES: README.md:257-273
 - Parts worth keeping: strict tag validation (tags.py:172-186); no silent untagged fallback; customer pinned per process and per session (claude.py ClaudeContext); protection against concurrent first binds (repositories.py:140-144); a normalised host/path identity that never contacts the remote.
   IMPACT: These carry straight into a layered resolver. Only the source of the decision changes, not the pinning or injection.
-  FILES: src/llm_credential_mapping/tags.py:172-186; src/llm_credential_mapping/repositories.py:140-144
+  FILES: src/virtual_key_mapper/tags.py:172-186; src/virtual_key_mapper/repositories.py:140-144
 
 ## OPTIONS
 ### [reject/high] A. Status quo: per-developer local binding plus interactive /tag/list picker
@@ -35,16 +35,16 @@ AREA: customer-assignment
  how: On the first `run` in an unbound repo, the developer picks a tag from GET /tag/list. The choice is saved in local repositories.json, keyed by gateway and origin identity. VS Code and Copilot need a `repo bind` beforehand.
  pros: ['Already built and tested', 'Explicit, no guessing', 'Works offline once bound']
  cons: ['Every developer has to decide every repo', '/tag/list is empty for new internal users (scoped to tags they already used)', 'Background VS Code launches cannot prompt', 'Inconsistent choices across the team']
- sources: ['/home/user/llm-credential-mapping/src/llm_credential_mapping/cli.py:110-131,315-325', 'https://github.com/BerriAI/litellm/blob/10444df3a0173a99ab4e4858ce6777f31530e6c5/litellm/proxy/management_endpoints/tag_management_endpoints.py#L181-L193']
-### [adopt/high] B. Committed per-repo or per-folder file (e.g. `.llm-customer`), found by nearest-ancestor lookup
+ sources: ['/home/user/virtual-key-mapper/src/virtual_key_mapper/cli.py:110-131,315-325', 'https://github.com/BerriAI/litellm/blob/10444df3a0173a99ab4e4858ce6777f31530e6c5/litellm/proxy/management_endpoints/tag_management_endpoints.py#L181-L193']
+### [adopt/high] B. Committed per-repo or per-folder file (e.g. `.vkm`), found by nearest-ancestor lookup
  interaction: one-time per repo (shared by team)
  providers: All five, through the one resolver used by run, claudeProcessWrapper and the Copilot bridge
  sso: True
  renewal: N/A
- how: A tool-neutral file such as `.llm-customer` containing `customer = "customer-acme"` is committed once per repo, or placed in a parent folder like ~/src/acme/. The resolver walks up from the launch or project-config-root directory to the first such file, stopping at $HOME. The same resolver serves run, the Claude wrapper and the Copilot bridge. Monorepos can put a file in each customer subfolder. Folders outside Git and multi-root parent folders resolve when the parent holds a file. Forks inherit the file because it travels with the code.
+ how: A tool-neutral file such as `.vkm` containing `customer = "customer-acme"` is committed once per repo, or placed in a parent folder like ~/src/acme/. The resolver walks up from the launch or project-config-root directory to the first such file, stopping at $HOME. The same resolver serves run, the Claude wrapper and the Copilot bridge. Monorepos can put a file in each customer subfolder. Folders outside Git and multi-root parent folders resolve when the parent holds a file. Forks inherit the file because it travels with the code.
  pros: ['One decision per repo for the whole team, versioned and auditable in Git history', 'Works offline, needs no forge API or credentials', 'Covers forks, non-git folders, parent and multi-root folders and monorepo subfolders', "A parent-folder file gives a 'one per customer folder' convention for repos you cannot commit to"]
  cons: ['Customer-owned repos may not accept a vendor file. Fall back to a parent-folder file or central rules', 'Anyone with write access can change it, so it is spoofable', 'It is one more file to keep in sync if a repo changes customer']
- sources: ['Design proposal (inferred); replaces lookups in /home/user/llm-credential-mapping/src/llm_credential_mapping/repositories.py:54-83 and workspaces.py']
+ sources: ['Design proposal (inferred); replaces lookups in /home/user/virtual-key-mapper/src/virtual_key_mapper/repositories.py:54-83 and workspaces.py']
 ### [adopt/high] C. Central pattern rules (org/group/path glob to customer), fetched and cached by the CLI
  interaction: none
  providers: All five
@@ -53,7 +53,7 @@ AREA: customer-assignment
  how: Admins maintain a versioned JSON document, for example {catalogue:[{tag,name}], rules:[{match:'github.com/acme-*/**',customer:'customer-acme'},{match:'dev.azure.com/contoso/*/**',customer:'customer-contoso'}], unmapped:'prompt|unassigned|block'}. It is served from a static URL next to the gateway (reverse-proxy path), a raw file in an internal config repo, or a team metadata key read through /team/info. The CLI fetches it with the SSO bearer, caches it with ETag and uses the cache when offline. The catalogue replaces /tag/list for the picker. This first needs a canonical repo identity: Azure SSH, HTTPS and visualstudio.com forms collapsed to one; host and path lowercased for case-insensitive forges; SSH host aliases resolved via `ssh -G`; optional fallback to the `upstream` remote for forks.
  pros: ['No developer steps at all where repos follow an org-per-customer or group-per-customer layout, which is common for agencies and consultancies', 'New repos in a customer org are mapped automatically', 'One place to fix mistakes', 'Provides a real customer catalogue (fixes the empty-picker problem)']
  cons: ['Needs canonicalisation work and a hosting location (LiteLLM has no native repo-to-tag rules endpoint)', 'Does not help repos with inconsistent naming. Combine with B', 'Client-side, so still spoofable']
- sources: ['Design proposal (inferred)', 'Normalisation gaps verified by running repository_identity() from /home/user/llm-credential-mapping/src/llm_credential_mapping/repositories.py:13-51']
+ sources: ['Design proposal (inferred)', 'Normalisation gaps verified by running repository_identity() from /home/user/virtual-key-mapper/src/virtual_key_mapper/repositories.py:13-51']
 ### [consider/medium] D. Live forge-metadata lookup from the CLI (GitHub custom properties or topics, GitLab topics)
  interaction: one-time per machine
  providers: All five, but GitHub-hosted repos only
@@ -104,7 +104,7 @@ AREA: customer-assignment
  providers: Claude Code CLI and extension, OpenCode only
  sso: True
  renewal: N/A
- how: Commit `.claude/settings.json` with env.ANTHROPIC_CUSTOM_HEADERS='x-litellm-tags: customer-acme'. It applies after workspace trust, and `--settings` outranks it. Commit `opencode.json` with provider options.headers or `{file:./.llm-customer}`. Codex cannot do this because its project `.codex/config.toml` denylists model_provider and model_providers. Copilot custom endpoints live in the global chatLanguageModels.json, not the workspace.
+ how: Commit `.claude/settings.json` with env.ANTHROPIC_CUSTOM_HEADERS='x-litellm-tags: customer-acme'. It applies after workspace trust, and `--settings` outranks it. Commit `opencode.json` with provider options.headers or `{file:./.vkm}`. Codex cannot do this because its project `.codex/config.toml` denylists model_provider and model_providers. Copilot custom endpoints live in the global chatLanguageModels.json, not the workspace.
  pros: ['Works even when a tool is launched without the wrapper (Claude Code, OpenCode)']
  cons: ['Fragmented per tool', 'Codex and Copilot not covered', 'Adds tool configs to customer repos', 'Claude waits for workspace trust', "Conflicts with the wrapper's own header injection. B gives the same benefit through one file"]
  sources: ['https://code.claude.com/docs/en/settings-reference#env', 'https://code.claude.com/docs/en/env-vars', 'https://github.com/openai/codex/blob/c0c230e6730b3b3c9101b8aff4b9aea4027cea5b/codex-rs/config/src/loader/mod.rs#L85-L102', 'https://github.com/anomalyco/opencode/blob/dev/packages/web/src/content/docs/config.mdx']
@@ -139,12 +139,12 @@ AREA: customer-assignment
 ## RECOMMENDATION
 Replace "each developer picks a tag per repo" with one shared resolver, `resolve_customer(directory)`. `run`, the Claude wrapper and the Copilot bridge all call it, and it returns the customer plus the source of the decision. Resolution order, first match wins:
 
-1. `--customer` or `LLM_CREDENTIALS_CUSTOMER`, for one session only.
+1. `--customer` or `VKM_CUSTOMER`, for one session only.
 2. The developer's explicit local override: the existing repositories.json entry, now written only by `repo bind` and never implicitly. The launch notice says "override".
-3. The nearest committed `.llm-customer` file, walking up from the launch or project-config-root directory to $HOME. This covers repos, monorepo subfolders, folders outside Git and parent folders like ~/src/acme, and it travels with forks.
+3. The nearest committed `.vkm` file, walking up from the launch or project-config-root directory to $HOME. This covers repos, monorepo subfolders, folders outside Git and parent folders like ~/src/acme, and it travels with forks.
 4. Central rules (option C), fetched and cached. Repos in your own GitHub orgs can be filled from GitHub custom properties by a sync job (option E). A rule marked `locked` beats the committed file, and any mismatch is warned about.
 5. The unmapped policy from the central document:
-   - in a terminal, a picker over the central catalogue (not /tag/list, which is empty for new users), offering to write a `.llm-customer` file or a local override;
+   - in a terminal, a picker over the central catalogue (not /tag/list, which is empty for new users), offering to write a `.vkm` file or a local override;
    - in background VS Code launches, either fail with an actionable message or use `unassigned`.
 
 In parallel:
@@ -167,7 +167,7 @@ This fits the short-lived SSO model because nothing here touches credentials.
 
 ## OPEN QUESTIONS
 - Do customer repos live in your own GitHub, GitLab or Azure orgs, or in customer-owned orgs? This decides whether central pattern rules or custom properties (C/E) can cover most repos, or whether committed or parent-folder files (B) must carry the load.
-- Is committing a `.llm-customer` file into customer-owned repos acceptable, or must it live outside the repo (in a parent folder)?
+- Is committing a `.vkm` file into customer-owned repos acceptable, or must it live outside the repo (in a parent folder)?
 - What should happen in an unmapped repo when launched from VS Code: block, tag `unassigned` (with repo metadata for later reassignment), or tag `internal`?
 - Is hard enforcement needed (billing disputes, per-customer budgets per developer)? If so, phase-2 gateway hook work plus a per-user or per-team customer allowlist is required.
 - Is the LiteLLM deployment Enterprise-licensed? This affects team, key and project tags and whether premium features are available at all.
@@ -220,7 +220,7 @@ This fits the short-lived SSO model because nothing here touches credentials.
 
 ## OPTION FEASIBILITY
 - [yes] A. Status quo: per-developer local binding plus interactive /tag/list picker: It works as described, but it fails goal 1, so reject is correct. The picker is even weaker than stated for SSO users: /tag/list scope keys on the hashed current bearer token plus the user's virtual keys (inferred from source).
-- [yes] B. Committed per-repo or per-folder file (.llm-customer), nearest-ancestor lookup: It can be built entirely client-side: run, the claudeProcessWrapper (which knows the project dir, claude.py:345-347) and the OpenCode/Codex launchers can all call one resolver. It is one-time per repo (shared by team). Caveat: for Copilot it only applies when `copilot setup` runs, because the bridge is pinned to one checkout and Copilot requests carry no workspace identity. So 'all five' is overstated.
+- [yes] B. Committed per-repo or per-folder file (.vkm), nearest-ancestor lookup: It can be built entirely client-side: run, the claudeProcessWrapper (which knows the project dir, claude.py:345-347) and the OpenCode/Codex launchers can all call one resolver. It is one-time per repo (shared by team). Caveat: for Copilot it only applies when `copilot setup` runs, because the bridge is pinned to one checkout and Copilot requests carry no workspace identity. So 'all five' is overstated.
 - [yes] C. Central pattern rules fetched and cached by the CLI: It is feasible and gives no developer interaction for org-patterned repos once identity canonicalisation is fixed (gaps confirmed empirically). LiteLLM has no native repo-to-tag rules store, so it needs a hosting location. I did not verify that internal users can read team metadata via /team/info, so a static file or reverse-proxy path is the safer choice. Same Copilot per-window caveat as B.
 - [uncertain] D. Live forge-metadata lookup from the CLI (GitHub custom properties/topics): The API facts are confirmed: read access suffices, and single_select allows up to 200 values. But every developer needs a GitHub token (`gh auth login`) and it covers only repos in orgs you control. Option E gives the same data without tokens on developer machines, so 'consider' is generous.
 - [yes] E. Forge metadata synced server-side into central rules: GET /orgs/{org}/properties/values is readable by org members (confirmed in the OpenAPI spec), so a sync job is straightforward. I could not verify the 'external sync (preview)' claim.

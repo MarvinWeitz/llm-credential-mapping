@@ -1,4 +1,4 @@
-// Calls the llm-credentials CLI. Its JSON outputs are the extension's only source of credentials, endpoints and
+// Calls the vkm CLI. Its JSON outputs are the extension's only source of credentials, endpoints and
 // attribution headers, so nothing here knows a gateway's paths or header names.
 import { execFile } from "node:child_process";
 
@@ -32,7 +32,7 @@ export class CliError extends Error {
 export type Runner = (args: string[]) => Promise<string>;
 
 export function runner(command: readonly string[]): Runner {
-  if (!command.length) throw new CliError("Set llmCredentials.command to the llm-credentials CLI.", false, false);
+  if (!command.length) throw new CliError("Set vkm.command to the vkm CLI.", false, false);
   return (args) =>
     new Promise((resolve, reject) => {
       execFile(command[0], [...command.slice(1), ...args], { windowsHide: true, maxBuffer: 4 << 20, timeout: 60000 },
@@ -40,7 +40,7 @@ export function runner(command: readonly string[]): Runner {
           if (!error) return resolve(stdout);
           const notFound = (error as NodeJS.ErrnoException).code === "ENOENT";
           const message = notFound
-            ? `Cannot run ${command[0]}; set llmCredentials.command to the llm-credentials CLI.`
+            ? `Cannot run ${command[0]}; set vkm.command to the vkm CLI.`
             : String(stderr || error.message).replace(/^Error: /, "").trim();
           reject(new CliError(message, /\blogin\b/.test(message), /No customer is assigned/.test(message)));
         });
@@ -51,7 +51,7 @@ function parse<T>(output: string, what: string): T {
   try {
     return JSON.parse(output) as T;
   } catch {
-    throw new CliError(`llm-credentials returned an unreadable ${what}; update the CLI.`, false, false);
+    throw new CliError(`vkm returned an unreadable ${what}; update the CLI.`, false, false);
   }
 }
 
@@ -60,7 +60,7 @@ const option = (name: string) => (name ? ["--profile", name] : []);
 
 export async function token(run: Runner, profileName: string): Promise<CliToken> {
   const value = parse<CliToken>(await run(["token", "--json", ...option(profileName)]), "token");
-  if (typeof value.access_token !== "string" || !value.access_token) throw new CliError("llm-credentials returned no token.", true, false);
+  if (typeof value.access_token !== "string" || !value.access_token) throw new CliError("vkm returned no token.", true, false);
   return value;
 }
 

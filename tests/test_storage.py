@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch
 
 from keyring.errors import KeyringError, PasswordDeleteError
 
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.storage import NativeKeyring
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.storage import NativeKeyring
 
 
 class StorageTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class StorageTests(unittest.TestCase):
         self.backend.get_password = Mock(side_effect=lambda service, account: self.entries.get(service))
         self.backend.set_password = Mock(side_effect=self.write)
         self.backend.delete_password = Mock(side_effect=self.remove)
-        with patch("llm_credential_mapping.storage.keyring.get_keyring", return_value=self.backend):
+        with patch("virtual_key_mapper.storage.keyring.get_keyring", return_value=self.backend):
             self.store = NativeKeyring()
 
     def write(self, service, account, raw):
@@ -53,15 +53,15 @@ class StorageTests(unittest.TestCase):
             self.assertIn("OS vault", str(result.exception))
 
     def test_damaged_root_can_be_replaced_and_deleted(self):
-        for value in ("{truncated", '{"_llm_credential_mapping_vault": {"version": 2}}', "[1]"):
+        for value in ("{truncated", '{"_virtual_key_mapper_vault": {"version": 2}}', "[1]"):
             with self.subTest(value=value):
                 self.entries[self.store._service("a")] = value
-                with self.assertLogs("llm_credential_mapping.storage", "WARNING"):
+                with self.assertLogs("virtual_key_mapper.storage", "WARNING"):
                     self.store.put("a", {"token": "x" * 3000})
                 self.assertEqual(self.store.get("a"), {"token": "x" * 3000})
                 self.store.delete("a")
                 self.entries[self.store._service("a")] = value
-                with self.assertLogs("llm_credential_mapping.storage", "WARNING"):
+                with self.assertLogs("virtual_key_mapper.storage", "WARNING"):
                     self.store.delete("a")
                 self.assertEqual(self.entries, {})
 
@@ -229,7 +229,7 @@ class StorageTests(unittest.TestCase):
     def test_cleanup_failure_warns_without_invalidating_committed_session(self):
         self.store.put("a", {"secret": "a" * 6000})
         self.backend.delete_password.side_effect = OSError("secret-error")
-        with self.assertLogs("llm_credential_mapping.storage", level="WARNING") as captured:
+        with self.assertLogs("virtual_key_mapper.storage", level="WARNING") as captured:
             self.store.put("a", {"secret": "current"})
         self.assertEqual(self.store.get("a"), {"secret": "current"})
         self.assertNotIn("secret-error", str(captured.output))

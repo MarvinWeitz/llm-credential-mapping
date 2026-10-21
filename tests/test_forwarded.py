@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.auth import forwarded
-from llm_credential_mapping.cli import main
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.profiles import Profile
+from virtual_key_mapper.auth import forwarded
+from virtual_key_mapper.cli import main
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.profiles import Profile
 
 
 class FakeAgent:
@@ -58,7 +58,7 @@ class ForwardedTests(unittest.TestCase):
 
     def test_local_errors_and_invalid_answers_are_reported(self):
         for answer, expected in (
-            ({"ok": False, "error": "No login for 'work'; run 'llm-credentials login --profile work'."}, "No login"),
+            ({"ok": False, "error": "No login for 'work'; run 'vkm login --profile work'."}, "No login"),
             (b"not json\n", "unreadable"),
             ({"ok": True}, "unexpected"),
             ({"ok": True, "result": {"access_token": "with space"}}, "invalid token"),
@@ -86,15 +86,15 @@ class ForwardedTests(unittest.TestCase):
             self.assertIn("local machine", str(error.exception))
 
     def test_socket_location(self):
-        self.assertEqual(forwarded.agent_path({"LLM_CREDENTIALS_AGENT": "/run/x.sock"}), "/run/x.sock")
+        self.assertEqual(forwarded.agent_path({"VKM_AGENT": "/run/x.sock"}), "/run/x.sock")
         self.assertEqual(
-            Path(forwarded.agent_path({"XDG_RUNTIME_DIR": "/run/user/1000"})), Path("/run/user/1000/llm-credentials/agent.sock"),
+            Path(forwarded.agent_path({"XDG_RUNTIME_DIR": "/run/user/1000"})), Path("/run/user/1000/vkm/agent.sock"),
         )
         self.assertTrue(forwarded.agent_path({}).endswith("agent.sock"))
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX") and hasattr(os, "getuid"), "Unix sockets only")
     def test_a_socket_others_could_have_placed_is_refused(self):
-        directory = tempfile.mkdtemp(prefix="llmc-")
+        directory = tempfile.mkdtemp(prefix="vkm-")
         self.addCleanup(shutil.rmtree, directory, True)
         path = os.path.join(directory, "agent.sock")
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -135,9 +135,9 @@ class ForwardedCliTests(unittest.TestCase):
             agent = FakeAgent(TOKEN)
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()), \
-                    patch("llm_credential_mapping.cli.NativeKeyring", side_effect=AssertionError("no vault here")), \
+                    patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError("no vault here")), \
                     patch.object(forwarded, "_connect", agent.connect), \
-                    patch.dict(os.environ, {"LLM_CREDENTIALS_AGENT": "/tmp/agent.sock"}):
+                    patch.dict(os.environ, {"VKM_AGENT": "/tmp/agent.sock"}):
                 self.assertEqual(main([
                     "--home", home, "profile", "add", "container", "--gateway", "https://gateway.example",
                     "--auth", "forwarded", "--host-profile", "work",

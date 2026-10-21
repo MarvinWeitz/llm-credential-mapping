@@ -11,10 +11,10 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
-from llm_credential_mapping.errors import CredentialError
-from llm_credential_mapping.auth.litellm_oauth import Discovery, LiteLLMClient, LoopbackCallback, Session
-from llm_credential_mapping.profiles import Profile
-from llm_credential_mapping.transport import GatewayError, JsonTransport
+from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.auth.litellm_oauth import Discovery, LiteLLMClient, LoopbackCallback, Session
+from virtual_key_mapper.profiles import Profile
+from virtual_key_mapper.transport import GatewayError, JsonTransport
 
 
 def discovery(origin):
@@ -220,7 +220,7 @@ class OAuthIntegrationTests(unittest.TestCase):
         self.client = LiteLLMClient(self.profile)
 
     def login(self):
-        with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", self.fixture.browser):
+        with patch("virtual_key_mapper.auth.litellm_oauth.webbrowser.open", self.fixture.browser):
             return self.client.login(lambda message: None, timeout=5)
 
     def test_actual_http_pkce_login_refresh_and_revocation(self):
@@ -282,7 +282,7 @@ class OAuthIntegrationTests(unittest.TestCase):
         self.assertEqual([path for path, body in self.fixture.posts], ["/register", "/token", "/revoke"])
 
     def test_browser_failure_does_not_wait_or_exchange_code(self):
-        with patch("llm_credential_mapping.auth.litellm_oauth.webbrowser.open", return_value=False):
+        with patch("virtual_key_mapper.auth.litellm_oauth.webbrowser.open", return_value=False):
             with self.assertRaises(CredentialError):
                 self.client.login(lambda message: None, timeout=5)
         self.assertEqual([path for path, body in self.fixture.posts], ["/register"])

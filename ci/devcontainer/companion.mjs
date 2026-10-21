@@ -2,7 +2,7 @@
 // (vscode-extension/local/src/handler.ts, unchanged) answering with the host CLI and its OS vault.
 // In VS Code the relay reaches it through a VS Code command; here, through HTTP on the shared host network.
 //
-//   LLMC_HOST_CLI='["python","-m","llm_credential_mapping","--home","/path"]' node companion.mjs PORT
+//   LLMC_HOST_CLI='["python","-m","virtual_key_mapper","--home","/path"]' node companion.mjs PORT
 import { execFile } from "node:child_process";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -29,7 +29,7 @@ http.createServer((request, response) => {
     } catch {
       return response.writeHead(400).end(); // Readiness probes and anything that is not a relay request.
     }
-    const result = await answer(body, run, []); // llmCredentials.localProfiles unset: the local default only.
+    const result = await answer(body, run, []); // vkm.localProfiles unset: the local default only.
     console.log(`companion: ${body?.operation} -> ${result.ok ? "ok" : result.error}`);
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
   });

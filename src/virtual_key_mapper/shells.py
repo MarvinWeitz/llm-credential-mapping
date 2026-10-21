@@ -41,48 +41,48 @@ def hook(shell: str, argv: list[str]) -> str:
     if shell == "pwsh":
         command = "& " + " ".join(_single_quoted(arg, shell) for arg in argv)
         return "\n".join([
-            "# llm-credentials: set the customer for tools started from this directory.",
-            "$global:__LlmCredentialsDirectory = $null",
+            "# vkm: set the customer for tools started from this directory.",
+            "$global:__VkmDirectory = $null",
             "# Loading the profile again must not wrap the wrapper (it would call itself).",
-            "if (\"$function:prompt\" -notmatch '__LlmCredentialsPrompt') { $global:__LlmCredentialsPrompt = $function:prompt }",
+            "if (\"$function:prompt\" -notmatch '__VkmPrompt') { $global:__VkmPrompt = $function:prompt }",
             "function global:prompt {",
-            "    if ($PWD.Path -ne $global:__LlmCredentialsDirectory) {",
-            "        $global:__LlmCredentialsDirectory = $PWD.Path",
+            "    if ($PWD.Path -ne $global:__VkmDirectory) {",
+            "        $global:__VkmDirectory = $PWD.Path",
             f"        ({command} '--directory' $PWD.Path) | Out-String | Invoke-Expression",
             "    }",
-            "    & $global:__LlmCredentialsPrompt",
+            "    & $global:__VkmPrompt",
             "}",
         ])
     command = " ".join(shlex.quote(arg) for arg in argv)
     if shell == "fish":
         return "\n".join([
-            "# llm-credentials: set the customer for tools started from this directory.",
-            "function __llm_credentials_hook --on-variable PWD",
+            "# vkm: set the customer for tools started from this directory.",
+            "function __vkm_hook --on-variable PWD",
             f'    {command} --directory "$PWD" | source',
             "end",
-            "__llm_credentials_hook",
+            "__vkm_hook",
         ])
     if shell == "zsh":
         return "\n".join([
-            "# llm-credentials: set the customer for tools started from this directory.",
-            f'__llm_credentials_hook() {{ eval "$({command} --directory "$PWD")"; }}',
+            "# vkm: set the customer for tools started from this directory.",
+            f'__vkm_hook() {{ eval "$({command} --directory "$PWD")"; }}',
             "autoload -Uz add-zsh-hook",
-            "add-zsh-hook chpwd __llm_credentials_hook",
-            "__llm_credentials_hook",
+            "add-zsh-hook chpwd __vkm_hook",
+            "__vkm_hook",
         ])
     return "\n".join([
-        "# llm-credentials: set the customer for tools started from this directory.",
-        "__llm_credentials_hook() {",
+        "# vkm: set the customer for tools started from this directory.",
+        "__vkm_hook() {",
         "    local status=$?  # Keep $? for prompt commands that run after this one.",
-        '    if [ "$PWD" != "${__llm_credentials_directory-}" ]; then',
-        '        __llm_credentials_directory="$PWD"',
+        '    if [ "$PWD" != "${__vkm_directory-}" ]; then',
+        '        __vkm_directory="$PWD"',
         f'        eval "$({command} --directory "$PWD")"',
         "    fi",
         '    return "$status"',
         "}",
         'case ";${PROMPT_COMMAND-};" in',
-        '    *";__llm_credentials_hook;"*) ;;',
-        '    *) PROMPT_COMMAND="__llm_credentials_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;',
+        '    *";__vkm_hook;"*) ;;',
+        '    *) PROMPT_COMMAND="__vkm_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;',
         "esac",
     ])
 

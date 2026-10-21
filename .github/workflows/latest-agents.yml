@@ -44,4 +44,4 @@ jobs:
         shell: bash
       - run: python -m unittest discover -s tests -v
         env:
-          LLM_CREDENTIAL_MAPPING_REQUIRE: ${{ matrix.require }}
+          VKM_REQUIRE: ${{ matrix.require }}

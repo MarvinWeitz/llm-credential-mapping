@@ -6,7 +6,7 @@ import { TokenCache } from "./credentials";
 import { GatewayError, listModels, streamChat } from "./gateway";
 import { estimateTokens, toOpenAIMessages, toOpenAITools } from "./protocol";
 
-export const VENDOR = "llm-credentials";
+export const VENDOR = "vkm";
 const CHAT_API = "openai-chat";
 const FORWARDED_OPTIONS = ["temperature", "top_p", "max_tokens", "max_completion_tokens", "stop", "seed"];
 
@@ -51,9 +51,9 @@ export class Provider implements vscode.LanguageModelChatProvider {
     try {
       const endpoint = await this.chatEndpoint();
       const models = await this.withToken((credential) => listModels(endpoint, credential, abortSignal(token)));
-      const settings = vscode.workspace.getConfiguration("llmCredentials");
+      const settings = vscode.workspace.getConfiguration("vkm");
       return models.map((id) => ({
-        id, name: id, family: id, version: "1", detail: "llm-credentials",
+        id, name: id, family: id, version: "1", detail: "vkm",
         tooltip: `${id} through your gateway, attributed to this workspace's customer`,
         maxInputTokens: settings.get<number>("maxInputTokens", 128000),
         maxOutputTokens: settings.get<number>("maxOutputTokens", 16384),
@@ -106,7 +106,7 @@ export class Provider implements vscode.LanguageModelChatProvider {
     this.services.onChoice(choice);
     if (choice.kind === "folder") return choice.attribution;
     if (choice.kind === "none") {
-      throw new Error("Open a folder: llm-credentials assigns the customer per workspace folder. Nothing was sent.");
+      throw new Error("Open a folder: vkm assigns the customer per workspace folder. Nothing was sent.");
     }
     throw new Error("The workspace folders have different customers; choose one in the status bar. Nothing was sent.");
   }

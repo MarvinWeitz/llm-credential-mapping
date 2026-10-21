@@ -1,6 +1,6 @@
 """Optional: the real Claude Code binary against a local fake gateway, configured by 'setup claude'.
 
-Set LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY to the binary (e.g. the one bundled with the VS Code
+Set VKM_TEST_CLAUDE_BINARY to the binary (e.g. the one bundled with the VS Code
 extension). Uses a temporary CLAUDE_CONFIG_DIR and configuration folder; nothing of yours is changed.
 The credential helper is replaced by a stub that prints token-1, then token-2, so no sign-in is needed.
 """
@@ -18,13 +18,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_credential_mapping.adapters import Credential, IntegrationContext
-from llm_credential_mapping.cli import main
-from llm_credential_mapping.customers import Attribution
-from llm_credential_mapping.integrations.claude import Claude, settings_path
-from llm_credential_mapping.integrations.common import shell_command
-from llm_credential_mapping.profiles import ProfileStore
-from llm_credential_mapping.registry import gateway_for
+from virtual_key_mapper.adapters import Credential, IntegrationContext
+from virtual_key_mapper.cli import main
+from virtual_key_mapper.customers import Attribution
+from virtual_key_mapper.integrations.claude import Claude, settings_path
+from virtual_key_mapper.integrations.common import shell_command
+from virtual_key_mapper.profiles import ProfileStore
+from virtual_key_mapper.registry import gateway_for
 from live import binary_tests
 
 HELPER = """
@@ -109,10 +109,10 @@ class FakeGateway:
         self.thread.join(timeout=5)
 
 
-@binary_tests("claude", "LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY")
+@binary_tests("claude", "VKM_TEST_CLAUDE_BINARY")
 class NativeClaudeTests(unittest.TestCase):
     def setUp(self):
-        self.binary = Path(os.environ["LLM_CREDENTIAL_MAPPING_TEST_CLAUDE_BINARY"])
+        self.binary = Path(os.environ["VKM_TEST_CLAUDE_BINARY"])
         self.assertTrue(self.binary.is_file())
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -122,7 +122,7 @@ class NativeClaudeTests(unittest.TestCase):
         self.home = self.root / "credentials"
         self.environment = {
             key: value for key, value in os.environ.items()
-            if not key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "LLM_CREDENTIALS_"))
+            if not key.startswith(("ANTHROPIC_", "CLAUDE_CODE_", "VKM_"))
         }
         self.environment.update({
             "CLAUDE_CONFIG_DIR": str(self.root / "claude-config"),
@@ -135,7 +135,7 @@ class NativeClaudeTests(unittest.TestCase):
         self.cli(
             "profile", "add", "native", "--gateway", self.gateway.origin, "--team-id", "t", "--allow-insecure-localhost",
         )
-        with patch("llm_credential_mapping.cli.auth_for") as auth:
+        with patch("virtual_key_mapper.cli.auth_for") as auth:
             auth.return_value.credential.return_value = Credential("unused")
             self.cli("setup", "claude", "--model", "fixture-model")
         helper = self.root / "helper.py"
@@ -167,7 +167,7 @@ class NativeClaudeTests(unittest.TestCase):
         self.assertEqual(self.model_calls(), [], output)
         self.assertIn("No customer is assigned", output)
 
-        (self.repo / ".llm-customer").write_text('customer = "customer:live"\n', encoding="utf-8")
+        (self.repo / ".vkm").write_text('customer = "customer:live"\n', encoding="utf-8")
         output = self.claude(self.repo)
         self.assertEqual(self.model_calls(), [], output)
         self.assertIn("Send the prompt again", output)
@@ -209,7 +209,7 @@ class NativeClaudeTests(unittest.TestCase):
         self.assertFalse((self.repo / ".claude" / "settings.local.json").exists())
 
     def test_subdirectory_sessions_are_tagged(self):
-        (self.repo / ".llm-customer").write_text('customer = "customer:live"\n', encoding="utf-8")
+        (self.repo / ".vkm").write_text('customer = "customer:live"\n', encoding="utf-8")
         sub = self.repo / "src" / "deep"
         sub.mkdir(parents=True)
         output = self.claude(sub)

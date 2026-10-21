@@ -16,7 +16,7 @@ Fix these before starting step 2. Each has a failure scenario, the suggested fix
 
 ## 1. [medium] Transient-failure path checks a 'remaining' value taken before the network call, so it can hand out a token with under 60 s left or one that has already expired
 
-- **Where:** `src/llm_credential_mapping/sessions.py:111` (review lens: renewal)
+- **Where:** `src/virtual_key_mapper/sessions.py:111` (review lens: renewal)
 - **Scenario:** `remaining` is set at line 99, before `client.refresh()`. The 20 s transport timeout applies to each socket operation, not to the whole request. socket.create_connection tries every resolved address with its own 20 s timeout, and the TLS handshake and each read get 20 s too, so a failing refresh can take 40-80 s or more. Example: the gateway has an A and an AAAA record and the network is blackholed. The stored token has 70 s left, so 70 > 60 and the refresh starts. It fails as retryable after 40 s, and line 111 still compares the old 70 > 60, so a token with 30 s left is returned. Reproduced with a clock that advances during refresh: 70 s left before an attempt that takes 40 s gives a token with 30 s left. 61 s left before an attempt that takes 80 s gives a token that expired 19 s ago. This breaks the MINIMUM_VALIDITY_SECONDS promise ('never handed out'). Claude's apiKeyHelper or `token --json` consumers then cache an expired token. No test advances the clock during refresh.
 - **Suggested fix:** Recompute after the failed attempt: `if session.expires_at - self.clock() > MINIMUM_VALIDITY_SECONDS: return session`. Add a test whose refresh side effect moves the clock forward before raising GatewayError(status=None).
 - **Verifier's fix:** The suggested fix is right and is the minimal one. At sessions.py:111, replace the stale check with `if session.expires_at - self.clock() > MINIMUM_VALIDITY_SECONDS: return session`. Add a regression test: store a session with 70 s left, give it a refresh side effect that does `self.clock.now += 20` and then raises GatewayError("x", status=None), and assert that token() raises CredentialError and leaves the stored session unchanged.
@@ -27,7 +27,7 @@ Optional extra: give JsonTransport an overall deadline per request. The fix abov
 
 I could not refute it. The bug is real and I reproduced it.
 
-The code: in /home/user/llm-credential-mapping/src/llm_credential_mapping/sessions.py, `remaining` is computed at line 99, before `client.refresh(session)` runs at line 104. The retryable-failure branch at line 111 (`if remaining > MINIMUM_VALIDITY_SECONDS: return session`) reuses that old value and never reads the clock again. The time spent inside refresh() is therefore never counted. That breaks the promise in the comment at line 13: "A token closer than this to expiry is never handed out, even when renewal is temporarily failing".
+The code: in /home/user/virtual-key-mapper/src/virtual_key_mapper/sessions.py, `remaining` is computed at line 99, before `client.refresh(session)` runs at line 104. The retryable-failure branch at line 111 (`if remaining > MINIMUM_VALIDITY_SECONDS: return session`) reuses that old value and never reads the clock again. The time spent inside refresh() is therefore never counted. That breaks the promise in the comment at line 13: "A token closer than this to expiry is never handed out, even when renewal is temporarily failing".
 
 Reproduction 1 (scratchpad/repro_stale_remaining.py). I used the test suite's MemoryStore, Clock and make_session helpers with a refresh side effect that moves the clock forward and then raises GatewayError(status=None):
 - 70 s left, refresh takes 20 s: a token with 50 s left is returned.
@@ -46,7 +46,7 @@ The suggested fix is correct: re-check the clock after the failed attempt with `
 
 ## 2. [medium] A refused refresh during the early-renewal window throws away an access token that is still valid for hours (6 h with 24 h tokens), and a lost refresh response makes this likely
 
-- **Where:** `src/llm_credential_mapping/sessions.py:106` (review lens: renewal)
+- **Where:** `src/virtual_key_mapper/sessions.py:106` (review lens: renewal)
 - **Scenario:** With a lifetime of 86400 s, refresh_margin is 21600, so renewal starts 6 h before expiry. Suppose LiteLLM commits a rotation but the response is lost: read timeout, RemoteDisconnected, or the helper is killed by its caller. That is GatewayError(status=None), which counts as retryable, so the old refresh token stays in the vault. The next apiKeyHelper or Codex call replays that spent refresh token and gets 400 invalid_grant. Lines 106-110 then set needs_login and raise. Every later call fails at line 92 even though the stored access token is valid for about 5.9 more hours. Reproduced: call 1 returns the token, and call 2 five minutes later raises 'The gateway refused the sign-in' with 5.92 h of validity left. Before this diff, refresh started only with less than 60 s left, so a refused grant cost at most about a minute. Now any 4xx from the token endpoint during the long early window, including one from a WAF or load balancer, stops all agents until a browser login. The class docstring says 'Renewal starts early so a failed attempt still leaves a usable token', and this path does not do that.
 - **Suggested fix:** On a refusal (non-retryable GatewayError, or a CredentialError other than an identity or team mismatch), still persist needs_login so no further refresh is attempted. Keep returning the stored access token while `expires_at - clock() > MINIMUM_VALIDITY_SECONDS`, and report 're-login-required' through status() and stderr. Raise only once the token is near expiry. This needs the line 92 check moved after the validity check, or a separate 'refresh_refused' flag. Add a test for 'lost response, then 400 on replay' inside the margin.
 - **Verifier's fix:** The suggested fix is right in direction. Refine it like this:
@@ -68,11 +68,11 @@ The suggested fix is correct: re-check the clock after the failed attempt with `
 
 <details><summary>Verifier reasoning</summary>
 
-I reproduced the finding by running the real SessionManager against a fake server that follows LiteLLM's semantics: the server claims the refresh token after minting, and a replayed token gets 400. The script is at /tmp/claude-0/-home-user-llm-credential-mapping/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/renewal/repro.py.
+I reproduced the finding by running the real SessionManager against a fake server that follows LiteLLM's semantics: the server claims the refresh token after minting, and a replayed token gets 400. The script is at /tmp/claude-0/-home-user-virtual-key-mapper/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/renewal/repro.py.
 
 Setup: 24 h lifetime, clock just inside the 21600 s margin. The server commits the rotation, but the client sees a read timeout. The run printed:
 - call 1: 'access-secret', 6.00 h remaining
-- call 2, 5 minutes later: raised "Gateway returned HTTP 400. The gateway refused the sign-in; run 'llm-credentials login --profile a'." with 5.92 h remaining
+- call 2, 5 minutes later: raised "Gateway returned HTTP 400. The gateway refused the sign-in; run 'vkm login --profile a'." with 5.92 h remaining
 - status: re-login-required
 - every later call raised "The sign-in for 'a' is no longer accepted"
 
@@ -94,7 +94,7 @@ Caveat: the grant really is dead after a lost response, so a re-login is needed 
 
 ## 3. [medium] No backoff after a retryable failure: every token() call in the margin window makes its own blocking refresh attempt under the profile lock, so callers fail with 'busy' even though a valid token exists
 
-- **Where:** `src/llm_credential_mapping/sessions.py:88` (review lens: renewal)
+- **Where:** `src/virtual_key_mapper/sessions.py:88` (review lens: renewal)
 - **Scenario:** Nothing records a failed attempt, so every call while remaining <= margin (up to 6 h with 24 h tokens) refreshes again while holding the lock. Throttling (429) and a DB outage (503) therefore get one token-endpoint request per call, and Retry-After is ignored. When the token endpoint hangs (slow DB, or connect timeouts across several addresses), each attempt takes 20 s or more. Concurrent callers (Claude helper, Codex auth command, the VS Code extension, or the Copilot bridge, which calls token() on every proxied request) queue behind each attempt, and each one then makes its own attempt. Reproduced at reduced scale (2 s refresh hang, 5 s lock wait, 4 threads, token valid for 600 s): 3 refresh attempts, one caller got 'Another credential operation is busy; try again.' and another waited 6 s. With the real values (20 s+ per attempt, 60 s wait) the 4th concurrent caller fails, although the stored token is valid. The same lock timeout hits login() after the browser step (line 63): the freshly issued grant is revoked and the user must sign in again. The LOCK_WAIT_SECONDS comment assumes two 20 s round trips, but the per-operation timeout does not bound a round trip.
 - **Suggested fix:** Persist a 'next_refresh_attempt' (or 'last_refresh_failure') timestamp in the stored session, under the lock, on every retryable failure. Skip refresh and return the current session while `now < next_refresh_attempt` and the token has more than MINIMUM_VALIDITY_SECONDS left. Use exponential backoff starting around 30-60 s and honour Retry-After when present. Also consider a whole-request deadline in JsonTransport for refresh, or a fast path that returns the stored token, read without waiting, when another process holds the lock and the token is still above the minimum.
 - **Verifier's fix:** The suggested fix is right in substance. These details matter:
@@ -109,7 +109,7 @@ Do not add the suggested lock-free fast path that returns a token read without t
 
 <details><summary>Verifier reasoning</summary>
 
-I reproduced this against the committed code (8533732, the same content as step1.diff) using the real ProfileStore file lock and the default LOCK_WAIT_SECONDS of 60. The script is /tmp/claude-0/-home-user-llm-credential-mapping/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/backoff/repro.py.
+I reproduced this against the committed code (8533732, the same content as step1.diff) using the real ProfileStore file lock and the default LOCK_WAIT_SECONDS of 60. The script is /tmp/claude-0/-home-user-virtual-key-mapper/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/backoff/repro.py.
 
 Setup: a 24 h token issued 20 h ago, so 4 h remain and the refresh margin is 6 h. The refresh takes 20 s and then raises a retryable GatewayError(status=None). 20 s is the transport's per-operation timeout (REQUEST_TIMEOUT_SECONDS), so this is what a black-holed connect or a stalled read looks like. Five threads call token() at once. Result: 3 serial refresh attempts, at t=0, 20 s and 40 s. Two callers fail after 60 s with "Another credential operation is busy; try again." The others wait 20, 40 and 60 s, even though the stored token is valid for 4 more hours. A scaled-down run (2 s hang, 5 s wait, 4 threads) gives the result the finding quotes.
 
@@ -123,7 +123,7 @@ Caveats on severity: fast failures (503, connection refused, 429) only add one q
 
 ## 4. [medium] Login leaks a live, unrevoked grant if interrupted (or any non-CredentialError occurs) while waiting for the profile lock after minting
 
-- **Where:** `src/llm_credential_mapping/sessions.py:69` (review lens: security)
+- **Where:** `src/virtual_key_mapper/sessions.py:69` (review lens: security)
 - **Scenario:** This diff moved the lock wait to after `client.login()` has already minted the new grant, and raised the wait to 60 s (LOCK_WAIT_SECONDS). Example: the copilot bridge or an agent's apiKeyHelper holds the profile lock during a slow refresh (up to 2x20 s per-op timeouts plus vault I/O). The user finishes browser consent, the page says 'Return to your terminal', and the CLI then waits silently for up to 60 s. If the user presses Ctrl+C, KeyboardInterrupt goes straight through `except CredentialError:` at line 69. main() prints 'Cancelled.', and the new refresh grant is neither stored nor revoked, so it stays live on the gateway until it expires and logout can never reach it. I reproduced this by patching FileLock.acquire to raise KeyboardInterrupt: revoke was never called and the vault kept the old grant. A ValueError from `_load` (see the `_require_gateway_url` finding) takes the same path. Before this diff the lock was taken before any grant was minted, so an interrupt there leaked nothing.
 - **Suggested fix:** Make the revoke-on-failure path in login() cover every exception: catch BaseException, revoke best-effort, then re-raise (keep the warning when revoke itself fails). Also notify('Saving sign-in; waiting for another credential operation...') before entering `self._locked(profile)` so users don't think it has hung. Add a test that raises KeyboardInterrupt from the lock acquire during login and asserts client.revoke(new_session) is called.
 - **Verifier's fix:** In sessions.py `login()`, catch `BaseException` but revoke only a grant that was not saved. A bare `BaseException` handler would also revoke the session just saved if Ctrl+C arrived after `secrets.put` but before the lock was released. The vault would then hold a revoked grant while the previous grant was never revoked. Sketch:
@@ -152,7 +152,7 @@ Keep the existing previous-grant revoke after this block. Add a test in tests/te
 
 <details><summary>Verifier reasoning</summary>
 
-I reproduced it with a real lock held by another process, not by patching. Script: /tmp/claude-0/-home-user-llm-credential-mapping/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/verify_login_leak/repro.py.
+I reproduced it with a real lock held by another process, not by patching. Script: /tmp/claude-0/-home-user-virtual-key-mapper/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/verify_login_leak/repro.py.
 
 The setup: a subprocess holds `<home>/<account>.lock` through `filelock`, standing in for a bridge or apiKeyHelper that is mid-refresh. The vault holds an old grant, and the mocked `client.login` returns a new grant. A SIGINT is sent 2 s into `SessionManager.login`. The wait was silent (no notify output), `KeyboardInterrupt` came out after 2.0 s, `client.revoke` was never called, and the vault still held `old-refresh`. So the new refresh grant is neither stored nor revoked, and `logout` can never reach it.
 
@@ -171,7 +171,7 @@ The suggested fix is mostly right but slightly incomplete; see better_fix. I che
 
 ## 5. [medium] No back-off after a retryable refresh failure: every token call in the early-renewal window retries the refresh while holding the profile lock
 
-- **Where:** `src/llm_credential_mapping/sessions.py:99-112` (review lens: regressions)
+- **Where:** `src/virtual_key_mapper/sessions.py:99-112` (review lens: regressions)
 - **Scenario:** Old code returned tokens straight from the vault until 60 s before expiry. New code calls client.refresh() on every token()/session() call while remaining < refresh_margin, which is 6 h for LiteLLM's default 24 h token, and it does so inside the profile lock. Example: the token endpoint hangs or is slow (blackholed route, slow DB). Every `token`, `claude token` or bridge request then blocks for at least REQUEST_TIMEOUT_SECONDS=20 (DNS time is not bounded by that), only to return a token that still has hours left. Concurrent callers queue on the lock and each runs its own 20 s attempt. With LOCK_WAIT_SECONDS=60, the 4th concurrent caller gets 'Another credential operation is busy' even though a valid token is stored. I reproduced this with scaled timings in scratchpad/storm.py (refresh takes 1 s and fails, lock wait 3 s, 6 concurrent callers): callers 1-4 waited 1/2/3/4 s and callers 5-6 failed as busy. docs/plan/research/auth.md item (2) asks to 'keep the stored refresh token and back off', but no back-off was added. test_transient_failure_keeps_a_valid_token_and_retries_later asserts 5 back-to-back network attempts, so the tests lock in this behaviour.
 - **Suggested fix:** After a retryable failure, record a nonsecret next-attempt time, for example a `retry_after` field in the session dict or a sidecar file under the lock, with exponential back-off capped at remaining/4. Until then, return the current session without contacting the gateway while remaining > MINIMUM_VALIDITY_SECONDS. Alternatively or as well, use a short transport timeout (about 5 s) for optional early refreshes and keep the full timeout for refreshes near expiry. Add a test with several concurrent callers and a slow failing refresh: all callers should get the still-valid token quickly and refresh should be called once per back-off window.
 - **Verifier's fix:** I agree with the main idea: persist a next-attempt time after a retryable failure. Some details to get right:
@@ -193,7 +193,7 @@ The suggested fix is mostly right but slightly incomplete; see better_fix. I che
 
 I could not refute this one. I reproduced it end to end and traced it in the code.
 
-Code trace, src/llm_credential_mapping/sessions.py:99-112. On every call where `remaining <= refresh_margin(session)`, `session()` calls `client.refresh()` while holding the profile FileLock. For a 24 h token, `refresh_margin` is min(max(600, 6 h), 12 h) = 6 h. When the refresh fails with a retryable error, the code returns the stored session and records nothing. The next caller therefore makes the same network attempt again, also under the lock.
+Code trace, src/virtual_key_mapper/sessions.py:99-112. On every call where `remaining <= refresh_margin(session)`, `session()` calls `client.refresh()` while holding the profile FileLock. For a 24 h token, `refresh_margin` is min(max(600, 6 h), 12 h) = 6 h. When the refresh fails with a retryable error, the code returns the stored session and records nothing. The next caller therefore makes the same network attempt again, also under the lock.
 
 The old code (sessions.py at 8533732^) did no network work while `expires_at > now + 60`. It only refreshed once, in the last minute.
 
@@ -221,7 +221,7 @@ The suggested fix is right in direction. Notes on it are in better_fix.
 
 ## 6. [medium] A refused refresh inside the early window stops releasing an access token that is still valid for up to a quarter of its lifetime
 
-- **Where:** `src/llm_credential_mapping/sessions.py:94-98,105-110,116-120` (review lens: regressions)
+- **Where:** `src/virtual_key_mapper/sessions.py:94-98,105-110,116-120` (review lens: regressions)
 - **Scenario:** Early renewal starts at lifetime/4 before expiry (6 h for the default 24 h, non-revocable LiteLLM access token). Any non-retryable result sets needs_login, and session() then refuses at line 94 before looking at expiry. Plausible sequence: a refresh times out after LiteLLM minted the replacement and claimed the old refresh token. The same happens when Codex kills the helper at its timeout_ms mid-refresh, or the user presses Ctrl+C. The diff treats the timeout as retryable, so the next call replays the spent token and gets 400 invalid_grant, which sets needs_login. From then on every token call, Claude apiKeyHelper call and bridge request fails, and the user must do an interactive browser login, although the stored access token is valid for hours. Before this diff the refresh only ran in the last 60 s, so the same chain cost at most a minute. Reproduced via the CLI: a session with 10 min left plus a refresh returning HTTP 400 makes `token --json` exit 1, and later `token` calls refuse. Tests only cover refusals of already-expired sessions (test_refused_grant_requires_login_without_further_refreshes uses self.expired()), so this case is untested. _mark_needs_login failing to write (sessions.py:137-138) is also untested.
 - **Suggested fix:** Separate 'stop refreshing' from 'stop releasing'. When needs_login is set or a refusal happens, return the current session while expires_at - now > MINIMUM_VALIDITY_SECONDS and do not attempt another refresh. Print a stderr warning or show status 're-login-required', and raise only when the token is near expiry. Keep the hard failure for an identity mismatch (expected_user, or the renewed grant changing user or team). If a membership refusal (403 access_denied) should stop release immediately, special-case it. Add tests for a refusal inside the margin with a valid token, and for _mark_needs_login when the vault write fails.
 - **Verifier's fix:** The suggested fix is right. Concretely:
@@ -287,16 +287,16 @@ I tried to refute this finding and could not. The mechanism traces cleanly throu
 
 ## 7. [low] _require_gateway_url lets urlsplit ValueError escape; stored-session check now crashes and blocks re-login recovery
 
-- **Where:** `src/llm_credential_mapping/litellm.py:148` (review lens: security)
+- **Where:** `src/virtual_key_mapper/litellm.py:148` (review lens: security)
 - **Scenario:** `parsed = urlsplit(value)` sits outside the try block, and the handler only catches CredentialError. urlsplit raises ValueError for inputs like 'https://[example.com/token' ('Invalid IPv6 URL') or netlocs with NFKC-confusable characters ('https://example.com＃@evil.com/x'). This diff now runs this check on every stored session (check_binding inside _load). With such a stored token_endpoint/revocation_endpoint/resource (a tampered or hand-edited vault entry), token, status and logout all crash with a raw traceback instead of a CredentialError. login(), the documented recovery path, also hits the ValueError in `_load` under the lock. The ValueError gets past both `except CredentialError` clauses, so every login attempt mints a fresh grant, never stores or revokes it, and crashes again. I reproduced this: login raised ValueError, revoke was never called, and the vault was unchanged. A malicious or broken discovery document with such an endpoint also makes login crash with a traceback instead of a clean error.
 - **Suggested fix:** Move urlsplit inside the try block and catch ValueError as well: `try: parsed = urlsplit(value); origin = gateway_origin(...) except (ValueError, CredentialError): raise CredentialError('Gateway endpoint is invalid.') from None`. Combined with the BaseException revoke in login(), a corrupted entry then counts as 'unreadable previous' and login can replace it. Add test cases for these inputs to test_stored_endpoints_must_stay_on_the_gateway and test_foreign_endpoints_are_rejected.
 - **Verifier's fix:** In `_require_gateway_url`, wrap `parsed = urlsplit(value)` and the `gateway_origin(...)` call in one try, and raise `CredentialError("Gateway endpoint is invalid.")` on `(ValueError, CredentialError)`. Leave the origin, userinfo, query and fragment checks after the try unchanged. Add 'https://[example.com/token' and 'https://example.com＃@evil.com/x' to the stored-endpoint and discovery tests. Also add a test that login() replaces a stored session with such an endpoint and leaves the new grant in the vault.
 
 <details><summary>Verifier reasoning</summary>
 
-I reproduced this with Python 3.13.16 at /tmp/claude-0/-home-user-llm-credential-mapping/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/verify_urlsplit/repro.py, using the MemoryStore and make_session helpers from tests/test_sessions.py.
+I reproduced this with Python 3.13.16 at /tmp/claude-0/-home-user-virtual-key-mapper/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/verify_urlsplit/repro.py, using the MemoryStore and make_session helpers from tests/test_sessions.py.
 
-How the failure happens: in src/llm_credential_mapping/litellm.py:148, `_require_gateway_url` calls `urlsplit(value)` before the try block, and that block only catches CredentialError. This diff adds `Session.check_binding` (litellm.py:121-122), which runs this check on every stored endpoint in `SessionManager._load` (sessions.py:55).
+How the failure happens: in src/virtual_key_mapper/litellm.py:148, `_require_gateway_url` calls `urlsplit(value)` before the try block, and that block only catches CredentialError. This diff adds `Session.check_binding` (litellm.py:121-122), which runs this check on every stored endpoint in `SessionManager._load` (sessions.py:55).
 
 Result: I stored a session whose token_endpoint was "https://[example.com/token" or "https://example.com＃@evil.com/x". Then token, status, logout and login all raised a raw ValueError ("Invalid IPv6 URL" or "...invalid characters under NFKC normalization"). cli.main (cli.py:441) catches only CredentialError and KeyboardInterrupt, so the user sees a traceback.
 
@@ -312,7 +312,7 @@ Checking the fix: I monkeypatched `_require_gateway_url` with the suggested vers
 
 ## 8. [low] Login silently overwrites an unreadable previous session without revoking it or warning
 
-- **Where:** `src/llm_credential_mapping/sessions.py:66` (review lens: security)
+- **Where:** `src/virtual_key_mapper/sessions.py:66` (review lens: security)
 - **Scenario:** The new `except CredentialError: previous = None` discards every load failure without telling the user. Example: NativeKeyring.get raises _invalid() after a fragment hash mismatch (an interrupted write or a manual vault edit). That error message tells the user to 'Ask the gateway administrator to revoke the damaged grant'. A transient read failure (`Cannot read the OS credential vault; unlock it and retry`) followed by a successful put has the same effect. In both cases login stores the new session over the old one, never revokes the old refresh grant (which may still be live), and prints nothing. I reproduced this with a vault whose first get() raises CredentialError: revoke calls [] and no notify. Before this diff the error stopped the login, so the admin-revocation advice reached the user. Skipping revocation is correct when the stored endpoints fail pinning, but the user still needs to be told.
 - **Suggested fix:** In the except branch, call notify('Warning: the previous sign-in could not be read and was not revoked; ask the gateway administrator to revoke it.'). Optionally abort, after revoking the new grant, for vault-access errors as opposed to format/pinning errors, so a transient vault failure cannot orphan a valid grant. Extend test_relogin_replaces_an_unreadable_previous_session to assert the warning.
 - **Verifier's fix:** Keep the error and pass its text on, so the specific advice ("unlock the vault" or "ask the administrator to revoke the damaged grant") reaches the user:
@@ -339,7 +339,7 @@ Do not abort the login for unreadable-previous errors. Aborting would discard a 
 
 <details><summary>Verifier reasoning</summary>
 
-The finding is real, though low severity. I confirmed it twice in /tmp/claude-0/-home-user-llm-credential-mapping/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/verify_unreadable/; the repo was not modified.
+The finding is real, though low severity. I confirmed it twice in /tmp/claude-0/-home-user-virtual-key-mapper/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/verify_unreadable/; the repo was not modified.
 
 1. **Stub vault (repro.py):** the first get() raises "Cannot read the OS credential vault; unlock it and retry." and later calls work. login() runs `except CredentialError: previous = None` at sessions.py:66-67, then put() stores the new session. Result: stored refresh is NEW-REFRESH, revoke calls [], notify calls []. The old refresh token (OLD-LIVE-REFRESH) is still live on the gateway, is no longer stored anywhere, and the user is told nothing. This can happen with real backends. For example, Secret Service shows an unlock prompt on get. If the user dismisses it, get fails with KeyringLocked. If they accept the next prompt, which put()'s own _read triggers, put succeeds.
 
@@ -360,16 +360,16 @@ The finding is real, though low severity. I confirmed it twice in /tmp/claude-0/
 
 ## 9. [low] Retry path compares the remaining validity measured before the network call, so it can return a token with less than 60 s left or already expired
 
-- **Where:** `src/llm_credential_mapping/sessions.py:111` (review lens: security)
+- **Where:** `src/virtual_key_mapper/sessions.py:111` (review lens: security)
 - **Scenario:** `remaining` is computed at line 99, before `client.refresh()`. JsonTransport's 20 s timeout applies to each connect, TLS and read step separately (DNS has no timeout), so a failed refresh can take tens of seconds. With 70 s left, a refresh that times out after 40 s still passes `remaining > MINIMUM_VALIDITY_SECONDS` and returns the old token with about 30 s left (reproduced with an injected clock). After a long DNS or slow-drip stall the token can already be expired. This breaks the new rule in the MINIMUM_VALIDITY_SECONDS comment that such tokens are never handed out, and credential helpers cache a token that is about to fail.
 - **Suggested fix:** Recompute after the failure: `if session.expires_at - self.clock() > MINIMUM_VALIDITY_SECONDS: return session`. Add a test whose fake refresh advances the clock before raising GatewayError.
 - **Verifier's fix:** The suggested fix is correct. After the retryable failure, recompute the remaining time with the current clock: `if session.expires_at - self.clock() > MINIMUM_VALIDITY_SECONDS: return session`, and raise the "Renewal will be retried" CredentialError otherwise. Add a test whose refresh side effect moves self.clock.now forward (for example by 40 s from 70 s remaining) before raising GatewayError(status=None or 503), and assert that CredentialError is raised and the stored session is unchanged. Optionally fix the related edge case too: make refresh_margin return at least MINIMUM_VALIDITY_SECONDS (for example `max(MINIMUM_VALIDITY_SECONDS, min(max(600.0, lifetime / 4), lifetime / 2))`), so a token with less than 60 s left is never returned at line 101 without first trying to refresh.
 
 <details><summary>Verifier reasoning</summary>
 
-I confirmed this by reading the code and reproducing it. In src/llm_credential_mapping/sessions.py, line 99 computes `remaining = session.expires_at - self.clock()` once, before the blocking `client.refresh(session)` call at line 104. When the refresh fails with a retryable error, line 111 compares that old value against MINIMUM_VALIDITY_SECONDS and returns the old session. The time spent in the failed network call is never subtracted. LiteLLMClient.refresh (litellm.py:310) makes one POST through JsonTransport. JsonTransport (transport.py:61) passes timeout=20, and that limit applies to each step separately: each address returned by DNS gets its own 20 s connect attempt, the TLS handshake gets 20 s, and each read gets 20 s. getaddrinfo has no timeout at all. So a retryable failure (no status, or a slow 5xx) can easily take 40 s or more. That is likely in exactly this situation: a token only gets down to about 60-120 s if every attempt in the previous ~9 minutes has already failed, which means the gateway is having an outage.
+I confirmed this by reading the code and reproducing it. In src/virtual_key_mapper/sessions.py, line 99 computes `remaining = session.expires_at - self.clock()` once, before the blocking `client.refresh(session)` call at line 104. When the refresh fails with a retryable error, line 111 compares that old value against MINIMUM_VALIDITY_SECONDS and returns the old session. The time spent in the failed network call is never subtracted. LiteLLMClient.refresh (litellm.py:310) makes one POST through JsonTransport. JsonTransport (transport.py:61) passes timeout=20, and that limit applies to each step separately: each address returned by DNS gets its own 20 s connect attempt, the TLS handshake gets 20 s, and each read gets 20 s. getaddrinfo has no timeout at all. So a retryable failure (no status, or a slow 5xx) can easily take 40 s or more. That is likely in exactly this situation: a token only gets down to about 60-120 s if every attempt in the previous ~9 minutes has already failed, which means the gateway is having an outage.
 
-Reproduction script: /tmp/claude-0/-home-user-llm-credential-mapping/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/repro_stale_remaining.py. It uses the test suite's Clock, MemoryStore and make_session, stores a token with 70 s left, and uses a fake refresh that moves the clock forward and then raises GatewayError with no status. Output: "stall=40: returned token with 30 s remaining (minimum 60)" and "stall=80: returned token with -10 s remaining". So SessionManager.session(), used by both `token` and `token --json`, returns a token with less than the minimum validity, or one that has already expired. This breaks the rule in the comment at sessions.py:13 ("never handed out, even when renewal is temporarily failing"). The impact is a reliability defect rather than a real security issue. The token is still the user's own grant and an expired one is simply rejected. What actually happens is that the credential helper gets a token that is about to fail, instead of the clear "Renewal will be retried" error. Low severity is right. The existing test test_transient_failure_near_expiry_is_an_error_but_keeps_the_grant uses a refresh that fails instantly, so it does not catch this.
+Reproduction script: /tmp/claude-0/-home-user-virtual-key-mapper/758eb7e3-cfad-5c2e-84d5-e72f0911dcc7/scratchpad/repro_stale_remaining.py. It uses the test suite's Clock, MemoryStore and make_session, stores a token with 70 s left, and uses a fake refresh that moves the clock forward and then raises GatewayError with no status. Output: "stall=40: returned token with 30 s remaining (minimum 60)" and "stall=80: returned token with -10 s remaining". So SessionManager.session(), used by both `token` and `token --json`, returns a token with less than the minimum validity, or one that has already expired. This breaks the rule in the comment at sessions.py:13 ("never handed out, even when renewal is temporarily failing"). The impact is a reliability defect rather than a real security issue. The token is still the user's own grant and an expired one is simply rejected. What actually happens is that the credential helper gets a token that is about to fail, instead of the clear "Renewal will be retried" error. Low severity is right. The existing test test_transient_failure_near_expiry_is_an_error_but_keeps_the_grant uses a refresh that fails instantly, so it does not catch this.
 
 Related issue from the same diff (not part of this finding): refresh_margin returns lifetime/2 for any lifetime under 120 s. For example, a 100 s lifetime gives a margin of 50 s. A token with 55 s left is then returned at line 101 without even trying to refresh, which breaks the same 60 s rule. This only matters for gateways that issue very short-lived tokens.
 
@@ -395,7 +395,7 @@ Related issue from the same diff (not part of this finding): refresh_margin retu
 
 This is a real gap in test coverage. The code works today, but the test suite would not notice if the new logic broke. I confirmed this by changing a scratch copy of the code in two ways ("mutants") and running the full suite (264 tests) against each. The repo was not modified.
 
-Mutant 1: in SessionManager.login (src/llm_credential_mapping/sessions.py:57-80), I moved the read of `previous` so it happens before client.login(), under the lock, which is how the old code did it. All 264 tests still pass. tests/test_sessions.py:117 and :130 cannot tell the difference: in both, nothing refreshes during the browser phase, so `previous` is the same whichever order is used.
+Mutant 1: in SessionManager.login (src/virtual_key_mapper/sessions.py:57-80), I moved the read of `previous` so it happens before client.login(), under the lock, which is how the old code did it. All 264 tests still pass. tests/test_sessions.py:117 and :130 cannot tell the difference: in both, nothing refreshes during the browser phase, so `previous` is the same whichever order is used.
 
 A probe (scratchpad/overlap_probe.py) shows the effect. The stored grant is P, and the browser callback moves the clock into the refresh window and calls manager.token(), which rotates P to P'.
 - Current code: revokes 'rotated' (P'). Correct.
@@ -412,7 +412,7 @@ Severity is low (missing tests only, no bug today), but the finding is accurate.
 
 ## 11. [low] Remaining validity is measured before the refresh, so a slow failed refresh can return a token with under 60 s left, or an expired one
 
-- **Where:** `src/llm_credential_mapping/sessions.py:99,111` (review lens: regressions)
+- **Where:** `src/virtual_key_mapper/sessions.py:99,111` (review lens: regressions)
 - **Scenario:** `remaining` is computed before client.refresh(). The retryable branch then checks `remaining > MINIMUM_VALIDITY_SECONDS` against that old value. The urllib timeout applies to each socket operation, not to the whole request, and DNS resolution is not covered at all, so a failing refresh can take 20 s or much longer. Example: 70 s remain, the refresh drips for 80 s and then fails, and session() returns a token that expired 10 s ago (reproduced in scratchpad/stale.py with the injectable clock: 'seconds of validity left: -10.0'). Even a plain 20 s connect timeout returns a token with 41-60 s left, which breaks the documented MINIMUM_VALIDITY_SECONDS guarantee.
 - **Suggested fix:** In the retryable branch, recompute `remaining = session.expires_at - self.clock()` after the exception before comparing with MINIMUM_VALIDITY_SECONDS. Add a test whose fake refresh advances the Clock before raising GatewayError.
 - **Verifier's fix:** The suggested fix is correct and enough. In the retryable GatewayError branch (sessions.py:111), re-read the clock before the comparison:
@@ -434,7 +434,7 @@ Optional hardening, not required for this finding: cap the whole refresh with an
 
 Confirmed by reading the code and running a reproduction.
 
-In src/llm_credential_mapping/sessions.py:99, `remaining = session.expires_at - self.clock()` is computed once, before `client.refresh(session)` at line 104. The retryable branch at line 111 (`if remaining > MINIMUM_VALIDITY_SECONDS: return session`) compares against that old value and never re-reads the clock. This branch is new in this diff: the old code always raised when a refresh failed and never returned the old token, so the defect comes from this change.
+In src/virtual_key_mapper/sessions.py:99, `remaining = session.expires_at - self.clock()` is computed once, before `client.refresh(session)` at line 104. The retryable branch at line 111 (`if remaining > MINIMUM_VALIDITY_SECONDS: return session`) compares against that old value and never re-reads the clock. This branch is new in this diff: the old code always raised when a refresh failed and never returned the old token, so the defect comes from this change.
 
 A refresh can take a long time. transport.py passes `timeout=REQUEST_TIMEOUT_SECONDS` (20) to urllib, and that limit applies to each socket operation:
 - `socket.create_connection` tries every getaddrinfo address, up to 20 s each, so a dual-stack host with dropped packets takes 40 s.
@@ -455,7 +455,7 @@ I checked the suggested fix on a scratch copy of the package. With the clock re-
 
 ## 12. [low] An HTTP 3xx from the token endpoint marks the grant as refused even though signing in again cannot help
 
-- **Where:** `src/llm_credential_mapping/transport.py:27` (review lens: regressions)
+- **Where:** `src/virtual_key_mapper/transport.py:27` (review lens: regressions)
 - **Scenario:** GatewayError.retryable is False for 3xx, so session() calls _mark_needs_login. A redirect from the stored token endpoint is either temporary, such as a 302 to a maintenance or status page during a gateway deploy, so a later retry would succeed with the same refresh token, or a lasting misconfiguration that `login` also cannot get past, because discovery and the token exchange use the same NoRedirects transport. In both cases the refresh token is still valid, but the session is forced into 're-login-required'. Combined with the early window, a deploy-time redirect stops token release hours before expiry. No test covers 3xx classification in SessionManager.
 - **Suggested fix:** Treat 3xx as retryable for refresh (keep the grant and report the redirect message), or add a separate 'not a refusal' category so only 4xx answers from the token endpoint set needs_login. Add a session test for a 302 or 307 refresh response.
 - **Verifier's fix:** Leave `GatewayError.retryable` as it is, because repeating a redirected request unchanged is not expected to succeed. Handle 3xx separately in `SessionManager.session` (`sessions.py:105`):
@@ -464,7 +464,7 @@ I checked the suggested fix on a scratch copy of the package. With the clock re-
 if error.status is not None and 300 <= error.status < 400:
     if remaining > MINIMUM_VALIDITY_SECONDS:
         return session
-    raise CredentialError(f"{error} The stored sign-in was kept; if the gateway moved its endpoints, run 'llm-credentials login --profile {profile.name}' to rediscover them.") from None
+    raise CredentialError(f"{error} The stored sign-in was kept; if the gateway moved its endpoints, run 'vkm login --profile {profile.name}' to rediscover them.") from None
 ```
 
 Put this before the `not error.retryable` branch, and do not call `_mark_needs_login` for 3xx. This keeps the still-valid grant and keeps handing out the current token during the early window. A transient redirect then clears without a browser login, and a lasting one (such as a moved endpoint) points the user to `login`, which rediscovers the endpoints.
@@ -480,7 +480,7 @@ I confirmed this with a reproduction, but the impact is narrow and low severity.
 Trace: `JsonTransport._request` (`transport.py:66-69`) turns any 3xx into `GatewayError(status=3xx)`. `retryable` (`transport.py:27`) returns False for 300-399. In `SessionManager.session` (`sessions.py:105-110`), every non-retryable `GatewayError` calls `_mark_needs_login` and raises "The gateway refused the sign-in".
 
 Reproduction (`scratchpad/v3xx/repro.py`): a real loopback HTTP server, the real `LiteLLMClient` and `JsonTransport`, and an 8 h session with 7000 s left. That is inside the refresh margin of min(max(600, 7200), 14400) = 7200 s. The token endpoint answers 302.
-- Output: "Gateway redirect refused; configure its final public HTTPS origin. The gateway refused the sign-in; run 'llm-credentials login --profile a'." Status becomes re-login-required.
+- Output: "Gateway redirect refused; configure its final public HTTPS origin. The gateway refused the sign-in; run 'vkm login --profile a'." Status becomes re-login-required.
 - After the server goes back to answering 200, `token()` still fails with "The sign-in for 'a' is no longer accepted". The refresh token was never presented to LiteLLM, so it is still valid, and an access token valid for almost 2 more hours is withheld.
 
 Before this change, refresh ran only when 60 s or less were left. A redirect that came and went earlier had no effect, so the early window does make this a small regression.
@@ -495,9 +495,9 @@ Where the finding is wrong: "signing in again cannot help" is false when a token
 
 ## Rejected by the verifier
 
-- [low] For token lifetimes under 120 s, refresh_margin is below MINIMUM_VALIDITY_SECONDS: tokens with under 60 s left are handed out without a renewal attempt, and there is no grace window (`src/llm_credential_mapping/sessions.py:22`): The code does what the finding says, but the case cannot happen with the gateway this tool targets, and the suggested fix would make things worse.
+- [low] For token lifetimes under 120 s, refresh_margin is below MINIMUM_VALIDITY_SECONDS: tokens with under 60 s left are handed out without a renewal attempt, and there is no grace window (`src/virtual_key_mapper/sessions.py:22`): The code does what the finding says, but the case cannot happen with the gateway this tool targets, and the suggested fix would make things worse.
 
 What I confirmed (scratchpad/renewal/repro.py): refresh_margin is min(max(600, lifetime/4), lifetime/2), so a 90 s lifetime gives a margin of 45 s. With 46 s left, sessions.py:100 returns the stored session without calling refresh. That is below MINIMU...
-- [low] The rewritten login/status/logout CLI handlers are never run by any test (`src/llm_credential_mapping/cli.py:92-98,117-123`): This finding points to a coverage gap, not a defect, and I could not show any failure. The scenario only imagines one ("a wrong attribute name ... would only show up for users at runtime"). I checked it three ways:
+- [low] The rewritten login/status/logout CLI handlers are never run by any test (`src/virtual_key_mapper/cli.py:92-98,117-123`): This finding points to a coverage gap, not a defect, and I could not show any failure. The scenario only imagines one ("a wrong attribute name ... would only show up for users at runtime"). I checked it three ways:
 
-1) The new handlers at src/llm_credential_mapping/cli.py:92-123 do the same thing as the old branches in main() at HEAD~2 (cli.py:303-314). They check the same --timeout range of 1-900...
+1) The new handlers at src/virtual_key_mapper/cli.py:92-123 do the same thing as the old branches in main() at HEAD~2 (cli.py:303-314). They check the same --timeout range of 1-900...

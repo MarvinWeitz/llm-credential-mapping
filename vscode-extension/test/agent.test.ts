@@ -11,8 +11,8 @@ const windows = process.platform === "win32";
 
 function socketPath(name: string): string {
   return windows
-    ? `\\\\.\\pipe\\llm-credentials-test-${process.pid}-${name}`
-    : path.join(fs.mkdtempSync(path.join(os.tmpdir(), "llmc-")), "private", "agent.sock");
+    ? `\\\\.\\pipe\\vkm-test-${process.pid}-${name}`
+    : path.join(fs.mkdtempSync(path.join(os.tmpdir(), "vkm-")), "private", "agent.sock");
 }
 
 function ask(socket: string, line: string): Promise<any> {
@@ -27,9 +27,9 @@ function ask(socket: string, line: string): Promise<any> {
 }
 
 test("the socket path matches the CLI's", () => {
-  assert.equal(agentPath({ LLM_CREDENTIALS_AGENT: "/run/x.sock" }), "/run/x.sock");
-  assert.equal(agentPath({ XDG_RUNTIME_DIR: "/run/user/1000" }), path.join("/run/user/1000", "llm-credentials", "agent.sock"));
-  assert.match(agentPath({}), /llm-credentials-.+[\\/]agent\.sock$/);
+  assert.equal(agentPath({ VKM_AGENT: "/run/x.sock" }), "/run/x.sock");
+  assert.equal(agentPath({ XDG_RUNTIME_DIR: "/run/user/1000" }), path.join("/run/user/1000", "vkm", "agent.sock"));
+  assert.match(agentPath({}), /vkm-.+[\\/]agent\.sock$/);
 });
 
 test("only known operations and profile names are accepted", () => {

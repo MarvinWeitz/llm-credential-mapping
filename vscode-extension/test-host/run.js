@@ -1,5 +1,5 @@
 // Opt-in: `npm run test:host` downloads VS Code (cached in .vscode-test/) and runs suite.js in a real extension host
-// with a fake llm-credentials CLI and a fake gateway that records request headers.
+// with a fake vkm CLI and a fake gateway that records request headers.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -36,14 +36,14 @@ async function main() {
   delete process.env.ELECTRON_RUN_AS_NODE;
   const server = gateway();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-credentials-host-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vkm-host-"));
   const workspace = path.join(root, "workspace");
   fs.mkdirSync(workspace, { recursive: true });
-  // llmCredentials.command is machine-scoped: VS Code ignores it in workspace settings, so set it for the user.
+  // vkm.command is machine-scoped: VS Code ignores it in workspace settings, so set it for the user.
   const userSettings = path.join(root, "user-data", "User");
   fs.mkdirSync(userSettings, { recursive: true });
   fs.writeFileSync(path.join(userSettings, "settings.json"), JSON.stringify({
-    "llmCredentials.command": [process.execPath, path.join(__dirname, "fake-cli.js")],
+    "vkm.command": [process.execPath, path.join(__dirname, "fake-cli.js")],
   }));
   const results = path.join(root, "results.txt");
   try {
@@ -52,8 +52,8 @@ async function main() {
       extensionTestsPath: path.join(__dirname, "suite.js"),
       launchArgs: [workspace, "--disable-extensions", "--user-data-dir", path.join(root, "user-data"), "--skip-welcome"],
       extensionTestsEnv: {
-        LLM_CREDENTIALS_TEST_GATEWAY: `http://127.0.0.1:${server.address().port}`,
-        LLM_CREDENTIALS_TEST_RESULTS: results,
+        VKM_TEST_GATEWAY: `http://127.0.0.1:${server.address().port}`,
+        VKM_TEST_RESULTS: results,
       },
     });
   } finally {
