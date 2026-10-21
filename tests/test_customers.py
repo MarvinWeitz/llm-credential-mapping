@@ -10,6 +10,7 @@ from virtual_key_mapper.customers import (
     unmapped_error, write_customer_file,
 )
 from virtual_key_mapper.errors import CredentialError
+from virtual_key_mapper.integrations.common import CUSTOMER_VARIABLE
 from virtual_key_mapper.profiles import Profile, ProfileStore
 from virtual_key_mapper.repositories import Checkout, RepositoryStore, repository_identity
 
@@ -247,6 +248,11 @@ class ResolverTests(unittest.TestCase):
         environment = {"VKM_CUSTOMER": "customer-env"}
         self.assertEqual(self.resolve(self.checkout, environ=environment).source, "explicit")
         self.assertEqual(self.resolve(self.checkout, "customer-cli", environment).customer, "customer-cli")
+
+    def test_the_launch_marker_is_not_an_explicit_override(self):
+        write_customer_file(self.directory, "customer-file")
+        found = self.resolve(self.checkout, environ={CUSTOMER_VARIABLE: "customer-launched"})
+        self.assertEqual((found.customer, found.source), ("customer-file", "file"))
 
     def test_outside_git_only_explicit_and_files_apply(self):
         self.assertIsNone(self.resolve(rules=self.rules))

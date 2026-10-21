@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from virtual_key_mapper.adapters import Credential, IntegrationContext
 from virtual_key_mapper.auth.litellm_sso import vault_account
 from virtual_key_mapper.cli import main
-from virtual_key_mapper.customers import Attribution
+from virtual_key_mapper.customers import OVERRIDE_VARIABLE, Attribution
 from virtual_key_mapper.errors import CredentialError
 from virtual_key_mapper.integrations.common import CUSTOMER_VARIABLE, TOKEN_VARIABLE, header_variable, shell_command
 from virtual_key_mapper.integrations.opencode import _opencode_command, _opencode_major
@@ -80,6 +80,15 @@ class AgentTests(unittest.TestCase):
             self.assertNotIn(name, env)
         self.assertNotIn("credential-secret", json.dumps([args, env]))
         self.assertFalse(any("env_key" in arg for arg in args))
+
+    def test_a_resolved_customer_does_not_become_an_explicit_override_in_the_child(self):
+        attribution = Attribution("customer:file", "file", ".vkm", "github.com/acme/web")
+        for agent in ("claude", "codex", "opencode"):
+            with self.subTest(agent=agent), patch.dict(os.environ, {}, clear=True):
+                context, _ = _arguments(self.profile, "secret", None)
+                _, env = INTEGRATIONS[agent].command(context, attribution, [], "alias")
+                self.assertEqual(env[CUSTOMER_VARIABLE], "customer:file")
+                self.assertNotIn(OVERRIDE_VARIABLE, env)
 
     def test_customer_headers_are_isolated_for_every_adapter(self):
         for agent in ("claude", "codex", "opencode"):

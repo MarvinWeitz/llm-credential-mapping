@@ -10,7 +10,9 @@ from ..customers import Attribution
 from ..errors import CredentialError
 
 TOKEN_VARIABLE = "VKM_TOKEN"
-CUSTOMER_VARIABLE = "VKM_CUSTOMER"
+# The customer a launcher chose for its child. Not VKM_CUSTOMER: that one is the user's explicit override,
+# and the resolver must not mistake every launched tool for an explicit choice.
+CUSTOMER_VARIABLE = "VKM_LAUNCH_CUSTOMER"
 
 
 def child_environment(context: IntegrationContext, attribution: Attribution | None) -> dict[str, str]:

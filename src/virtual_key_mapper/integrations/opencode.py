@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Mapping
 
 from ..adapters import Api, IntegrationContext
-from ..customers import Attribution
+from ..customers import OVERRIDE_VARIABLE, Attribution
 from ..errors import CredentialError
 from ..profiles import atomic_write_text
 from ..transport import JsonTransport
@@ -174,7 +174,7 @@ class OpenCode:
         if attribution is not None:
             env[CUSTOMER_VARIABLE] = attribution.customer
             if attribution.source == "explicit":
-                env["VKM_CUSTOMER"] = attribution.customer  # The plugin's resolver honours it.
+                env[OVERRIDE_VARIABLE] = attribution.customer  # The plugin's resolver honours it.
         return command, env
 
     def _command_v2(
