@@ -14,9 +14,11 @@ from unittest.mock import Mock, patch
 from virtual_key_mapper.adapters import Credential, IntegrationContext
 from virtual_key_mapper.auth.litellm_sso import vault_account
 from virtual_key_mapper.cli import main
-from virtual_key_mapper.customers import OVERRIDE_VARIABLE, Attribution
 from virtual_key_mapper.errors import CredentialError
-from virtual_key_mapper.integrations.common import CUSTOMER_VARIABLE, TOKEN_VARIABLE, header_variable, shell_command
+from virtual_key_mapper.integrations.common import (
+    ATTRIBUTION_VARIABLE, TOKEN_VARIABLE, header_environment, header_variable, launch_labels, shell_command,
+)
+from virtual_key_mapper.labels import LAUNCH_VARIABLE, MISSING_PHRASE, Attribution, Label, LabelDefinition, OutputOverride
 from virtual_key_mapper.integrations.opencode import _opencode_command, _opencode_major
 from virtual_key_mapper.profiles import Profile, ProfileStore
 from virtual_key_mapper.registry import INTEGRATIONS, gateway_for
@@ -31,28 +33,50 @@ def tearDownModule():
     shutil.rmtree(HOME, ignore_errors=True)
 
 
-def _arguments(profile, token, customer):
+LABELS = (LabelDefinition("customer", required=True), LabelDefinition("project"))
+TAGS = header_variable("x-litellm-tags")
+METADATA = header_variable("x-litellm-spend-logs-metadata")
+
+
+def explicit(labels, source="explicit"):
+    """An attribution as `run --label` gives it: the given labels from ``source``, the others without a value."""
+    values = dict(labels)
+    return Attribution(
+        tuple(Label(key, values.get(key), source if key in values else None, "--label" if key in values else None)
+              for key in ("customer", "project")),
+        ("customer",) if not values.get("customer") else (),
+    )
+
+
+def metadata(labels, source="explicit"):
+    labels = {key: value for key, value in labels.items() if value}
+    return json.dumps(
+        {"labels": labels, "sources": {key: source for key in labels}}, separators=(",", ":"), sort_keys=True,
+    )
+
+
+def _arguments(profile, token, labels):
     context = IntegrationContext(profile, gateway_for(profile), token, HOME)
-    return context, Attribution(customer, "explicit", "--customer") if customer is not None else None
+    return context, explicit(labels) if labels is not None else None
 
 
 def claude_settings(args):
     return json.loads(args[args.index("--settings") + 1])
 
 
-def agent_command(agent, profile, token, args, model=None, customer=None):
-    context, attribution = _arguments(profile, token, customer)
+def agent_command(agent, profile, token, args, model=None, labels=None):
+    context, attribution = _arguments(profile, token, labels)
     return INTEGRATIONS[agent].command(context, attribution, args, model)
 
 
-def launch(agent, profile, token, args, model=None, customer=None):
-    context, attribution = _arguments(profile, token, customer)
+def launch(agent, profile, token, args, model=None, labels=None):
+    context, attribution = _arguments(profile, token, labels)
     return INTEGRATIONS[agent].launch(context, attribution, args, model)
 
 
 class AgentTests(unittest.TestCase):
     def setUp(self):
-        self.profile = Profile("a", "https://example.com", {"team_id": "team-a"})
+        self.profile = Profile("a", "https://example.com", {"team_id": "team-a"}, labels=LABELS)
 
     def test_claude_gets_a_renewing_helper_instead_of_a_token(self):
         inherited = {"ANTHROPIC_API_KEY": "old", "ANTHROPIC_AUTH_TOKEN": "old", "CLAUDE_CODE_USE_BEDROCK": "1"}
@@ -81,74 +105,107 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("credential-secret", json.dumps([args, env]))
         self.assertFalse(any("env_key" in arg for arg in args))
 
-    def test_a_resolved_customer_does_not_become_an_explicit_override_in_the_child(self):
-        attribution = Attribution("customer:file", "file", ".vkm", "github.com/acme/web")
+    def test_only_explicit_labels_reach_the_launch_marker(self):
+        resolved = explicit({"customer": "acme"}, source="file")
+        mixed = Attribution((Label("customer", "acme", "explicit", "--label"), Label("project", None, "explicit", "--label")))
         for agent in ("claude", "codex", "opencode"):
-            with self.subTest(agent=agent), patch.dict(os.environ, {}, clear=True):
+            with self.subTest(agent=agent), patch.dict(os.environ, {LAUNCH_VARIABLE: '{"customer":"stale"}'}, clear=True):
                 context, _ = _arguments(self.profile, "secret", None)
-                _, env = INTEGRATIONS[agent].command(context, attribution, [], "alias")
-                self.assertEqual(env[CUSTOMER_VARIABLE], "customer:file")
-                self.assertNotIn(OVERRIDE_VARIABLE, env)
+                _, env = INTEGRATIONS[agent].command(context, resolved, [], "alias")
+                self.assertNotIn(LAUNCH_VARIABLE, env)  # A resolved value is not a launch choice; the stale one goes.
+                self.assertFalse(any(name.startswith("VKM_LABEL_") for name in env))
+                _, env = INTEGRATIONS[agent].command(context, mixed, [], "alias")
+                self.assertEqual(json.loads(env[LAUNCH_VARIABLE]), {"customer": "acme", "project": None})
+                self.assertEqual(launch_labels(env), {"customer": "acme", "project": None})
+                self.assertFalse(any(name.startswith("VKM_LABEL_") for name in env))
 
-    def test_customer_headers_are_isolated_for_every_adapter(self):
+    def test_label_headers_are_isolated_for_every_adapter(self):
+        a, b = {"customer": "acme", "project": "web"}, {"customer": "globex"}
         for agent in ("claude", "codex", "opencode"):
-            with self.subTest(agent=agent), patch.dict(os.environ, {CUSTOMER_VARIABLE: "parent"}, clear=True):
-                args_a, env_a = agent_command(agent, self.profile, "same-secret", [], "alias", "customer:A")
-                args_b, env_b = agent_command(agent, self.profile, "same-secret", [], "alias", "customer:B")
-                self.assertEqual(env_a[CUSTOMER_VARIABLE], "customer:A")
-                self.assertEqual(env_b[CUSTOMER_VARIABLE], "customer:B")
-                self.assertEqual(os.environ[CUSTOMER_VARIABLE], "parent")
+            with self.subTest(agent=agent), patch.dict(os.environ, {LAUNCH_VARIABLE: "parent"}, clear=True):
+                args_a, env_a = agent_command(agent, self.profile, "same-secret", [], "alias", a)
+                args_b, env_b = agent_command(agent, self.profile, "same-secret", [], "alias", b)
+                self.assertEqual(json.loads(env_a[LAUNCH_VARIABLE]), a)
+                self.assertEqual(json.loads(env_b[LAUNCH_VARIABLE]), b)
+                self.assertEqual(os.environ[LAUNCH_VARIABLE], "parent")
                 self.assertNotIn("same-secret", " ".join(args_a + args_b))
                 if agent == "claude":
-                    for args, customer in ((args_a, "customer:A"), (args_b, "customer:B")):
-                        self.assertEqual(
-                            claude_settings(args)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
-                            f'x-litellm-tags: {customer}\nx-litellm-spend-logs-metadata: {{"customer_source":"explicit"}}',
-                        )
+                    self.assertEqual(
+                        claude_settings(args_a)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+                        f"x-litellm-tags: customer:acme,project:web\nx-litellm-spend-logs-metadata: {metadata(a)}",
+                    )
+                    self.assertEqual(
+                        claude_settings(args_b)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+                        f"x-litellm-tags: customer:globex\nx-litellm-spend-logs-metadata: {metadata(b)}",
+                    )
                 self.assertNotIn(TOKEN_VARIABLE, env_a)
                 if agent == "codex":
-                    variable = header_variable("x-litellm-tags")
-                    self.assertIn(
-                        'model_providers.vkm.env_http_headers.x-litellm-tags="' + variable + '"', args_a,
-                    )
-                    self.assertEqual((env_a[variable], env_b[variable]), ("customer:A", "customer:B"))
+                    self.assertIn('model_providers.vkm.env_http_headers.x-litellm-tags="' + TAGS + '"', args_a)
+                    self.assertEqual((env_a[TAGS], env_b[TAGS]), ("customer:acme,project:web", "customer:globex"))
+                    self.assertEqual((env_a[METADATA], env_b[METADATA]), (metadata(a), metadata(b)))
+                    self.assertEqual(env_a[ATTRIBUTION_VARIABLE], "1")
                 elif agent == "opencode":
-                    for env, customer in ((env_a, "customer:A"), (env_b, "customer:B")):
+                    for env in (env_a, env_b):
                         config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-                        self.assertEqual(env["VKM_CUSTOMER"], customer)  # Read by the plugin's resolver.
                         self.assertTrue(config["plugin"][-1].endswith("/vkm-a.js"))
                         self.assertNotIn("headers", config["provider"]["vkm"]["options"])
 
-    def test_claude_replaces_inherited_tags_but_preserves_other_headers(self):
-        existing = "X-Trace: trace\nX-LiteLLM-Tags: old-customer\nx-litellm-tags: another"
+    def test_claude_replaces_inherited_label_headers_but_preserves_other_headers(self):
+        existing = "X-Trace: trace\nX-LiteLLM-Tags: old-customer\nx-litellm-tags: another\nx-litellm-spend-logs-metadata: {}"
+        profile = Profile(
+            "a", "https://example.com", {"team_id": "team-a"}, labels=LABELS, outputs={"metadata": OutputOverride(None, False)},
+        )
         with patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": existing}):
-            args, _ = agent_command("claude", self.profile, "secret", [], customer="customer:A")
+            args, _ = agent_command("claude", profile, "secret", [], labels={"customer": "acme"})
             self.assertEqual(os.environ["ANTHROPIC_CUSTOM_HEADERS"], existing)
         self.assertEqual(
-            claude_settings(args)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
-            'X-Trace: trace\nx-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {"customer_source":"explicit"}',
+            claude_settings(args)["env"]["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: trace\nx-litellm-tags: customer:acme",
         )
 
-    def test_codex_customer_header_overrides_are_valid_toml(self):
-        args, env = agent_command("codex", self.profile, "secret", [], customer="customer:A")
+    def test_codex_unsets_inherited_header_variables_for_omitted_headers(self):
+        profile = Profile(
+            "a", "https://example.com", {"team_id": "team-a"}, labels=LABELS, outputs={"metadata": OutputOverride(None, False)},
+        )
+        with patch.dict(os.environ, {TAGS: "customer:other", METADATA: "{}"}):
+            _, env = agent_command("codex", profile, "secret", [], labels={"customer": "acme"})
+        self.assertEqual(env[TAGS], "customer:acme")
+        self.assertNotIn(METADATA, env)
+        with patch.dict(os.environ, {TAGS: "customer:other", ATTRIBUTION_VARIABLE: "1"}):
+            _, env = agent_command("codex", profile, "secret", [])
+        self.assertNotIn(TAGS, env)
+        self.assertNotIn(ATTRIBUTION_VARIABLE, env)
+
+    def test_codex_label_header_overrides_are_valid_toml(self):
+        args, env = agent_command("codex", self.profile, "secret", [], labels={"customer": "acme"})
         config = tomllib.loads("\n".join(args[index + 1] for index, value in enumerate(args) if value == "-c"))
         provider = config["model_providers"]["vkm"]
-        self.assertEqual(env[provider["env_http_headers"]["x-litellm-tags"]], "customer:A")
+        self.assertEqual(env[provider["env_http_headers"]["x-litellm-tags"]], "customer:acme")
+        self.assertEqual(set(provider["env_http_headers"]), {"x-litellm-tags", "x-litellm-spend-logs-metadata"})
         self.assertNotIn("env_key", provider)
         self.assertEqual(provider["auth"]["timeout_ms"], 30000)
+
+    def test_header_environment_lists_every_header_and_the_readiness_flag(self):
+        context, _ = _arguments(self.profile, "", None)
+        self.assertEqual(header_environment(context, None), {TAGS: None, METADATA: None, ATTRIBUTION_VARIABLE: None})
+        self.assertEqual(header_environment(context, explicit({"customer": "acme"})), {
+            TAGS: "customer:acme", METADATA: metadata({"customer": "acme"}), ATTRIBUTION_VARIABLE: "1",
+        })
+        with self.assertRaisesRegex(CredentialError, MISSING_PHRASE):
+            header_environment(context, explicit({"project": "web"}))
 
     def test_claude_invalid_or_auth_overriding_headers_fail_without_secrets(self):
         for header in ("invalid-secret", "X-Trace: secret\x01", "Authorization: secret", "X-API-Key: secret", "Host: secret",
                        "X-LiteLLM-API-Key: Bearer secret", "api-key: secret"):
             with self.subTest(header=header), patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": header}):
                 with self.assertRaises(CredentialError) as error:
-                    agent_command("claude", self.profile, "secret", [], customer="customer:A")
+                    agent_command("claude", self.profile, "secret", [], labels={"customer": "acme"})
                 self.assertNotIn("secret", str(error.exception))
 
-    def test_invalid_customer_cannot_reach_any_adapter(self):
+    def test_invalid_or_missing_labels_cannot_reach_any_adapter(self):
         for agent in ("claude", "codex", "opencode"):
-            with self.subTest(agent=agent), self.assertRaises(CredentialError):
-                agent_command(agent, self.profile, "secret", [], "alias", "customer:A,customer:B")
+            for labels in ({"customer": "a,b"}, {"customer": "!a"}, {"project": "web"}):
+                with self.subTest(agent=agent, labels=labels), self.assertRaises(CredentialError):
+                    agent_command(agent, self.profile, "secret", [], "alias", labels)
 
     def test_opencode_preserves_inline_configuration(self):
         with patch.dict(os.environ, {"OPENCODE_CONFIG_CONTENT": '{"theme":"dark","provider":{"existing":{}}}'}):
@@ -356,6 +413,8 @@ class CliTests(unittest.TestCase):
                 "openai-chat": "https://example.com/v1",
                 "openai-responses": "https://example.com/v1",
             },
+            "labels": [],
+            "outputs": {},
         })
 
     def test_profile_add_validates_settings_for_the_chosen_sign_in_kind(self):
@@ -374,26 +433,27 @@ class CliTests(unittest.TestCase):
         self.assertIn("No login", self.stderr.getvalue())
 
     def test_run_forwards_args_and_exit_status(self):
-        ProfileStore(self.home).add(Profile("a", "https://example.com", {"team_id": "a"}))
+        ProfileStore(self.home).add(Profile("a", "https://example.com", {"team_id": "a"}, labels=LABELS))
         with patch("virtual_key_mapper.cli.NativeKeyring"), \
                 patch("virtual_key_mapper.cli.auth_for") as manager, \
                 patch("virtual_key_mapper.cli.launch", return_value=9) as launched:
             manager.return_value.credential.return_value = Credential("secret")
-            self.assertEqual(self.call("run", "--profile", "a", "--customer", "customer:A", "claude", "--", "--resume"), 9)
+            self.assertEqual(self.call("run", "--profile", "a", "--label", "customer=acme", "claude", "--", "--resume"), 9)
             self.assertEqual(launched.call_args.args[3], ["--resume"])
-            self.assertEqual(launched.call_args.args[2], Attribution("customer:A", "explicit", "--customer"))
+            label = launched.call_args.args[2].get("customer")
+            self.assertEqual((label.value, label.source), ("acme", "explicit"))
 
     def test_opencode_run_forwards_subcommand_and_prompt(self):
-        ProfileStore(self.home).add(Profile("a", "https://example.com", {"team_id": "a"}))
+        ProfileStore(self.home).add(Profile("a", "https://example.com", {"team_id": "a"}, labels=LABELS))
         with patch("virtual_key_mapper.cli.NativeKeyring"), \
                 patch("virtual_key_mapper.cli.auth_for") as manager, \
                 patch("virtual_key_mapper.cli.launch", return_value=0) as launched:
             manager.return_value.credential.return_value = Credential("secret")
             self.assertEqual(
-                self.call("run", "--profile", "a", "--customer", "customer:A", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
+                self.call("run", "--profile", "a", "--label", "customer=acme", "--model", "alias", "opencode", "--", "run", "Explain this repo"), 0
             )
             self.assertEqual(launched.call_args.args[3:], (["run", "Explain this repo"], "alias"))
-            self.assertEqual(launched.call_args.args[2].customer, "customer:A")
+            self.assertEqual(launched.call_args.args[2].values, {"customer": "acme"})
 
     def test_keyring_refuses_plaintext_backend(self):
         with patch("virtual_key_mapper.storage.keyring.get_keyring", return_value=object()):

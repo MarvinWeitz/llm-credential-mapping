@@ -1,6 +1,6 @@
-// The Copilot Chat model provider: gateway models, a fresh credential and the workspace's customer per request.
+// The Copilot Chat model provider: gateway models, a fresh credential and the workspace's labels per request.
 import * as vscode from "vscode";
-import { AttributionCache, choose, type Choice } from "./attribution";
+import { choose, LabelCache, type Choice } from "./labels";
 import * as cli from "./cli";
 import { TokenCache } from "./credentials";
 import { GatewayError, listModels, streamChat } from "./gateway";
@@ -14,7 +14,7 @@ export interface Services {
   run: cli.Runner;
   profileName: string;
   tokens: TokenCache;
-  customers: AttributionCache;
+  labels: LabelCache;
   /** The folder a request uses when the editor gives no hint; set by the status bar command. */
   chosenFolder(): string | undefined;
   onChoice(choice: Choice): void;
@@ -54,7 +54,7 @@ export class Provider implements vscode.LanguageModelChatProvider {
       const settings = vscode.workspace.getConfiguration("vkm");
       return models.map((id) => ({
         id, name: id, family: id, version: "1", detail: "vkm",
-        tooltip: `${id} through your gateway, attributed to this workspace's customer`,
+        tooltip: `${id} through your gateway, labelled with this workspace's labels`,
         maxInputTokens: settings.get<number>("maxInputTokens", 128000),
         maxOutputTokens: settings.get<number>("maxOutputTokens", 16384),
         capabilities: { toolCalling: true, imageInput: settings.get<boolean>("imageInput", false) },
@@ -71,14 +71,14 @@ export class Provider implements vscode.LanguageModelChatProvider {
     token: vscode.CancellationToken,
   ): Promise<void> {
     try {
-      const attribution = await this.attribution();
+      const labels = await this.labels();
       const endpoint = await this.chatEndpoint();
       const forwarded = Object.fromEntries(
         Object.entries(options.modelOptions ?? {}).filter(([name]) => FORWARDED_OPTIONS.includes(name)),
       );
       const request = { ...forwarded, model: model.id, messages: toOpenAIMessages(messages), ...toOpenAITools(options.tools, options.toolMode) };
       let reported = false;
-      await this.withToken((credential) => streamChat(endpoint, credential, attribution.headers, request, (event) => {
+      await this.withToken((credential) => streamChat(endpoint, credential, labels.headers, request, (event) => {
         reported = true;
         progress.report(event.kind === "text"
           ? new vscode.LanguageModelTextPart(event.text)
@@ -97,18 +97,24 @@ export class Provider implements vscode.LanguageModelChatProvider {
     return estimateTokens(text);
   }
 
-  /** The customer of the folder this request belongs to; fails when none is assigned or the choice is ambiguous. */
-  private async attribution(): Promise<cli.CliAttribution> {
+  /** The labels of the folder this request belongs to; fails while required ones are missing or the choice is ambiguous. */
+  private async labels(): Promise<cli.CliLabels> {
     const folders = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
     const document = vscode.window.activeTextEditor?.document.uri;
     const active = document ? vscode.workspace.getWorkspaceFolder(document)?.uri.fsPath : undefined;
-    const choice = await choose(folders, active, this.services.chosenFolder(), this.services.customers);
+    const choice = await choose(folders, active, this.services.chosenFolder(), this.services.labels);
     this.services.onChoice(choice);
-    if (choice.kind === "folder") return choice.attribution;
-    if (choice.kind === "none") {
-      throw new Error("Open a folder: vkm assigns the customer per workspace folder. Nothing was sent.");
+    if (choice.kind === "folder") {
+      if (choice.labels.complete) return choice.labels;
+      const missing = choice.labels.missing.length > 0;
+      const message = choice.labels.message
+        ?? `${cli.MISSING_PHRASE} ${choice.labels.missing.join(", ")}. Nothing was sent.`;
+      throw new cli.CliError(message, false, missing, choice.folder);
     }
-    throw new Error("The workspace folders have different customers; choose one in the status bar. Nothing was sent.");
+    if (choice.kind === "none") {
+      throw new Error("Open a folder: vkm finds the labels per workspace folder. Nothing was sent.");
+    }
+    throw new Error("The workspace folders have different labels; choose one in the status bar. Nothing was sent.");
   }
 
   /** Call the gateway; after a 401, get a fresh credential and retry once if nothing was streamed yet. */

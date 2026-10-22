@@ -17,23 +17,41 @@ class MyGateway:
         # Base URL per wire API; raise CredentialError for APIs this gateway lacks.
         ...
 
-    def attribution_headers(self, attribution: Attribution) -> dict[str, str]:
-        # How this gateway expects a customer (and optionally source/repository) as headers.
-        ...
+    @staticmethod
+    def outputs() -> tuple[Output, ...]:
+        # The headers labels can fill on this gateway (static: profiles are validated without a gateway).
+        return OUTPUTS
 
-    def attribution_header_names(self) -> tuple[str, ...]:
-        # Every name attribution_headers may return (Codex's config lists them ahead of time).
-        ...
-
-    def visible_customers(self, credential: Credential) -> list[Tag] | None:
-        # A customer catalogue from the gateway, or None if it has none.
+    def catalogue(self, key: str, credential: Credential, config: LabelConfig) -> list[Choice] | None:
+        # Values the gateway lists for one label key (for the picker), or None if it cannot list them.
         ...
 ```
+
+An adapter does not build headers; it declares **outputs** and the core fills them
+(`LabelConfig.headers`) with the formats, checks and limits of [labels.md](labels.md#3-outputs):
+
+```python
+OUTPUTS = (
+    # A list output: formatted entries joined with ","; the default gives them for the label keys, in order.
+    Output("tags", LIST, "x-my-tags", lambda keys: tuple(f"{key}:${{{key}}}" for key in keys), _reserved),
+    # A json output: {"labels", "sources", "repository"} as compact JSON, on or off.
+    Output("metadata", JSON, "x-my-metadata"),
+)
+```
+
+- `name` is what the central document and `profile update --output NAME=FORMAT` refer to; the
+  header name is fixed here and never chosen by a format.
+- A `list` default must satisfy the format rules for any set of keys (all entries that start with a
+  placeholder start with the same one) and let every required label reach the output.
+- `reserved(result)` refuses results the gateway gives another meaning to (LiteLLM: `User-Agent: `
+  tags and its routing tag `default`); such a result blocks the request.
+- `catalogue` may use `config.inversions(output_name, key)`, the `(prefix, suffix)` pairs of entries
+  `PREFIX${KEY}SUFFIX`, to read values back from what the gateway stored (LiteLLM: `/tag/list`).
 
 Register it: `GATEWAYS = {"litellm": LiteLLMGateway, "<kind>": MyGateway}`. Header names must
 be letters, digits and `-`; values printable ASCII. Nothing else changes: the integrations,
 the shell hooks, the OpenCode plugin and the VS Code extension take headers and URLs from
-the gateway.
+the gateway (through `repo show --json` and the `IntegrationContext`).
 
 ## A sign-in kind
 
@@ -61,14 +79,18 @@ with `expires_at=None`.
 Create `integrations/<tool>.py` with `setup(context, model, replace)`, `remove(context)`,
 `command(context, attribution, args, model)` and `launch(...)`, and add it to
 `INTEGRATIONS`. Use only the `IntegrationContext` (profile, gateway, `cli_command(...)` for
-helper commands, the configuration folder) and the attribution; get URLs from
-`context.gateway.endpoint(...)` and headers from `integrations.common.attribution_headers`.
+helper commands, the configuration folder, the effective label configuration `labels`) and the
+resolved labels (`Attribution`); get URLs from `context.gateway.endpoint(...)`, headers from
+`integrations.common.attribution_headers` and every header name the adapter can send from
+`context.labels.header_names()` (to clear stale ones).
 
 - Prefer the tool's own renewing credential hook (a helper command it reruns) over passing a
   token at launch.
 - Prefer per-request or per-directory attribution from the tool's own mechanism; if the tool
   only reads headers from its environment, use `header_variable(name)` and the
   `shell-init` hooks, like Codex.
+- Send nothing while required labels have no value (`attribution.complete`); show the
+  `MissingLabelsError` message, which starts with `Required labels have no value:`.
 - `setup` must keep unrelated configuration, refuse to replace another tool's credential
   setup without `--replace`, and `remove` must undo only what it wrote.
 - Add tests with `tests/isolation.py`, and ideally an opt-in live test with the real binary

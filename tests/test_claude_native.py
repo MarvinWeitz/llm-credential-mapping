@@ -20,9 +20,9 @@ from unittest.mock import patch
 
 from virtual_key_mapper.adapters import Credential, IntegrationContext
 from virtual_key_mapper.cli import main
-from virtual_key_mapper.customers import Attribution
 from virtual_key_mapper.integrations.claude import Claude, settings_path
 from virtual_key_mapper.integrations.common import shell_command
+from virtual_key_mapper.labels import MISSING_PHRASE, Attribution, Label
 from virtual_key_mapper.profiles import ProfileStore
 from virtual_key_mapper.registry import gateway_for
 from live import binary_tests
@@ -134,7 +134,9 @@ class NativeClaudeTests(unittest.TestCase):
             subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True)
         self.cli(
             "profile", "add", "native", "--gateway", self.gateway.origin, "--team-id", "t", "--allow-insecure-localhost",
+            "--label", "customer", "--required",
         )
+        self.cli("profile", "update", "native", "--label", "project")
         with patch("virtual_key_mapper.cli.auth_for") as auth:
             auth.return_value.credential.return_value = Credential("unused")
             self.cli("setup", "claude", "--model", "fixture-model")
@@ -165,9 +167,9 @@ class NativeClaudeTests(unittest.TestCase):
     def test_guard_assignment_tags_and_helper_renewal(self):
         output = self.claude(self.repo)
         self.assertEqual(self.model_calls(), [], output)
-        self.assertIn("No customer is assigned", output)
+        self.assertIn(MISSING_PHRASE, output)
 
-        (self.repo / ".vkm").write_text('customer = "customer:live"\n', encoding="utf-8")
+        (self.repo / ".vkm").write_text('[labels]\ncustomer = "live"\nproject = "web"\n', encoding="utf-8")
         output = self.claude(self.repo)
         self.assertEqual(self.model_calls(), [], output)
         self.assertIn("Send the prompt again", output)
@@ -179,20 +181,24 @@ class NativeClaudeTests(unittest.TestCase):
         first, last = (int(call["authorization"].removeprefix("Bearer token-")) for call in (calls[0], calls[-1]))
         self.assertGreater(last, first, "Claude asks the helper again after a 401")
         for headers in calls:
-            self.assertEqual(headers["x-litellm-tags"], "customer:live")
-            self.assertEqual(
-                json.loads(headers["x-litellm-spend-logs-metadata"]),
-                {"customer_source": "file", "repository": "github.com/acme/web"},
-            )
+            self.assertEqual(headers["x-litellm-tags"], "customer:live,project:web")
+            self.assertEqual(json.loads(headers["x-litellm-spend-logs-metadata"]), {
+                "labels": {"customer": "live", "project": "web"}, "repository": "github.com/acme/web",
+                "sources": {"customer": "file", "project": "file"},
+            })
 
-    def test_run_override_passes_the_guard_with_its_own_customer(self):
+    def test_run_labels_pass_the_guard_with_their_own_values(self):
+        # 'run claude --label customer=cli' in a folder whose .vkm says otherwise: the guard reads the marker.
+        (self.repo / ".vkm").write_text('[labels]\ncustomer = "live"\nproject = "web"\n', encoding="utf-8")
         profile = ProfileStore(self.home).get("native")
         context = IntegrationContext(
             profile, gateway_for(profile), "", cli=(sys.executable, str(self.root / "helper.py"), str(self.root / "helper-calls")),
         )
-        argv, env = Claude().command(
-            context, Attribution("customer:cli", "explicit", "--customer"), ["-p", "Say OK", "--output-format", "json"], None,
+        attribution = Attribution(
+            (Label("customer", "cli", "explicit", "--label"), Label("project", "web", "file", str(self.repo / ".vkm"))),
+            repository="github.com/acme/web",
         )
+        argv, env = Claude().command(context, attribution, ["-p", "Say OK", "--output-format", "json"], None)
         # Apply only what the launcher changed, on top of the isolated environment: variables inherited
         # from a surrounding Claude session (CLAUDE_CODE_REMOTE, ...) would change how Claude reads settings.
         changed = {key: value for key, value in env.items() if os.environ.get(key) != value}
@@ -205,11 +211,11 @@ class NativeClaudeTests(unittest.TestCase):
         output = result.stdout + result.stderr
         self.assertIn("FIXTURE_OK", output)
         self.assertTrue(self.model_calls(), output)
-        self.assertTrue(all(headers["x-litellm-tags"] == "customer:cli" for headers in self.model_calls()), output)
+        self.assertTrue(all(headers["x-litellm-tags"] == "customer:cli,project:web" for headers in self.model_calls()), output)
         self.assertFalse((self.repo / ".claude" / "settings.local.json").exists())
 
     def test_subdirectory_sessions_are_tagged(self):
-        (self.repo / ".vkm").write_text('customer = "customer:live"\n', encoding="utf-8")
+        (self.repo / ".vkm").write_text('[labels]\ncustomer = "live"\n', encoding="utf-8")
         sub = self.repo / "src" / "deep"
         sub.mkdir(parents=True)
         output = self.claude(sub)
@@ -218,3 +224,7 @@ class NativeClaudeTests(unittest.TestCase):
             output = self.claude(sub)
         self.assertTrue(self.model_calls(), output)
         self.assertTrue(all(headers["x-litellm-tags"] == "customer:live" for headers in self.model_calls()), output)
+        self.assertTrue(all(
+            json.loads(headers["x-litellm-spend-logs-metadata"])["labels"] == {"customer": "live"}
+            for headers in self.model_calls()
+        ), output)

@@ -24,7 +24,7 @@ from live import binary_tests
 
 ACCESS_TOKEN = "devcontainer-access-token"
 REFRESH_TOKEN = "devcontainer-refresh-secret"
-CUSTOMER = "customer:container"
+CUSTOMER = "container"
 
 
 @binary_tests("devcontainer", "VKM_TEST_DEVCONTAINER")
@@ -36,7 +36,7 @@ class DevContainerTests(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        (self.repo / ".vkm").write_text(f'customer = "{CUSTOMER}"\n', encoding="utf-8")
+        (self.repo / ".vkm").write_text(f'[labels]\ncustomer = "{CUSTOMER}"\n', encoding="utf-8")
         self.environment = {
             **{key: value for key, value in os.environ.items() if not key.startswith(("CLAUDE_CODE_", "ANTHROPIC_", "CODEX_", "OPENAI_"))},
             "CLAUDE_CONFIG_DIR": str(self.root / "claude"), "CODEX_HOME": str(self.root / "codex"),
@@ -66,19 +66,23 @@ class DevContainerTests(unittest.TestCase):
         self.assertTrue(headers, output)
         last = headers[-1]
         self.assertEqual(last.get("authorization"), "Bearer " + ACCESS_TOKEN, output)
-        self.assertEqual(last.get("x-litellm-tags"), CUSTOMER, output)
-        self.assertEqual(json.loads(last["x-litellm-spend-logs-metadata"])["customer_source"], "file")
+        self.assertEqual(last.get("x-litellm-tags"), f"customer:{CUSTOMER}", output)
+        metadata = json.loads(last["x-litellm-spend-logs-metadata"])
+        self.assertEqual((metadata["labels"], metadata["sources"]), ({"customer": CUSTOMER}, {"customer": "file"}))
 
     def test_the_relay_created_a_forwarded_profile_from_the_hosts(self):
         shown = json.loads(self.cli("profile", "show", "--json"))
         self.assertEqual(shown["auth"]["type"], "forwarded")
         self.assertEqual(shown["gateway"]["url"], self.gateway)
+        # The host profile's own label definitions, copied in the one `profile add` call.
+        self.assertEqual(shown["labels"], [{"key": "customer", "required": True, "description": "Who the work is billed to"}])
+        self.assertEqual(shown["auth"], {"type": "forwarded", "host_profile": "work"})
 
     def test_tokens_come_from_the_host_vault_through_the_relay(self):
         self.assertEqual(self.cli("token").strip(), ACCESS_TOKEN)
         self.assertEqual(json.loads(self.cli("token", "--json"))["access_token"], ACCESS_TOKEN)
 
-    def test_codex_in_the_container_uses_the_relayed_credential_and_the_folders_customer(self):
+    def test_codex_in_the_container_uses_the_relayed_credential_and_the_folders_labels(self):
         self.cli("setup", "codex", "--model", "alias")
         exported = {}
         for line in self.cli("repo", "show", "--env", "bash", "--directory", str(self.repo)).splitlines():
@@ -92,10 +96,10 @@ class DevContainerTests(unittest.TestCase):
         self.assertIn("FIXTURE_OK", output)
         self.assert_relayed_and_tagged(self.calls("/responses")[before:], output)
 
-    def test_claude_in_the_container_uses_the_relayed_credential_and_the_folders_customer(self):
+    def test_claude_in_the_container_uses_the_relayed_credential_and_the_folders_labels(self):
         self.cli("setup", "claude")
         claude = [os.environ["VKM_TEST_CLAUDE_BINARY"], "-p", "Say OK", "--output-format", "json"]
-        self.run_tool(claude)  # The guard assigns the folder's customer and blocks this first prompt once.
+        self.run_tool(claude)  # The guard writes the folder's label headers and blocks this first prompt once.
         before = len(self.calls("/messages"))
         output = self.run_tool(claude)
         self.assertIn("FIXTURE_OK", output)

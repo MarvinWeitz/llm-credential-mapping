@@ -14,6 +14,8 @@ python ci/devcontainer/gateway.py "$GATEWAY_PORT" &
 for _ in $(seq 30); do curl -sf "$VKM_CI_GATEWAY/v1/models" > /dev/null && break; sleep 1; done
 
 cli profile add work --gateway "$VKM_CI_GATEWAY" --team-id team-a --allow-insecure-localhost
+# A required label: the relay copies the profile's own definitions into the container's profile.
+cli profile update work --label customer --required --description "Who the work is billed to"
 BROWSER="python $PWD/ci/devcontainer/browser.py %s" cli login --profile work --timeout 60
 cli status --profile work
 

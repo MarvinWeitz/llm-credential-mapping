@@ -1,3 +1,3 @@
-"""Virtual Key Mapper: short-lived keys from your company gateway, attributed to each repository's customer, for every tool you use."""
+"""Virtual Key Mapper: short-lived keys from your company gateway, labelled with the repository you work in, for every tool you use."""
 
 __version__ = "0.1.0"

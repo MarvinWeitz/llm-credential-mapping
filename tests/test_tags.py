@@ -4,44 +4,67 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock, patch
 
-from virtual_key_mapper.adapters import Api, Credential
-from virtual_key_mapper.customers import Attribution, Tag, validate_customer
+from virtual_key_mapper.adapters import Api, Credential, IntegrationContext
 from virtual_key_mapper.errors import CredentialError
 from virtual_key_mapper.gateways.litellm import LiteLLMGateway, list_tags
+from virtual_key_mapper.labels import Attribution, Choice, Label, LabelConfig, OutputOverride, parse_definitions
 from virtual_key_mapper.profiles import Profile
 from virtual_key_mapper.transport import JsonTransport
+
+
+def Tag(name, description=None):
+    return Choice(name, description=description)
+
+
+def labels_config(tags=None, labels=({"key": "customer", "required": True}, {"key": "project"})):
+    outputs = {} if tags is None else {"tags": OutputOverride(tuple(tags)) if tags else OutputOverride(None, False)}
+    return LabelConfig.build(
+        LiteLLMGateway.outputs(), central_labels=parse_definitions(list(labels), "rules", "test"), central_outputs=outputs,
+    )
 
 
 class TagTests(unittest.TestCase):
     def setUp(self):
         self.profile = Profile("unit", "https://gateway.example", {"team_id": "business-unit"})
 
-    def test_exact_names_are_preserved_and_wire_constraints_are_checked(self):
-        for name in ("customer:A", "Customer A", "a" * 256, "acme!&"):
-            self.assertEqual(validate_customer(name), name)
-        for name in ("", None, [], "a" * 257, " a", "a ", "a,b", "a\nb", "a\tb", "\x00", "\x7f", "\u00e9", "!acme", "&acme"):
-            with self.subTest(name=name), self.assertRaises(CredentialError):
-                validate_customer(name)
-
-    def test_gateway_maps_apis_and_attribution_to_litellm_conventions(self):
+    def test_gateway_maps_apis_and_labels_to_litellm_conventions(self):
         gateway = LiteLLMGateway(self.profile)
         self.assertEqual(gateway.endpoint(Api.ANTHROPIC_MESSAGES), "https://gateway.example")
         self.assertEqual(gateway.endpoint(Api.OPENAI_CHAT), "https://gateway.example/v1")
         self.assertEqual(gateway.endpoint(Api.OPENAI_RESPONSES), "https://gateway.example/v1")
-        headers = gateway.attribution_headers(Attribution("customer:A", "rules", "rule", "github.com/acme/répo"))
+        attribution = Attribution(
+            (Label("customer", "acme", "rules", "rule"), Label("project", "web", "explicit", "--label")),
+            repository="github.com/acme/r\u00e9po",
+        )
+        headers = labels_config().headers(attribution)
         self.assertEqual(headers, {
-            "x-litellm-tags": "customer:A",
-            "x-litellm-spend-logs-metadata": '{"customer_source":"rules","repository":"github.com/acme/r\\u00e9po"}',
+            "x-litellm-tags": "customer:acme,project:web",
+            "x-litellm-spend-logs-metadata": '{"labels":{"customer":"acme","project":"web"},'
+                                             '"repository":"github.com/acme/r\\u00e9po","sources":{"customer":"rules","project":"explicit"}}',
         })
         self.assertTrue(all(value.isascii() for value in headers.values()))
-        self.assertEqual(set(headers), set(gateway.attribution_header_names()))
-        headers = gateway.attribution_headers(Attribution("customer:A", "explicit", "--customer"))
-        self.assertEqual(headers["x-litellm-spend-logs-metadata"], '{"customer_source":"explicit"}')
+        self.assertEqual(set(headers), set(labels_config().header_names()))
+        context = IntegrationContext(self.profile, gateway, "")
+        self.assertEqual(context.headers(Attribution()), {"x-litellm-spend-logs-metadata": '{"labels":{},"sources":{}}'})
+        self.assertEqual(context.headers(None), {})
 
-    def test_gateway_catalogue_uses_the_credential(self):
-        with patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=[Tag("customer:A")]) as listed:
-            self.assertEqual(LiteLLMGateway(self.profile).visible_customers(Credential("secret")), [Tag("customer:A")])
-        listed.assert_called_once_with(self.profile, "secret")
+    def test_gateway_catalogue_inverts_the_tags_format_for_one_key(self):
+        rows = [Tag("customer:A", "first"), Tag("customer:"), Tag("customer:a,b"), Tag("project:p"), Tag("[B]"), Tag("customer:!x")]
+        gateway = LiteLLMGateway(self.profile)
+        with patch("virtual_key_mapper.gateways.litellm.list_tags", return_value=rows) as listed:
+            self.assertEqual(gateway.catalogue("customer", lambda: Credential("secret"), labels_config()), [Choice("A", description="first")])
+            self.assertEqual(gateway.catalogue("project", lambda: Credential("secret"), labels_config()), [Choice("p")])
+            self.assertEqual(
+                gateway.catalogue("customer", lambda: Credential("secret"), labels_config(["[${customer}]", "customer:${customer}"])),
+                [Choice("A", description="first"), Choice("B")],
+            )
+        listed.assert_called_with(self.profile, "secret")
+        with patch("virtual_key_mapper.gateways.litellm.list_tags") as listed:
+            both = ({"key": "customer", "required": True}, {"key": "project", "required": True})
+            for tags in (["${customer}:${project}"], []):
+                with self.subTest(tags=tags):
+                    self.assertIsNone(gateway.catalogue("customer", Mock(side_effect=AssertionError), labels_config(tags, both)))
+            listed.assert_not_called()
 
     def test_catalogue_uses_bearer_header_and_sorts(self):
         transport = Mock(spec=JsonTransport)
@@ -66,14 +89,14 @@ class TagTests(unittest.TestCase):
     def test_automatic_tags_and_bad_rows_are_skipped_not_fatal(self):
         transport = Mock(spec=JsonTransport)
         transport.get_list.return_value = [
-            None, {}, {"name": 42}, {"name": "b", "description": []}, {"name": "x" * 257}, {"name": "a,b"},
+            None, {}, {"name": 42}, {"name": "b", "description": []}, {"name": "x" * 513}, {"name": "a,b"}, {"name": "default"},
             {"name": "&acme"}, {"name": "User-Agent: claude-cli"}, {"name": "User-Agent: claude-cli/2.0.14 (external, cli)"},
             {"name": "user-agent: curl/8.5"}, {"name": "Acme: EU"}, {"name": "customer:A", "description": "first"}, {"name": "customer:A"},
-            {"name": "Customer B", "description": "This is just a spend tag"},
+            {"name": "Customer B", "description": "This is just a spend tag"}, {"name": "Default"},
         ]
         self.assertEqual(
             list_tags(self.profile, "secret", transport=transport),
-            [Tag("Acme: EU", None), Tag("Customer B", "This is just a spend tag"), Tag("customer:A", "first")],
+            [Tag("Acme: EU", None), Tag("Customer B", "This is just a spend tag"), Tag("Default"), Tag("customer:A", "first")],
         )
 
     def test_failed_discovery_is_not_a_successful_empty_list(self):
@@ -82,7 +105,7 @@ class TagTests(unittest.TestCase):
         with self.assertRaises(CredentialError) as error:
             list_tags(self.profile, "secret", transport=transport)
         self.assertIn("403", str(error.exception))
-        self.assertIn("--customer", str(error.exception))
+        self.assertIn("--label", str(error.exception))
         self.assertNotIn("secret", str(error.exception))
 
 

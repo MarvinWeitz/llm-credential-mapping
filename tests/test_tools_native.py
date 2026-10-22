@@ -2,7 +2,7 @@
 
 Set VKM_TEST_CODEX_BINARY and/or VKM_TEST_OPENCODE_BINARY. Every tool
 folder is temporary. Only the credential step is a stub (a real token needs a signed-in vault): for Codex
-it enforces the customer variables like 'token --require-attribution-env'; for OpenCode it answers
+it enforces VKM_ATTRIBUTION like 'token --require-attribution-env'; for OpenCode it answers
 'token --json' and passes everything else (repo show) to the real CLI.
 """
 
@@ -22,13 +22,11 @@ from unittest.mock import patch
 
 from virtual_key_mapper.adapters import Credential, IntegrationContext
 from virtual_key_mapper.cli import main
-from virtual_key_mapper.customers import Attribution
 from virtual_key_mapper.integrations.codex import Codex
-from virtual_key_mapper.integrations.common import header_variable
 from virtual_key_mapper.integrations.opencode import OpenCode
+from virtual_key_mapper.labels import MISSING_PHRASE, Attribution, Label
 from virtual_key_mapper.profiles import ProfileStore
 from virtual_key_mapper.registry import gateway_for
-from virtual_key_mapper.shells import assignments
 from live import binary_tests
 
 STUB = """
@@ -38,8 +36,8 @@ counter = Path(__file__).with_suffix(".calls")
 args = sys.argv[1:]
 if "token" not in args:
     sys.exit(subprocess.run(args).returncode)
-if "--require-attribution-env" in args and not all(os.environ.get(name) for name in REQUIRED):
-    sys.stderr.write("No customer for this session")
+if "--require-attribution-env" in args and os.environ.get("VKM_ATTRIBUTION") != "1":
+    sys.stderr.write("No labels for this session")
     sys.exit(1)
 with counter.open("a") as calls_file:  # Tools ask concurrently: an append never reads a half-written file.
     calls_file.write("x")
@@ -125,21 +123,24 @@ class NativeToolCase(unittest.TestCase):
         })
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        (self.repo / ".vkm").write_text('customer = "customer:live"\n', encoding="utf-8")
+        (self.repo / ".vkm").write_text('[labels]\ncustomer = "live"\nproject = "web"\n', encoding="utf-8")
         self.unmapped = self.root / "unmapped"
         self.unmapped.mkdir()
-        self.cli("profile", "add", "native", "--gateway", self.gateway.origin, "--team-id", "t", "--allow-insecure-localhost")
+        self.cli(
+            "profile", "add", "native", "--gateway", self.gateway.origin, "--team-id", "t", "--allow-insecure-localhost",
+            "--label", "customer", "--required",
+        )
+        self.cli("profile", "update", "native", "--label", "project")
         self.profile = ProfileStore(self.home).get("native")
-        required = [header_variable(name) for name in gateway_for(self.profile).attribution_header_names()]
         self.stub = self.root / "stub.py"
-        self.stub.write_text("REQUIRED = " + json.dumps(required) + "\n" + STUB, encoding="utf-8")
+        self.stub.write_text(STUB, encoding="utf-8")
 
     def cli(self, *args):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
                 patch.dict(os.environ, self.environment, clear=True), \
                 patch("virtual_key_mapper.cli.NativeKeyring"), \
                 patch("virtual_key_mapper.cli.auth_for") as auth, \
-                patch("virtual_key_mapper.customers.Path.home", return_value=self.root):
+                patch("virtual_key_mapper.resolve.Path.home", return_value=self.root):
             auth.return_value.credential.return_value = Credential("setup-token")
             self.assertEqual(main(["--home", str(self.home), *args]), 0)
 
@@ -159,13 +160,19 @@ class NativeToolCase(unittest.TestCase):
         )
         return result.stdout + result.stderr
 
-    def assert_tagged(self, output, customer="customer:live"):
+    def assert_tagged(self, output, labels=None):
+        labels = labels or {"customer": "live", "project": "web"}
         calls = self.gateway.model_calls()
         self.assertTrue(calls, output)
         for headers in calls:
             self.assertTrue(headers.get("authorization", "").startswith("Bearer token-"), output)
-            self.assertEqual(headers["x-litellm-tags"], customer, output)
-            self.assertIn("customer_source", headers["x-litellm-spend-logs-metadata"])
+            self.assertEqual(headers["x-litellm-tags"], ",".join(f"{key}:{value}" for key, value in labels.items()), output)
+            self.assertEqual(json.loads(headers["x-litellm-spend-logs-metadata"])["labels"], labels, output)
+
+
+def explicit(customer):
+    """The attribution 'run --label customer=VALUE' resolves to outside any labelled folder."""
+    return Attribution((Label("customer", customer, "explicit", "--label"), Label("project", None)))
 
 
 @binary_tests("codex", "VKM_TEST_CODEX_BINARY")
@@ -186,7 +193,7 @@ class NativeCodexTests(NativeToolCase):
         """What the shell-init hook exports in a directory (via the real 'repo show --env')."""
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), patch.dict(os.environ, self.environment, clear=True), \
-                patch("virtual_key_mapper.customers.Path.home", return_value=self.root):
+                patch("virtual_key_mapper.resolve.Path.home", return_value=self.root):
             main(["--home", str(self.home), "repo", "show", "--env", "bash", "--directory", str(directory)])
         values = {}
         for line in stdout.getvalue().splitlines():
@@ -201,11 +208,14 @@ class NativeCodexTests(NativeToolCase):
         self.assert_tagged(output)
 
     @unittest.skipIf(os.name == "nt", "interactive Codex needs a pseudo-terminal")
-    def test_interactive_codex_ignores_a_daemon_started_with_another_customer(self):
+    def test_interactive_codex_ignores_a_daemon_started_with_other_labels(self):
         # Codex's shared daemon keeps the environment of the terminal that started it; the shell hook's
-        # codex function and 'run codex' start Codex with --no-daemon so the folder's customer applies.
+        # codex function and 'run codex' start Codex with --no-daemon so the folder's labels apply.
         environment = {**self.environment, **self.shell_environment(self.repo), "PWD": str(self.repo)}
-        other = {name: value.replace("customer:live", "customer:other") for name, value in environment.items()}
+        other = {
+            name: value.replace("customer:live", "customer:other").replace('"live"', '"other"')
+            for name, value in environment.items()
+        }
         daemon = [self.binary, "app-server", "daemon"]
         # No pipes: the daemon's background processes would inherit them and keep run() waiting.
         quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -261,19 +271,18 @@ class NativeCodexTests(NativeToolCase):
             os.close(terminal)
         return screen.decode("utf-8", "replace")
 
-    def test_without_a_customer_codex_gets_no_credential(self):
+    def test_without_the_required_label_codex_gets_no_credential(self):
         self.assertEqual(self.shell_environment(self.unmapped), {})
         output = self.run_tool([self.binary, "exec", "--skip-git-repo-check", "Say OK"], self.unmapped)
-        self.assertIn("No customer for this session", output)
+        self.assertIn("No labels for this session", output)
         for headers in self.gateway.model_calls():
             self.assertNotIn("authorization", headers)
             self.assertNotIn("x-litellm-tags", headers)
 
-    def test_run_passes_its_own_customer(self):
-        argv, env = Codex().command(self.stub_context(), Attribution("customer:cli", "explicit", "--customer"),
-                                    ["exec", "--skip-git-repo-check", "Say OK"], "alias")
+    def test_run_passes_its_own_labels(self):
+        argv, env = Codex().command(self.stub_context(), explicit("cli"), ["exec", "--skip-git-repo-check", "Say OK"], "alias")
         output = self.run_tool([self.binary, *argv[1:]], self.unmapped, {k: v for k, v in env.items() if k.startswith("VKM_")})
-        self.assert_tagged(output, "customer:cli")
+        self.assert_tagged(output, {"customer": "cli"})
 
 
 @binary_tests("opencode", "VKM_TEST_OPENCODE_BINARY")
@@ -292,7 +301,7 @@ class NativeOpenCodeTests(NativeToolCase):
         stubbed = {**settings, "cli": [sys.executable, str(self.stub), *settings["cli"]]}
         plugin.write_text(text.replace(json.dumps(settings), json.dumps(stubbed)), encoding="utf-8")
 
-    def test_setup_tags_requests_with_the_folders_customer(self):
+    def test_setup_tags_requests_with_the_folders_labels(self):
         output = self.run_tool([self.binary, "run", "Say OK"], self.repo)
         self.assertIn("FIXTURE_OK", output)
         self.assert_tagged(output)
@@ -300,12 +309,11 @@ class NativeOpenCodeTests(NativeToolCase):
     def test_unmapped_folders_fail_before_sending(self):
         output = self.run_tool([self.binary, "run", "Say OK"], self.unmapped)
         self.assertEqual(self.gateway.model_calls(), [], output)
-        self.assertIn("No customer is assigned", output)
+        self.assertIn(MISSING_PHRASE, output)
 
-    def test_run_passes_its_own_customer(self):
-        argv, env = OpenCode().command(self.stub_context(), Attribution("customer:cli", "explicit", "--customer"),
-                                       ["run", "Say OK"], "alias")
+    def test_run_passes_its_own_labels(self):
+        argv, env = OpenCode().command(self.stub_context(), explicit("cli"), ["run", "Say OK"], "alias")
         self.stub_plugin()
         environment = {k: v for k, v in env.items() if k.startswith(("VKM_", "OPENCODE_CONFIG_CONTENT"))}
         output = self.run_tool([self.binary, *argv[1:]], self.unmapped, environment)
-        self.assert_tagged(output, "customer:cli")
+        self.assert_tagged(output, {"customer": "cli"})

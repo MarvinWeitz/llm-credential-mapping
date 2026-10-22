@@ -6,8 +6,8 @@ credential itself; ``env.ANTHROPIC_BASE_URL`` points at the gateway; a ``UserPro
 
 Per repository: the guard writes the gateway's attribution headers to ``.claude/settings.local.json``
 (``env.ANTHROPIC_CUSTOM_HEADERS``), which Claude reloads live, and blocks prompts that would be sent
-without a customer. Claude reads that file at the Git root, except on Windows and outside Git, where
-it uses the session's starting directory.
+without the folder's labels. Claude reads that file at the Git root, except on Windows and outside
+Git, where it uses the session's starting directory.
 """
 
 import json
@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Mapping
 
 from ..adapters import Api, IntegrationContext
-from ..customers import Attribution
 from ..errors import CredentialError
+from ..labels import Attribution
 from ..profiles import atomic_write_text
-from .common import CUSTOMER_VARIABLE, attribution_headers, run, shell_command
+from ..repositories import Checkout
+from ..resolve import missing_error
+from .common import attribution_headers, run, set_launch_marker, shell_command
 
 LOCAL_SETTINGS = Path(".claude") / "settings.local.json"
 _MARKER = "virtual_key_mapper"
@@ -77,7 +79,7 @@ def _read_json(path: Path) -> tuple[str | None, dict]:
         raise CredentialError(f"Cannot read {path}.") from None
     try:
         value = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise CredentialError(f"{path} is not valid JSON; fix it first, nothing was changed.") from None
     if not isinstance(value, dict) or not isinstance(value.get("env", {}), dict):
         raise CredentialError(f"{path} must contain a JSON object with an object-valued env; nothing was changed.")
@@ -157,15 +159,18 @@ class Claude:
             "apiKeyHelper": self.helper(context),
             "env": {"ANTHROPIC_BASE_URL": context.gateway.endpoint(Api.ANTHROPIC_MESSAGES)},
         }
-        headers = attribution_headers(context, attribution)
-        if headers:
-            settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] = _claude_headers(env.get("ANTHROPIC_CUSTOM_HEADERS", ""), headers)
+        # Replace every header the adapter can send: an inherited one this launch omits must not survive.
+        headers = _claude_headers(
+            env.get("ANTHROPIC_CUSTOM_HEADERS", ""), attribution_headers(context, attribution),
+            set(context.labels.header_names()),
+        )
+        if headers or "ANTHROPIC_CUSTOM_HEADERS" in env:
+            settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] = headers
         if model:
             settings["model"] = model
         for name in _CLEARED:
             env.pop(name, None)  # They would take precedence over the renewing helper.
-        if attribution is not None:
-            env[CUSTOMER_VARIABLE] = attribution.customer
+        set_launch_marker(env, attribution)
         return ["claude", "--settings", json.dumps(settings), *args], env
 
     def launch(
@@ -184,7 +189,7 @@ class Claude:
         """What the last setup wrote; empty when unknown."""
         try:
             state = json.loads(self._state(context).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             return {}
         return state if isinstance(state, dict) else {}
 
@@ -204,7 +209,7 @@ class Claude:
             raise CredentialError(f"{path} has invalid hooks; nothing was changed.")
         notes = [
             f"Configured {path} for profile '{context.profile.name}'. New Claude sessions renew credentials "
-            "themselves and get the customer of each repository; running sessions pick it up on the next prompt.",
+            "themselves and get the labels of each repository; running sessions pick it up on the next prompt.",
             'For the VS Code extension, add to your VS Code user settings: {"claudeCode.disableLoginPrompt": true}',
         ]
         # Record only values this setup owns, so remove never deletes the user's own (identical) ones.
@@ -274,7 +279,7 @@ class Claude:
         return (directory if os.name == "nt" or root is None else root) / LOCAL_SETTINGS
 
     def _written(self, context: IntegrationContext, path: Path) -> dict[str, str]:
-        names = {name.lower() for name in context.gateway.attribution_header_names()}
+        names = {name.lower() for name in context.labels.header_names()}
         _, data = _read_json(path)
         value = data.get("env", {}).get("ANTHROPIC_CUSTOM_HEADERS", "")
         return _header_values(value, names) if isinstance(value, str) else {}
@@ -282,14 +287,14 @@ class Claude:
     def write_local(
         self, context: IntegrationContext, path: Path, attribution: Attribution | None, root: Path | None,
     ) -> None:
-        """Set (or, with no attribution, remove) the attribution headers in a local settings file; keep everything else."""
+        """Set (or, with nothing to send, remove) the attribution headers in a local settings file; keep everything else."""
         original, data = _read_json(path)
         env = data.setdefault("env", {})
         existing = env.get("ANTHROPIC_CUSTOM_HEADERS", "")
         if not isinstance(existing, str):
             raise CredentialError(f"{path} has an invalid ANTHROPIC_CUSTOM_HEADERS; nothing was changed.")
         value = _claude_headers(
-            existing, attribution_headers(context, attribution), set(context.gateway.attribution_header_names()),
+            existing, attribution_headers(context, attribution), set(context.labels.header_names()),
         )
         if value:
             env["ANTHROPIC_CUSTOM_HEADERS"] = value
@@ -302,46 +307,65 @@ class Claude:
             _exclude_from_git(root, path)
 
     def refresh_local(self, context: IntegrationContext, path: Path, attribution: Attribution | None, root: Path | None) -> bool:
-        """After a rebind, update a local settings file this tool wrote; leave other files alone."""
+        """After a rebind, update a local settings file this tool wrote; leave other files alone.
+
+        While required labels are missing the headers are removed, so the guard keeps blocking.
+        """
         if not path.is_file() or not self._written(context, path):
             return False
-        self.write_local(context, path, attribution, root)
+        complete = attribution is not None and attribution.complete
+        self.write_local(context, path, attribution if complete else None, root)
         return True
 
     def guard(
-        self, context: IntegrationContext, directory: Path, root: Path | None, attribution: Attribution | None,
-        unmapped: str, environ: Mapping[str, str],
+        self, context: IntegrationContext, directory: Path, checkout: Checkout | None, attribution: Attribution,
+        environ: Mapping[str, str],
     ) -> str | None:
         """Decide a prompt before it is sent: None allows it, a string blocks it with that reason.
 
-        Allows a session whose headers already match the customer, or that ``run claude`` started with
-        its own customer (a deliberate override). Otherwise writes the local settings file and blocks
-        once, because Claude only uses the reloaded file from the next prompt. Other headers are stale:
-        Claude keeps a header in its environment after the file stops setting it.
+        ``attribution`` is the directory resolved with the launch marker's labels as explicit, so a
+        session that ``run claude --label`` started passes with its own labels. Allows a session whose
+        headers equal the computed ones (an absent header equals an omitted one). Otherwise writes the
+        local settings file and blocks once, because Claude only uses the reloaded file from the next
+        prompt. Other headers are stale: Claude keeps a header in its environment after the file stops
+        setting it. When the launch marker sets any label, the file (shared by every session in the
+        folder) is never written: launch-only labels are compared with the session's headers only.
         """
-        names = {name.lower() for name in context.gateway.attribution_header_names()}
-        present = _header_values(environ.get("ANTHROPIC_CUSTOM_HEADERS", ""), names)
-        # Only a session whose headers carry the override's customer: tools that `run` starts set the
-        # variable too, and a Claude launched from them inherits it while its own headers go stale.
-        override = environ.get(CUSTOMER_VARIABLE)
-        if present and override and override in present.values():
-            return None
+        root = checkout.root if checkout is not None else None
         path = self.local_settings(directory, root)
-        written = self._written(context, path)
-        if attribution is None:
+        launched = any(label.source == "explicit" for label in attribution.labels)
+        written = {} if launched else self._written(context, path)
+        if not attribution.complete:
             if written:
                 self.write_local(context, path, None, root)
-            return unmapped
+            return str(missing_error(attribution, directory, checkout))
+        names = {name.lower() for name in context.labels.header_names()}
+        present = _header_values(environ.get("ANTHROPIC_CUSTOM_HEADERS", ""), names)
         expected = {name.lower(): value for name, value in attribution_headers(context, attribution).items()}
         if present == expected:
             return None
+        if launched:
+            return (
+                f"{_describe(attribution)} were chosen at launch, but this session does not send them. "
+                "Start it again with 'vkm run claude'; nothing was sent."
+            )
         if written == expected:
             return (
-                f"Customer {json.dumps(attribution.customer)} is set in {path}, but this session has not loaded it. "
+                f"{_describe(attribution)} set in {path}, but this session has not loaded it. "
                 "Send the prompt again; if this repeats, trust the folder or start a new session there."
             )
         self.write_local(context, path, attribution, root)
+        sources = "; ".join(
+            f"{label.key}: {label.source} {label.detail}" for label in attribution.labels if label.value is not None
+        )
         return (
-            f"Customer {json.dumps(attribution.customer)} assigned ({attribution.source}: {attribution.detail}). "
+            f"{_describe(attribution)} assigned{f' ({sources})' if sources else ''}. "
             "Send the prompt again so it is attributed; nothing was sent."
         )
+
+
+def _describe(attribution: Attribution) -> str:
+    values = attribution.values
+    if not values:
+        return "No label values are"
+    return "Labels " + ", ".join(f"{key}={json.dumps(value)}" for key, value in values.items())

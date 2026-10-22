@@ -174,62 +174,87 @@ class RepositoryTests(unittest.TestCase):
         self.assertNotIn("secret", str(error.exception))
 
     def test_binding_persists_per_gateway_and_explicit_changes_are_required(self):
-        self.assertIsNone(self.store.get(self.gateway, self.repository))
-        self.store.bind(self.gateway, self.repository, "customer:A")
+        self.assertEqual(self.store.get(self.gateway, self.repository), {})
+        self.assertEqual(self.store.bind(self.gateway, self.repository, {"customer": "A"}), {"customer": "A"})
         other = RepositoryStore(ProfileStore(self.home))
-        self.assertEqual(other.get(self.gateway, self.repository), "customer:A")
-        self.assertIsNone(other.get("https://other.example", self.repository))
-        with self.assertRaises(CredentialError):
-            other.bind(self.gateway, self.repository, "customer:B")
-        other.bind(self.gateway, self.repository, "customer:B", replace=True)
+        self.assertEqual(other.get(self.gateway, self.repository), {"customer": "A"})
+        self.assertEqual(other.get("https://other.example", self.repository), {})
+        with self.assertRaises(CredentialError) as error:
+            other.bind(self.gateway, self.repository, {"customer": "B", "project": "p"})
+        self.assertIn("customer", str(error.exception))
+        self.assertEqual(other.get(self.gateway, self.repository), {"customer": "A"})
+        other.bind(self.gateway, self.repository, {"customer": "A", "project": "p"})
+        other.bind(self.gateway, self.repository, {"customer": "B"}, replace=True)
         self.assertEqual(self.store.list(self.gateway), [
-            {"gateway": self.gateway, "repository": self.repository, "customer": "customer:B"},
+            {"gateway": self.gateway, "repository": self.repository, "labels": {"customer": "B", "project": "p"}},
         ])
+        self.assertEqual(json.loads(self.store.path.read_text(encoding="utf-8"))["version"], 2)
         other.unbind(self.gateway, self.repository)
-        self.assertIsNone(self.store.get(self.gateway, self.repository))
+        self.assertEqual(self.store.get(self.gateway, self.repository), {})
         with self.assertRaises(CredentialError):
             other.unbind(self.gateway, self.repository)
 
+    def test_unbinding_one_key_keeps_the_others_and_the_last_key_removes_the_binding(self):
+        self.store.bind(self.gateway, self.repository, {"customer": "A", "project": "p"})
+        for keys in (["team"], [], ["customer", "team"]):
+            with self.subTest(keys=keys), self.assertRaises(CredentialError):
+                self.store.unbind(self.gateway, self.repository, keys)
+        self.store.unbind(self.gateway, self.repository, ["customer"])
+        self.assertEqual(self.store.get(self.gateway, self.repository), {"project": "p"})
+        self.store.unbind(self.gateway, self.repository, ["project"])
+        self.assertEqual(self.store.list(self.gateway), [])
+
     def test_invalid_binding_inputs_cannot_create_corrupt_configuration(self):
-        for gateway, repository, customer in (
-            ("https://gateway.example/v1", self.repository, "customer:A"),
-            (self.gateway, None, "customer:A"),
-            (self.gateway, "repo\ninjected", "customer:A"),
-            (self.gateway, self.repository, "customer:A,customer:B"),
+        for gateway, repository, labels in (
+            ("https://gateway.example/v1", self.repository, {"customer": "A"}),
+            (self.gateway, None, {"customer": "A"}),
+            (self.gateway, "repo\ninjected", {"customer": "A"}),
+            (self.gateway, self.repository, {"customer": "A,B"}),
+            (self.gateway, self.repository, {"customer": ""}),
+            (self.gateway, self.repository, {"Customer": "A"}),
+            (self.gateway, self.repository, {}),
+            (self.gateway, self.repository, "customer"),
         ):
-            with self.subTest(gateway=gateway, repository=repository), self.assertRaises(CredentialError):
-                self.store.bind(gateway, repository, customer)
+            with self.subTest(gateway=gateway, repository=repository, labels=labels), self.assertRaises(CredentialError):
+                self.store.bind(gateway, repository, labels)
         self.assertFalse(self.store.path.exists())
 
     def test_concurrent_first_bindings_do_not_silently_overwrite(self):
         def bind(customer):
             try:
-                RepositoryStore(ProfileStore(self.home)).bind(self.gateway, self.repository, customer)
+                RepositoryStore(ProfileStore(self.home)).bind(self.gateway, self.repository, {"customer": customer})
                 return True
             except CredentialError:
                 return False
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            results = list(executor.map(bind, ("customer:A", "customer:B")))
+            results = list(executor.map(bind, ("A", "B")))
         self.assertEqual(sorted(results), [False, True])
-        self.assertIn(self.store.get(self.gateway, self.repository), ("customer:A", "customer:B"))
+        self.assertIn(self.store.get(self.gateway, self.repository), ({"customer": "A"}, {"customer": "B"}))
 
     def test_failed_atomic_replacement_preserves_previous_mapping(self):
-        self.store.bind(self.gateway, self.repository, "customer:A")
+        self.store.bind(self.gateway, self.repository, {"customer": "A"})
         with patch("virtual_key_mapper.profiles.os.replace", side_effect=OSError("full")):
             with self.assertRaises(CredentialError):
-                self.store.bind(self.gateway, self.repository, "customer:B", replace=True)
-        self.assertEqual(self.store.get(self.gateway, self.repository), "customer:A")
+                self.store.bind(self.gateway, self.repository, {"customer": "B"}, replace=True)
+        self.assertEqual(self.store.get(self.gateway, self.repository), {"customer": "A"})
         self.assertTrue(self.store.path.exists())
         self.assertTrue(all(path.name in ("repositories.json", "repositories.lock") for path in self.home.iterdir()))
 
     def test_corrupt_or_invalid_config_is_not_replaced(self):
+        entry = {"gateway": self.gateway, "repository": self.repository, "labels": {"customer": "a"}}
+        key = RepositoryStore._key(self.gateway, self.repository)
         for value in (
-            "{", json.dumps({"version": True, "bindings": {}}),
-            json.dumps({"version": 1, "bindings": []}),
-            json.dumps({"version": 1, "bindings": {"bad": {"gateway": self.gateway, "repository": self.repository, "customer": "a"}}}),
+            "{", "[" * 100_000, json.dumps({"version": True, "bindings": {}}),
+            json.dumps({"version": 2, "bindings": []}),
+            json.dumps({"version": 1, "bindings": {}}),
+            json.dumps({"version": 2, "bindings": {}, "extra": 1}),
+            json.dumps({"version": 2, "bindings": {"bad": entry}}),
+            json.dumps({"version": 2, "bindings": {key: {**entry, "labels": {}}}}),
+            json.dumps({"version": 2, "bindings": {key: {**entry, "labels": {"customer": "a,b"}}}}),
+            json.dumps({"version": 2, "bindings": {key: {"gateway": self.gateway, "repository": self.repository, "customer": "a"}}}),
         ):
             self.store.path.write_text(value, encoding="utf-8")
-            with self.subTest(value=value), self.assertRaises(CredentialError):
-                self.store.bind(self.gateway, self.repository, "customer:A")
+            with self.subTest(value=value[:200]), self.assertRaises(CredentialError):
+                self.store.bind(self.gateway, self.repository, {"customer": "A"})
             self.assertEqual(self.store.path.read_text(encoding="utf-8"), value)

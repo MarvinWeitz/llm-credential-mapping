@@ -190,7 +190,7 @@ class NativeKeyring:
     def _object(self, raw: str) -> dict:
         try:
             value = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             raise self._invalid() from None
         if not isinstance(value, dict):
             raise self._invalid()

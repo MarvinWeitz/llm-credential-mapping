@@ -122,16 +122,40 @@ test("a directory others can enter is refused", { skip: windows }, async () => {
   await assert.rejects(serve(socket, async () => ({})), /must belong to you and be private/);
 });
 
-test("the container profile copies the local gateway and central rules given as a URL", () => {
+test("the container profile copies the local gateway, central label rules given as a URL and its own definitions", () => {
   const gateway = { type: "litellm", url: "https://g.example" };
-  const rules = "https://g.example/customer-rules.json";
-  assert.deepEqual(remoteProfileArgs({ name: "work", gateway, rules }), {
+  const rules = "https://g.example/label-rules.json";
+  const labels = [{ key: "project", required: true, description: "--rules /etc/passwd" }, { key: "team" }];
+  const outputs = { tags: { format: ["${customer}", "${customer}:${project}"] } };
+  assert.deepEqual(remoteProfileArgs({ name: "work", gateway, rules, labels, outputs }), {
     args: ["profile", "add", "work", "--gateway", "https://g.example", "--gateway-type", "litellm",
-      "--auth", "forwarded", "--host-profile", "work", "--rules", rules],
-    skippedRules: null,
+      "--auth", "forwarded", "--host-profile", "work", "--rules", rules,
+      `--definitions=${JSON.stringify({ labels, outputs })}`], // One argument, in order, never an option of its own.
+    skippedRules: null, droppedOutputs: [],
   });
-  const file = remoteProfileArgs({ name: "work", gateway, rules: "/home/me/rules.json" });
+  const plain = remoteProfileArgs({ name: "work", gateway, rules: null, labels: [], outputs: {} });
+  assert.equal(plain.args.some((arg) => arg.startsWith("--definitions")), false);
+  assert.equal(plain.skippedRules, null);
+  const file = remoteProfileArgs({ name: "work", gateway, rules: "/home/me/rules.json", outputs: { metadata: { enabled: false } } });
   assert.equal(file.args.includes("--rules"), false); // Not in the container.
+  assert.equal(file.args.at(-1), '--definitions={"outputs":{"metadata":{"enabled":false}}}');
   assert.equal(file.skippedRules, "/home/me/rules.json");
-  assert.equal(remoteProfileArgs({ name: "work", gateway, rules: null }).skippedRules, null);
+});
+
+test("without central rules, the container profile leaves out output overrides using labels only they define", () => {
+  const gateway = { type: "litellm", url: "https://g.example" };
+  const labels = [{ key: "team" }];
+  const outputs = {
+    tags: { format: ["${customer}", "${customer}:${team}"] }, // customer comes from the central document.
+    other: { format: "team:${team}$${literal}" },
+    metadata: { enabled: false },
+  };
+  const file = remoteProfileArgs({ name: "work", gateway, rules: "/home/me/rules.json", labels, outputs });
+  assert.deepEqual(file.droppedOutputs, ["tags"]);
+  assert.equal(file.args.at(-1), `--definitions=${JSON.stringify({ labels, outputs: { other: outputs.other, metadata: outputs.metadata } })}`);
+  const none = remoteProfileArgs({ name: "work", gateway, rules: "/home/me/rules.json", outputs: { tags: { format: "${customer}" } } });
+  assert.deepEqual([none.droppedOutputs, none.args.some((arg) => arg.startsWith("--definitions"))], [["tags"], false]);
+  const url = remoteProfileArgs({ name: "work", gateway, rules: "https://g.example/rules.json", labels, outputs });
+  assert.deepEqual(url.droppedOutputs, []); // The central document comes along and defines customer.
+  assert.equal(url.args.at(-1), `--definitions=${JSON.stringify({ labels, outputs })}`);
 });

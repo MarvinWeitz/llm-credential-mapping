@@ -40,7 +40,13 @@ export async function answer(request: unknown, run: Run, allowed: string[]): Pro
     }
     const shown = JSON.parse(await run(["profile", "show", ...(profile ? [profile] : []), "--json"]));
     check(shown.name);
-    return { ok: true, result: { name: shown.name, gateway: shown.gateway, endpoints: shown.endpoints, rules: shown.rules ?? null } };
+    // The profile's own label definitions and outputs; the container gets the central ones from the same rules.
+    const labels = Array.isArray(shown.labels) ? shown.labels : [];
+    const outputs = typeof shown.outputs === "object" && shown.outputs !== null && !Array.isArray(shown.outputs) ? shown.outputs : {};
+    return {
+      ok: true,
+      result: { name: shown.name, gateway: shown.gateway, endpoints: shown.endpoints, rules: shown.rules ?? null, labels, outputs },
+    };
   } catch (error) {
     const message = error instanceof RunError ? error.message : "The local vkm CLI gave an unreadable answer.";
     return { ok: false, error: message, login: /\blogin\b/.test(message), profile };

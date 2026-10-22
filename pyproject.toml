@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "virtual-key-mapper"
 version = "0.1.0"
-description = "Short-lived keys from your company gateway, attributed to each repository's customer, for every tool you use."
+description = "Short-lived keys from your company gateway, labelled with the repository you work in, for every tool you use."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

@@ -5,6 +5,7 @@ contain quotes (spend-log metadata is JSON).
 """
 
 import shlex
+from typing import Sequence
 
 SHELLS = ("bash", "zsh", "fish", "pwsh")
 
@@ -33,21 +34,24 @@ def assignments(shell: str, values: dict[str, str | None]) -> str:
     return "\n".join(lines)
 
 
-def hook(shell: str, argv: list[str]) -> str:
+def hook(shell: str, argv: list[str], clear: Sequence[str] = ()) -> str:
     """A snippet for the shell profile that runs ``argv + ["--directory", <current directory>]`` on directory change.
 
-    ``argv`` must print ``assignments`` for the same shell.
+    ``argv`` must print ``assignments`` for the same shell. The ``clear`` variables are unset before it
+    runs, so a failing or missing command cannot leave them set from another directory.
     """
+    unset = assignments(shell, dict.fromkeys(clear))
     if shell == "pwsh":
         command = "& " + " ".join(_single_quoted(arg, shell) for arg in argv)
         return "\n".join([
-            "# vkm: set the customer for tools started from this directory.",
+            "# vkm: set the labels for tools started from this directory.",
             "$global:__VkmDirectory = $null",
             "# Loading the profile again must not wrap the wrapper (it would call itself).",
             "if (\"$function:prompt\" -notmatch '__VkmPrompt') { $global:__VkmPrompt = $function:prompt }",
             "function global:prompt {",
             "    if ($PWD.Path -ne $global:__VkmDirectory) {",
             "        $global:__VkmDirectory = $PWD.Path",
+            *(f"        {line}" for line in unset.splitlines()),
             f"        ({command} '--directory' $PWD.Path) | Out-String | Invoke-Expression",
             "    }",
             "    & $global:__VkmPrompt",
@@ -56,26 +60,28 @@ def hook(shell: str, argv: list[str]) -> str:
     command = " ".join(shlex.quote(arg) for arg in argv)
     if shell == "fish":
         return "\n".join([
-            "# vkm: set the customer for tools started from this directory.",
+            "# vkm: set the labels for tools started from this directory.",
             "function __vkm_hook --on-variable PWD",
+            *(f"    {line}" for line in unset.splitlines()),
             f'    {command} --directory "$PWD" | source',
             "end",
             "__vkm_hook",
         ])
     if shell == "zsh":
         return "\n".join([
-            "# vkm: set the customer for tools started from this directory.",
-            f'__vkm_hook() {{ eval "$({command} --directory "$PWD")"; }}',
+            "# vkm: set the labels for tools started from this directory.",
+            f'__vkm_hook() {{ {"".join(line + "; " for line in unset.splitlines())}eval "$({command} --directory "$PWD")"; }}',
             "autoload -Uz add-zsh-hook",
             "add-zsh-hook chpwd __vkm_hook",
             "__vkm_hook",
         ])
     return "\n".join([
-        "# vkm: set the customer for tools started from this directory.",
+        "# vkm: set the labels for tools started from this directory.",
         "__vkm_hook() {",
         "    local status=$?  # Keep $? for prompt commands that run after this one.",
         '    if [ "$PWD" != "${__vkm_directory-}" ]; then',
         '        __vkm_directory="$PWD"',
+        *(f"        {line}" for line in unset.splitlines()),
         f'        eval "$({command} --directory "$PWD")"',
         "    fi",
         '    return "$status"',
@@ -88,7 +94,7 @@ def hook(shell: str, argv: list[str]) -> str:
 
 
 def without_daemon(shell: str, tool: str = "codex") -> str:
-    """Make ``tool`` start ``--no-daemon``: a shared daemon would keep another terminal's customer variables."""
+    """Make ``tool`` start ``--no-daemon``: a shared daemon would keep another terminal's label header variables."""
     if shell == "pwsh":
         return "\n".join([
             f"function global:{tool} {{",

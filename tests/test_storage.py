@@ -203,11 +203,13 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.entries, before)
 
     def test_missing_or_corrupted_fragments_fail_closed(self):
-        for corrupt in (False, True):
+        for corrupt in (False, True, "nested"):
             self.entries.clear()
             self.store.put("a", {"secret": "a" * 6000})
             service = next(service for service in self.entries if service != self.store._service("a"))
-            if corrupt:
+            if corrupt == "nested":
+                self.entries[self.store._service("a")] = "[" * 100000
+            elif corrupt:
                 self.entries[service] = "tampered"
             else:
                 del self.entries[service]

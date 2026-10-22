@@ -1,10 +1,17 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from virtual_key_mapper.errors import CredentialError
-from virtual_key_mapper.profiles import Profile, ProfileStore, gateway_origin
+from virtual_key_mapper.labels import LabelDefinition, OutputOverride, definitions_from_dict
+from virtual_key_mapper.profiles import Profile, ProfileStore, gateway_origin, with_label, with_output, without_label
+
+DEFINITIONS = {
+    "labels": [{"key": "team", "required": True, "values": [{"id": "blue", "name": "Blue"}], "strict": True}, {"key": "project"}],
+    "outputs": {"tags": {"format": ["team:${team}", "team:${team}/${project}"]}, "metadata": {"enabled": False}},
+}
 
 
 class ProfileTests(unittest.TestCase):
@@ -106,7 +113,62 @@ class ProfileTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(CredentialError):
                 self.store.list()
 
-    def test_corrupt_json_is_reported(self):
-        self.store.path.write_text("{", encoding="utf-8")
+    def test_labels_and_outputs_persist_in_order_and_are_not_part_of_the_account(self):
+        labels, outputs = definitions_from_dict(DEFINITIONS)
+        profile = Profile("a", "https://example.com", {"team_id": "t"}, labels=labels, outputs=outputs)
+        self.assertEqual(profile.definitions(), DEFINITIONS)
+        self.assertEqual(profile.account, Profile("a", "https://example.com", {"team_id": "t"}).account)
+        self.store.add(profile)
+        self.assertEqual(self.store.get("a"), profile)
+        saved = json.loads(self.store.path.read_text(encoding="utf-8"))["profiles"]["a"]
+        self.assertEqual((saved["labels"], saved["outputs"]), (DEFINITIONS["labels"], DEFINITIONS["outputs"]))
+        plain = Profile("b", "https://example.com", {"team_id": "t"})
+        self.assertNotIn("labels", plain.to_dict())
+
+    def test_invalid_labels_or_outputs_are_refused(self):
+        for labels, outputs in (
+            ((LabelDefinition("a"), LabelDefinition("a")), {}),
+            ((LabelDefinition("a-b"), LabelDefinition("a_b")), {}),
+            ((LabelDefinition("a", origin="rules"),), {}),
+            ([LabelDefinition("a")], {}),
+            ((), {"end_user": OutputOverride(("x",))}),
+            ((), {"metadata": OutputOverride(("x",))}),
+            ((), {"tags": OutputOverride(("${a}", "${b}"))}),
+            ((), {"tags": {"enabled": False}}),
+        ):
+            with self.subTest(labels=labels, outputs=outputs), self.assertRaises(CredentialError):
+                Profile("a", "https://example.com", {"team_id": "t"}, labels=labels, outputs=outputs)
+        for item in (
+            {"labels": [{"key": "a", "requried": True}]}, {"labels": {"a": {}}}, {"outputs": {"tags": {"format": "$x"}}},
+            {"outputs": {"tags": {"enabled": True}}}, {"extra": 1},
+        ):
+            stored = {"gateway": {"type": "litellm", "url": "https://example.com", "allow_http": False},
+                      "auth": {"type": "litellm-sso", "team_id": "t"}, **item}
+            self.store.path.write_text(json.dumps({"version": 1, "active": "a", "profiles": {"a": stored}}), encoding="utf-8")
+            with self.subTest(item=item), self.assertRaises(CredentialError):
+                self.store.list()
+
+    def test_update_changes_labels_outputs_and_rules_but_not_the_sign_in(self):
+        self.store.add(Profile("a", "https://example.com", {"team_id": "t"}))
+        profile = self.store.update("a", lambda p: with_label(p, LabelDefinition("team")))
+        profile = self.store.update("a", lambda p: with_label(p, LabelDefinition("project")))
+        profile = self.store.update("a", lambda p: with_label(p, LabelDefinition("team", required=True)))
+        self.assertEqual([(item.key, item.required) for item in profile.labels], [("team", True), ("project", False)])
+        profile = self.store.update("a", lambda p: with_output(p, "metadata", OutputOverride(None, False)))
+        self.assertEqual(self.store.get("a").outputs, {"metadata": OutputOverride(None, False)})
+        profile = self.store.update("a", lambda p: with_output(without_label(p, "project"), "metadata", None))
+        self.assertEqual((profile.outputs, [item.key for item in profile.labels]), ({}, ["team"]))
         with self.assertRaises(CredentialError):
-            self.store.list()
+            without_label(profile, "project")
+        self.assertEqual(self.store.update("a", lambda p: replace(p, rules="https://rules.example/r.json")).rules, "https://rules.example/r.json")
+        with self.assertRaises(CredentialError):
+            self.store.update("a", lambda p: replace(p, auth={"team_id": "other"}))
+        with self.assertRaises(CredentialError):
+            self.store.update("missing", lambda p: p)
+        self.assertEqual(self.store.get("a").auth, {"team_id": "t"})
+
+    def test_corrupt_json_is_reported(self):
+        for text in ("{", "[" * 100_000):  # Too deeply nested JSON is corrupt too, not a RecursionError.
+            self.store.path.write_text(text, encoding="utf-8")
+            with self.subTest(text=text[:10]), self.assertRaises(CredentialError):
+                self.store.list()

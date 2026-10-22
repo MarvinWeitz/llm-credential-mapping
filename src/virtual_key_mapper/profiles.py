@@ -5,14 +5,15 @@ import re
 import tempfile
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
 from filelock import FileLock, Timeout
 
 from .errors import CredentialError
+from .labels import LabelDefinition, OutputOverride, check_definitions, check_overrides, definitions_from_dict
 
 
 def gateway_origin(value: str, allow_http: bool = False) -> str:
@@ -62,18 +63,18 @@ def validate_rules_location(value: str, allow_http: bool = False) -> str:
         not isinstance(value, str) or not value or len(value) > 2048
         or any(char.isspace() or ord(char) < 32 for char in value)
     ):
-        raise CredentialError("Customer rules must be an HTTPS URL or an absolute file path.")
+        raise CredentialError("Label rules must be an HTTPS URL or an absolute file path.")
     if "://" not in value:
         if not Path(value).is_absolute():
-            raise CredentialError("Customer rules must be an HTTPS URL or an absolute file path.")
+            raise CredentialError("Label rules must be an HTTPS URL or an absolute file path.")
         return value
     try:
         parsed = urlsplit(value)
         has_credentials = parsed.username is not None or parsed.password is not None
     except ValueError:
-        raise CredentialError("Customer rules URL is invalid.") from None
+        raise CredentialError("Label rules URL is invalid.") from None
     if has_credentials or parsed.fragment:
-        raise CredentialError("Customer rules URL must not contain credentials or a fragment.")
+        raise CredentialError("Label rules URL must not contain credentials or a fragment.")
     gateway_origin(f"{parsed.scheme}://{parsed.netloc}", allow_http)
     return value
 
@@ -83,7 +84,8 @@ class Profile:
     """A named profile: which gateway to use (kind and root URL) and how to authenticate (kind and settings).
 
     Kind-specific settings, such as a LiteLLM team ID, live in ``auth`` and are validated by that auth kind.
-    ``rules`` optionally locates central repository-to-customer rules; it is not part of the identity.
+    ``rules`` optionally locates the central label rules; ``labels`` and ``outputs`` are the profile's own
+    label definitions and output overrides (docs/labels.md). None of the three is part of the identity.
     """
 
     name: str
@@ -93,9 +95,11 @@ class Profile:
     auth_type: str = "litellm-sso"
     allow_http: bool = False
     rules: str | None = None
+    labels: tuple[LabelDefinition, ...] = ()
+    outputs: dict[str, OutputOverride] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        from .registry import validate_profile  # The registry's adapters import this module.
+        from .registry import gateway_outputs, validate_profile  # The registry's adapters import this module.
 
         validate_profile_name(self.name)
         if type(self.allow_http) is not bool:
@@ -106,6 +110,15 @@ class Profile:
         object.__setattr__(self, "auth", validate_profile(self.gateway_type, self.auth_type, dict(self.auth)))
         if self.rules is not None:
             validate_rules_location(self.rules, self.allow_http)
+        if (
+            not isinstance(self.labels, tuple)
+            or not all(isinstance(item, LabelDefinition) and item.origin == "profile" for item in self.labels)
+            or not isinstance(self.outputs, dict)
+            or not all(isinstance(name, str) and isinstance(item, OutputOverride) for name, item in self.outputs.items())
+        ):
+            raise CredentialError("Invalid label definitions or output overrides in the profile.")
+        check_definitions(self.labels, "The profile")
+        check_overrides(gateway_outputs(self.gateway_type), self.outputs, "The profile")
 
     @property
     def account(self) -> str:
@@ -122,7 +135,44 @@ class Profile:
         }
         if self.rules is not None:
             value["rules"] = self.rules
+        value.update(self.definitions())
         return value
+
+    def definitions(self) -> dict:
+        """The profile's own ``labels`` and ``outputs`` in their JSON form, each only when not empty."""
+        value: dict = {}
+        if self.labels:
+            value["labels"] = [definition.to_dict() for definition in self.labels]
+        if self.outputs:
+            value["outputs"] = {name: override.to_dict() for name, override in self.outputs.items()}
+        return value
+
+
+def with_label(profile: Profile, definition: LabelDefinition) -> Profile:
+    """Add a profile label, or replace the one with the same key in its place."""
+    labels = list(profile.labels)
+    index = next((index for index, item in enumerate(labels) if item.key == definition.key), None)
+    if index is None:
+        labels.append(definition)
+    else:
+        labels[index] = definition
+    return replace(profile, labels=tuple(labels))
+
+
+def without_label(profile: Profile, key: str) -> Profile:
+    if all(item.key != key for item in profile.labels):
+        raise CredentialError(f"The profile defines no label '{key}'.")
+    return replace(profile, labels=tuple(item for item in profile.labels if item.key != key))
+
+
+def with_output(profile: Profile, name: str, override: OutputOverride | None) -> Profile:
+    """Set an output override; None returns the output to the adapter's default."""
+    outputs = dict(profile.outputs)
+    if override is None:
+        outputs.pop(name, None)
+    else:
+        outputs[name] = override
+    return replace(profile, outputs=outputs)
 
 
 def default_home() -> Path:
@@ -199,7 +249,7 @@ class ProfileStore:
             return {"version": 1, "active": None, "profiles": {}}
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # RecursionError: nesting too deep.
             raise CredentialError("Cannot read profiles.json; repair the nonsecret configuration.") from None
         if (
             not isinstance(value, dict)
@@ -222,7 +272,7 @@ class ProfileStore:
     @staticmethod
     def _profile(name: str, item: object) -> Profile:
         if (
-            not isinstance(item, dict) or set(item) - {"rules"} != {"gateway", "auth"}
+            not isinstance(item, dict) or set(item) - {"rules", "labels", "outputs"} != {"gateway", "auth"}
             or not isinstance(item["gateway"], dict) or set(item["gateway"]) != {"type", "url", "allow_http"}
             or not isinstance(item["auth"], dict) or "type" not in item["auth"]
         ):
@@ -231,7 +281,12 @@ class ProfileStore:
         if not isinstance(gateway["url"], str) or not isinstance(gateway["type"], str) or not isinstance(auth["type"], str):
             raise CredentialError("Invalid gateway or authentication type in profile configuration.")
         auth_type = auth.pop("type")
-        return Profile(name, gateway["url"], auth, gateway["type"], auth_type, gateway["allow_http"], item.get("rules"))
+        labels, outputs = definitions_from_dict(
+            {key: item[key] for key in ("labels", "outputs") if key in item}, f"Profile '{name}'",
+        )
+        return Profile(
+            name, gateway["url"], auth, gateway["type"], auth_type, gateway["allow_http"], item.get("rules"), labels, outputs,
+        )
 
     def _write(self, value: dict) -> None:
         atomic_write_json(self.path, value)
@@ -246,13 +301,16 @@ class ProfileStore:
                 data["active"] = profile.name
             self._write(data)
 
-    def set_rules(self, name: str, rules: str | None) -> Profile:
-        """Change only where a profile's central customer rules come from; its sign-in is unaffected."""
+    def update(self, name: str, change: Callable[[Profile], Profile]) -> Profile:
+        """Apply ``change`` to a stored profile under the lock; it may not touch the gateway or the sign-in."""
         with self.locked():
             data = self._read()
             if name not in data["profiles"]:
                 raise CredentialError("Unknown profile; use 'profile list'.")
-            profile = replace(self._profile(name, data["profiles"][name]), rules=rules)
+            before = self._profile(name, data["profiles"][name])
+            profile = change(before)
+            if profile.name != name or profile.account != before.account:
+                raise CredentialError("Updating a profile cannot change its gateway or sign-in; add a new profile.")
             data["profiles"][name] = profile.to_dict()
             self._write(data)
             return profile

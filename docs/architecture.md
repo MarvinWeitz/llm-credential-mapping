@@ -7,16 +7,17 @@ changing or reviewing it.
 ## 1. The problem and the goals
 
 Developers use several AI coding tools against one company LLM gateway. Spend must be
-attributed to the customer each repository belongs to, and the gateway's single sign-on
+attributed by the labels of the repository it is for (the customer, a project, whatever the
+organisation needs), and the gateway's single sign-on
 must be used instead of long-lived API keys. In priority order:
 
-1. As little developer interaction as possible to give each repository its customer.
+1. As little developer interaction as possible to give each repository its labels.
 2. It just works for Claude Code (CLI and VS Code), Codex, OpenCode and Copilot Chat,
    locally and in Dev Containers.
 3. Short-lived, renewing SSO credentials; no `sk-` keys to issue, rotate or paste.
 4. Gateway, sign-in method and tools stay replaceable without over-engineering.
 
-Non-goals: enforcing which customers someone may bill (that belongs on the gateway), and
+Non-goals: enforcing which label values someone may use (that belongs on the gateway), and
 attributing traffic the tools send to their vendors directly (Copilot inline completions).
 
 ## 2. Overview
@@ -24,8 +25,8 @@ attributing traffic the tools send to their vendors directly (Copilot inline com
 ```text
                 ┌───────────────────────────── vkm (Python) ─────────────────────────────┐
  input side     │  auth adapters        litellm-sso (browser SSO, renewal)   forwarded (relay)        │
-                │  gateway adapters     litellm (endpoints, x-litellm-* headers, tag list)           │
- core           │  profiles · OS vault · customer resolver · CLI JSON contracts                      │
+                │  gateway adapters     litellm (endpoints, outputs tags + metadata, tag catalogue)  │
+ core           │  profiles · OS vault · labels, resolver, formats · CLI JSON contracts              │
  output side    │  integrations         claude · codex · opencode  (setup, run)                       │
                 └──────────────────────────────────────────┬─────────────────────────────────────────┘
                                                            │ token --json · repo show --json · profile show --json
@@ -49,11 +50,13 @@ for both; the tools and extensions only consume its outputs.
 | `registry.py` | The three adapter tables, profile validation, `auth_for`, `gateway_for` |
 | `profiles.py` | Profiles (`profiles.json`), file locks, atomic writes, rules location validation |
 | `storage.py` | OS vault (`keyring`), split into fragments for Windows' size limit |
-| `customers.py` | Customer resolver, `.vkm`, central rules and their cache |
-| `repositories.py` | Git identity normalization, `find_checkout`, personal assignments (`repositories.json`) |
+| `labels.py` | Label definitions, outputs and format strings, the effective `LabelConfig`, headers, the launch marker |
+| `rules.py` | The central rules document (version 2), its matching and cache |
+| `resolve.py` | Per-key resolution, `.vkm` files, loading the configuration, the `repo show --json` document |
+| `repositories.py` | Git identity normalization, `find_checkout`, personal label bindings (`repositories.json`) |
 | `auth/litellm_oauth.py`, `auth/litellm_sso.py` | LiteLLM native SSO client; session renewal and locking |
 | `auth/forwarded.py` | Credentials relayed from the local machine (Dev Containers) |
-| `gateways/litellm.py` | LiteLLM endpoints, `x-litellm-tags`, spend-log metadata, `/tag/list` |
+| `gateways/litellm.py` | LiteLLM endpoints, the `tags` and `metadata` outputs, the `/tag/list` catalogue |
 | `integrations/claude.py`, `codex.py`, `opencode.py` | Tool setup, launch and (Claude) the prompt guard |
 | `shells.py` | Per-directory shell hooks for environment-driven tools (Codex) |
 | `cli.py` | Commands; reaches adapters only through the registry |
@@ -71,18 +74,22 @@ Three adapter kinds, each a small protocol in `adapters.py` with one table in `r
 - **Auth** obtains a `Credential` (secret, optional expiry, user, optional notice):
   `login`, `logout`, `status`, `credential`. Kinds: `litellm-sso`, `forwarded`.
 - **Gateway** knows endpoints per wire API (`anthropic-messages`, `openai-chat`,
-  `openai-responses`) and how a customer becomes request headers. Kind: `litellm`.
+  `openai-responses`), which outputs (request headers) it can fill with labels, and an
+  optional catalogue of label values. Kind: `litellm`.
 - **Integration** configures and launches one tool: `setup`, `remove`, `command`, `launch`.
   Kinds: `claude`, `codex`, `opencode`.
 
-A profile names one gateway kind and one auth kind, plus the auth kind's settings
+A profile names one gateway kind and one auth kind, plus the auth kind's settings and, optionally,
+its central rules location and its own label definitions and output overrides
 (`profiles.json`):
 
 ```json
 {"version": 1, "active": "work", "profiles": {"work": {
   "gateway": {"type": "litellm", "url": "https://gateway.example", "allow_http": false},
   "auth": {"type": "litellm-sso", "team_id": "TEAM"},
-  "rules": "https://gateway.example/customer-rules.json"}}}
+  "rules": "https://gateway.example/label-rules.json",
+  "labels": [{"key": "project", "description": "Project within the customer"}],
+  "outputs": {"metadata": {"enabled": false}}}}}
 ```
 
 Why two input-side axes: sign-in methods and gateways combine freely in practice (a fixed
@@ -98,8 +105,8 @@ Tools and extensions never see header names or URL paths. They read three JSON c
 | Command | Output |
 | --- | --- |
 | `token --json` | `{"access_token", "expires_at" (number or null), "profile", "user"}` |
-| `repo show --json --directory D` | `{"customer", "source", "detail", "repository", "headers": {...}}` |
-| `profile show [NAME] --json` | `{"name", "gateway": {"type", "url"}, "auth": {...}, "rules", "endpoints": {api: url}}` |
+| `repo show --json --directory D [--launch]` | `{"labels": [{"key", "value", "name", "source", "detail", "required", "description"}], "missing", "ignored", "repository", "complete", "headers": {...}, "message", "notices"}`; exit 0 also while labels are missing (`headers` is then empty) or cannot be resolved (`complete: false`, the error as `message`); exit 1 only when the configuration cannot be loaded |
+| `profile show [NAME] --json` | `{"name", "gateway": {"type", "url"}, "auth": {...}, "rules", "endpoints": {api: url}}` plus the profile's own `labels` and `outputs` |
 
 ## 4. Signing in: LiteLLM native SSO
 
@@ -169,19 +176,68 @@ refresh token gets 400 without revoking the grant. Retrying is therefore safe, a
 renewal is not a reason to throw away an access token that is still valid (LiteLLM access
 tokens cannot be revoked anyway).
 
-## 5. Customers
+## 5. Labels
+
+The user-facing reference is [labels.md](labels.md); this section explains the implementation
+and the reasons.
+
+### Definitions and configuration
+
+`labels.py` holds the label model and imports nothing but `errors`. A `LabelConfig` combines
+three pieces, checked together every time the configuration is loaded
+(`resolve.load_config`):
+
+1. the central rules document's `labels` and its `outputs` section for the profile's gateway type;
+2. the profile's own `labels` and `outputs` (personal additions);
+3. the gateway adapter's declared outputs and their defaults (section 3).
+
+Central labels come first in document order, then the profile's in the order they were added.
+A profile label whose key (or `VKM_LABEL_` variable name) the central document defines, and a
+profile override of an output the document overrides, are dropped and reported as notices; the
+central piece applies; a profile override that uses the key of such a dropped label is dropped
+with it (the adapter default applies), so it cannot block every request. `profile add/update`
+refuses such a label outright when the document can be read; when it cannot, the profile is still
+checked on its own, treating placeholders it does not define as possible central required labels. Problems that would let a request out with wrong or missing attribution make the whole
+configuration invalid, which blocks every request with one message: an output the gateway does not
+have, a format error, a central format using a profile label, or a required label that reaches no
+output. A required label reaches an output only through an enabled `list` entry whose other
+placeholders are all required; an enabled `json` output counts only when no `list` output is
+enabled.
+
+Why objects in a list and not a map keyed by label: order matters (status bar, tag order, picker)
+and survives any JSON tool, and new fields fit without changing the shape. Why unknown fields are
+refused in a known document version: a typo like `"requried"` must not silently make a required
+label optional.
 
 ### Resolution
 
-`customers.resolve_customer(directory)` is used by every integration and both extensions
-(through `repo show`). First match wins:
+`resolve.resolve_labels(directory)` is used by every integration and both extensions (through
+`repo show`). Each defined key is resolved on its own; the first source the definition allows
+(`sources`) with an entry wins:
 
-1. `--customer` / `VKM_CUSTOMER`;
-2. the personal assignment in `repositories.json` for the checkout's `origin`, then `upstream`;
-3. the nearest `.vkm` file, searching upward and stopping at the home directory;
-4. the profile's central rules, each rule tried against `origin`, then `upstream`.
+1. `explicit`: `--label KEY=VALUE` of `run` or `repo show` (also the launch marker, below);
+2. `env`: `VKM_LABEL_<KEY>`, exactly that name (empty counts as unset; an invalid value is an
+   error naming it; any other `VKM_LABEL_*` variable is ignored as unknown under its own name);
+3. `local`: the personal binding in `repositories.json` (version 2) for the checkout's `origin`,
+   then `upstream`, per key;
+4. `file`: the nearest `.vkm` file, searching upward and stopping below the home directory; the
+   nearest file wins as a whole;
+5. `rules`: the profile's central rules, each rule tried against `origin`, then `upstream`; each
+   key from the first matching rule that sets it.
 
-No match means the tool is blocked with an explanation; nothing is sent untagged.
+An empty value (`--label KEY=`, `""` in `.vkm`, `null` in a rule) is an entry with no value: the
+search for that key stops there. The result (`Attribution`) carries each label's value, source
+and detail, the required keys without a value, values that were ignored (unknown key, or a source
+the definition does not allow) and the repository. While a required key is missing, no headers
+can be built: every tool is blocked with a message starting with the fixed phrase
+`Required labels have no value:`, which the Claude guard, the OpenCode plugin and the VS Code
+extension recognise. With no labels defined at all, requests carry only the repository metadata.
+
+`vkm run --label` passes its values to the child in `VKM_LAUNCH_LABELS` (compact JSON of the
+`--label` values only). The resolver never reads it: only the Claude guard and the OpenCode
+plugin (through `repo show --launch`) treat it as explicit, so a session started with `run --label`
+keeps its labels without the marker becoming a way to set labels for everything. A malformed
+marker counts as absent.
 
 Repository identity (`repositories.repository_identity`) normalizes Git remotes so HTTPS and
 SSH forms of one repository match: credentials, ports and `.git` removed, host and path
@@ -195,41 +251,77 @@ A forge served under a sub-path (GitLab with a relative URL root such as
 `https://host/gitlab/group/repo`, SSH `host:group/repo`) cannot be recognized from the remote,
 so its two forms stay different identities: rules need one entry per form.
 
-Why this order: explicit beats implicit; a personal override must be able to correct a
-wrong team-wide setting; a committed file is a deliberate, reviewable team decision; central
-rules cover whole organizations without per-repository work. Why the search stops at home:
-folders above it (`C:\Users`, `/home`) are shared, and a file planted there must not assign a
-customer to everyone's projects. Why rule order decides between `origin` and `upstream`:
-administrators list specific rules before catch-alls, so a fork of `acme-web` should get
-acme's rule even if a later catch-all matches the fork's own address.
+Why this order: explicit beats implicit; a personal binding must be able to correct a wrong
+team-wide setting; a committed file is a deliberate, reviewable team decision; central rules
+cover whole organizations without per-repository work. Why per key: one label often comes from
+the organisation (`customer` by rule) and another from the team (`project` in `.vkm`). Why the
+nearest `.vkm` wins as a whole: a file is one reviewed decision, and mixing in a parent's keys
+would attribute to a combination nobody wrote. Why the search stops at home: folders above it
+(`C:\Users`, `/home`) are shared, and a file planted there must not label everyone's projects.
+Why rule order decides between `origin` and `upstream`: administrators list specific rules
+before catch-alls, so a fork of `acme-web` should get acme's rule even if a later catch-all
+matches the fork's own address. Why `repo bind --label` refuses to change a bound value without
+`--replace`: a session that bound it concurrently must not be overwritten silently.
 
 ### Central rules
 
 `rules` in a profile is an HTTPS URL (HTTP only for opted-in loopback) or an absolute file
-path. URLs are cached in `<config folder>/rules-cache/` for an hour and revalidated with the
-ETag; on a failed fetch, or when a newly published document is invalid, a stale cache is
-used, so a rules outage or a broken edit does not block work. Patterns match the identity
-`repo show` prints, which is percent-decoded: `dev.azure.com/org/My Project/**`, not `My%20Project`. The
-gateway credential is sent only if the rules URL is on the gateway's own origin. The
-rules' customer catalogue replaces the gateway's tag list in the interactive picker.
-Configure one: LiteLLM's `/tag/list` scopes non-admins to spend of keys stored in its
+path. The document has a `"MAJOR.MINOR"` version (`"2.0"`): an unknown major is refused; a newer
+minor of a known major is accepted with its unknown fields ignored (and `repo show` says so). It
+must be valid on its own: rules and central formats may use only central labels, rule values
+must be valid (and listed for a `strict` label; a rule for a label whose `sources` exclude
+`rules` is allowed and ignored at resolution), at most 1000 rules with at most 8 `**` per
+pattern, compiled once and matched in linear time (no regular-expression backtracking). URLs are cached in `<config folder>/rules-cache/` for an hour and
+revalidated with the ETag; on a failed fetch, or when a newly published document is invalid
+(also in combination with the profile and the adapter), the last good cached copy is used, so a
+rules outage or a broken edit does not block work; without one it is an error. Patterns match the
+identity `repo show` prints, which is percent-decoded: `dev.azure.com/org/My Project/**`, not
+`My%20Project`. The gateway credential is sent only if the rules URL is on the gateway's own
+origin.
+
+The picker's choices for a label are its `values`, else the gateway's catalogue, else any valid
+typed value (`vkm labels values KEY` says which). The credential is requested only when a
+catalogue can apply, so without one no sign-in is needed. The LiteLLM catalogue exists only when the tags
+output has an entry `PREFIX${KEY}SUFFIX` with one placeholder (the default `KEY:${KEY}`
+qualifies): `/tag/list` names with that prefix and suffix, stripped. Publish `values` in the
+central document: LiteLLM's `/tag/list` scopes non-admins to spend of keys stored in its
 database, which SSO session tokens never are, so it is usually empty for developers (see
 [Gateway requirements](#11-gateway-requirements)). Rows it does return are spend tags; LiteLLM's
 automatic `<Header>: <value>` tags (`User-Agent: ...`) and invalid names are dropped.
 
 ### Attribution headers
 
-The LiteLLM gateway adapter turns an attribution into:
+A gateway adapter declares its outputs; the core fills them. The LiteLLM adapter has two:
+
+| Output | Kind | Header | Default |
+| --- | --- | --- | --- |
+| `tags` | `list` | `x-litellm-tags` | one `KEY:${KEY}` entry per label, in order |
+| `metadata` | `json` | `x-litellm-spend-logs-metadata` | on |
 
 ```text
-x-litellm-tags: customer-acme
-x-litellm-spend-logs-metadata: {"customer_source":"rules","repository":"github.com/acme/web"}
+x-litellm-tags: customer:acme,project:webshop
+x-litellm-spend-logs-metadata: {"labels":{"customer":"acme","project":"webshop"},"repository":"github.com/acme-shop/web","sources":{"customer":"rules","project":"file"}}
 ```
 
-LiteLLM stores the metadata JSON with each spend-log entry, so spend can be re-attributed
-later if a mapping was wrong. Why tags and not LiteLLM Projects: SSO session credentials
-carry no project and Projects require per-project virtual keys
-([future/litellm-projects.md](future/litellm-projects.md)).
+The central document (per gateway type, wins) or the profile may override a `list` output's
+format or switch an output off. A format is compiled once into literal text and `${KEY}`
+placeholders (`$$` is a literal `$`, anything else with `$` is an error) and substituted in one
+left-to-right pass, so a value is never read as a format. An entry using an optional label
+without a value is dropped; a list with no entries left omits its header. Results must be valid
+tags (printable ASCII without `,`, not starting with `!` or `&`, at most 512 characters, not
+LiteLLM's `User-Agent: ` or `default` tags) and every header at most 4096 bytes; otherwise
+nothing is sent. Look-alikes are refused: two placeholders may not be adjacent; if an entry
+starts with a placeholder, all entries must start with the same one; and entries that start with
+literal text whose texts before the first placeholder are equal, or one a prefix of the other,
+must have the same first placeholder. With `${customer}` next to `${project}`, or
+`customer:${customer}` next to `customer:${project}`, a project value could produce a tag that
+reads as a customer.
+
+The metadata is sent even when no label has a value. LiteLLM stores it with each spend-log entry,
+so spend can be re-attributed later if a mapping was wrong. Why tags and not LiteLLM Projects:
+SSO session credentials carry no project and Projects require per-project virtual keys
+([future/litellm-projects.md](future/litellm-projects.md)). Header names are fixed by the adapter; a format never
+chooses a header.
 
 ## 6. Dev Containers: the relay
 
@@ -283,7 +375,7 @@ sequenceDiagram
     Local-->>Relay: {"ok": true, "result": {...}}
     Relay-->>CLI: same JSON line
     CLI-->>Tool: access token
-    Note over Tool: The model request goes directly from the container to the gateway<br/>with this token and the customer headers resolved in the container.
+    Note over Tool: The model request goes directly from the container to the gateway<br/>with this token and the label headers resolved in the container.
 ```
 
 ### Protocol and its safety properties
@@ -322,8 +414,10 @@ sequenceDiagram
 On start in a remote window the main extension asks the container CLI for a profile. If
 there is none, it fetches the local profile (`operation: "profile"`) and runs
 `profile add NAME --gateway URL --gateway-type TYPE --auth forwarded --host-profile NAME`,
-plus `--rules URL` when the local profile has central customer rules at a URL (rules in a
-local file do not exist in the container; the output channel says how to set them there).
+plus `--rules URL` when the local profile has central label rules at a URL and
+`--definitions JSON` with the local profile's own `labels` and `outputs`, all in one call.
+Rules in a local file do not exist in the container: the extension warns that the
+organisation's label definitions are missing there and says how to set them.
 The `forwarded` auth kind stores nothing: `credential()` asks the socket, `login`/`logout`
 point to the local machine. Because auth kinds receive a vault *factory*, commands in the
 container never try to open an OS vault.
@@ -357,23 +451,28 @@ Claude has no way to compute request headers per request; the only source is
 
 ```mermaid
 flowchart TD
-    A[Prompt submitted] --> B{Attribution headers in<br/>ANTHROPIC_CUSTOM_HEADERS?}
-    B -- "yes, set by run claude<br/>(e.g. run --customer)" --> OK[Allow]
-    B -- yes, equal to the resolver's --> OK
-    B -- missing or outdated --> C{Customer resolved?}
-    C -- no --> X[Block: how to assign a customer]
-    C -- yes --> D[Write .claude/settings.local.json<br/>and exclude it from Git] --> Y[Block once:<br/>send the prompt again]
+    A[Prompt submitted] --> B[Resolve the labels,<br/>the launch marker's as explicit]
+    B --> C{Required labels<br/>without a value?}
+    C -- yes --> X[Remove our headers from the local file;<br/>block: how to set the labels]
+    C -- no --> D{Session's headers equal<br/>the computed ones?}
+    D -- yes --> OK[Allow]
+    D -- "no, but the local file has them" --> N[Block: the session has not loaded them]
+    D -- no --> W[Write .claude/settings.local.json<br/>and exclude it from Git] --> Y[Block once:<br/>send the prompt again]
 ```
 
 Why block once: a settings file created during a prompt is only used from the next request,
-so the first request would otherwise go out untagged. Why `settings.local.json` and not the
+so the first request would otherwise go out without its labels. Why `settings.local.json` and not the
 shared `settings.json`: it is personal and excluded from Git, so no billing tag is committed
-into a customer's repository by accident. Claude reads it at the Git root, except on Windows
+into a client's repository by accident. Claude reads it at the Git root, except on Windows
 and outside Git, where it uses the session's starting directory; the guard writes where
 Claude reads, starting from `CLAUDE_PROJECT_DIR` (the hook payload's `cwd` follows the agent's
-`cd`). Headers that `run claude` did not set and that differ from the resolver's are stale,
-not an override: Claude keeps `ANTHROPIC_CUSTOM_HEADERS` in its environment after the local
-file stops setting it, so an unmapped folder must keep blocking.
+`cd`). Headers are compared as a whole: every header the adapter can send must be equal, and an
+absent header equals an omitted output. A session started with `run claude --label` passes
+because its launch marker (`VKM_LAUNCH_LABELS`) is resolved as explicit, not because its headers
+are trusted. When the marker sets any label the guard never writes the local file, which every
+session in the folder reads (`run claude` gives its child the headers directly); it only compares
+the session's headers with the computed ones. Stale headers are the reason for the comparison: Claude keeps `ANTHROPIC_CUSTOM_HEADERS` in its environment after the local file stops
+setting it, so stale headers must not let a folder with missing labels through.
 
 On Windows Claude Code runs hooks through Git Bash. The helper and hook commands therefore
 quote every argument in double quotes with forward slashes (valid in both cmd and bash) and
@@ -408,19 +507,23 @@ refresh_interval_ms = 240000
 ```
 
 The header values come from environment variables set per directory by
-`shell-init bash|zsh|fish|pwsh` (`repo show --env`), which exports only nonsecret values.
-Codex silently omits a header whose variable is missing, so the token command refuses
-without them (`--require-attribution-env`). Tested with the real Codex: Codex then sends the
-request without any credential; the gateway rejects it, so nothing untagged is billed, but
-the prompt reaches the gateway. A gateway-side "customer required" policy is the real
-backstop. The token never goes into Codex's environment, because Codex passes `*TOKEN*`
+`shell-init bash|zsh|fish|pwsh` (`repo show --env`), which exports only nonsecret values: one
+variable per header (unset when the output is omitted) and `VKM_ATTRIBUTION=1` when the
+folder's labels are complete. The hook unsets `VKM_ATTRIBUTION` before it runs `vkm`, and when
+the labels cannot be resolved for any reason (also a profile that cannot be loaded) `vkm` prints
+statements unsetting it and every `VKM_HEADER_*` variable, so a folder never keeps another's. `setup` registers every header the adapter can send, so later
+changes to the definitions or formats need no new setup; Codex omits a header whose variable is
+unset. The token command refuses without `VKM_ATTRIBUTION` (`--require-attribution-env`).
+Tested with the real Codex: Codex then sends the request without any credential; the gateway
+rejects it, so nothing without labels is billed, but the prompt reaches the gateway. A
+gateway-side policy requiring the labels is the real backstop. The token never goes into Codex's environment, because Codex passes `*TOKEN*`
 variables to the shell commands its agent runs.
 
 Interactive Codex (0.161+) normally runs sessions in a shared background daemon
 (`codex app-server`) that keeps the environment of the terminal that started it, and runs
 the token command there. Tested with the real Codex: a daemon started without the variables
-sends requests without credential or customer; one started in another repository's terminal
-sends that repository's customer. So the `shell-init` hook also defines a `codex` function that
+sends requests without credential or labels; one started in another repository's terminal
+sends that repository's labels. So the `shell-init` hook also defines a `codex` function that
 adds `--no-daemon`, `run codex` passes it, and `setup` writes `features.daemon_auto_start = false`.
 A daemon started explicitly (`codex app-server daemon start`) or by an IDE extension still serves
 whatever connects to it; stop it with `codex app-server daemon stop`.
@@ -433,10 +536,11 @@ OpenCode v1 loads plugins listed as `file://` URLs. `setup opencode` writes a pr
 The plugin's `chat.headers` hook runs for each request of that provider:
 
 - refuses if the provider's `baseURL` is not the gateway (a project config could redirect it);
-- calls `repo show --json --directory <OpenCode's directory>` (cached 30 s) and
+- calls `repo show --json --launch --directory <OpenCode's directory>` (cached 30 s) and
   `token --json` (cached until 60 s before expiry, at most 4 minutes);
-- sets `Authorization` (replacing the placeholder key) and the attribution headers;
-- throws when no customer is assigned, which stops the request before it is sent.
+- sets `Authorization` (replacing the placeholder key) and the label headers when the answer is
+  `complete`;
+- throws otherwise (required labels missing), which stops the request before it is sent.
 
 All of this was verified on the wire with OpenCode 1.18.34. OpenCode v2 has a different
 plugin API; `setup` refuses it and `run opencode` keeps the previous launch-time token there.
@@ -453,19 +557,23 @@ is declared), subject to the organization's "Bring Your Own Language Model Key" 
 - **Credential:** `token --json`, cached until 60 s before expiry and at most 4 minutes; one
   retry with a fresh token after a 401 if nothing was streamed yet. The CLI returns the same
   token until it is due for renewal, so a 401 that survives the retry offers "Sign in".
-- **Customer:** `repo show --json` for the folder: the only workspace folder; else the active
-  editor's folder; else the folder chosen in the status bar; else, if all folders share one
-  customer, that one (its headers, so the spend-log metadata names the first folder's
-  repository); otherwise requests fail and the status bar asks for a choice. Answers
-  are cached 30 s so a `repo bind` takes effect quickly.
-- **Errors:** notifications offer "Sign in" or "Assign customer", which open a terminal
+- **Labels:** `repo show --json` for the folder: the only workspace folder; else the active
+  editor's folder; else the folder chosen in the status bar; else, if all folders have equal
+  label values, that one (its headers, so the spend-log metadata names the first folder's
+  repository); otherwise requests fail and the status bar asks for a choice. Headers are sent
+  only when the answer is `complete`. Answers are cached 30 s so a `repo bind` takes effect
+  quickly. The status bar shows the values of all labels with a value, in order (catalogue names
+  where known), joined by ` · `, missing required labels in warning style, and `no labels` when
+  none are defined; its tooltip lists each label with description and source.
+- **Errors:** notifications offer "Sign in" or "Assign labels" (`vkm repo bind --directory DIR`,
+  which asks for each missing required label), which open a terminal
   running the matching CLI command (in remote windows, sign-in goes to the companion).
   When the sign-in finishes, or a remote window has created its profile, the models are
   listed again; a listing before that found none.
 
 Why an extension instead of Copilot's "Custom Endpoint": its API key comes from VS Code's
-secret storage and cannot renew, and it carries no per-workspace information, so a
-per-repository customer would need one endpoint per customer and a local proxy. An earlier
+secret storage and cannot renew, and it carries no per-workspace information, so
+per-repository labels would need one endpoint per combination and a local proxy. An earlier
 version did exactly that (a foreground bridge with a local key); it was replaced in step 6.
 
 Not attributable by any extension: inline completions, next-edit suggestions, embeddings and
@@ -489,9 +597,13 @@ for one-off launches and overrides.
   endpoints are pinned to the gateway origin, the OpenCode plugin checks the base URL, Codex
   forbids providers in project configuration, and rules URLs only get the credential on the
   gateway's own origin.
-- Customer tags are client-side attribution. They can be omitted or chosen freely by anyone
-  with a valid sign-in; enforcing allowed customers needs a gateway-side policy (for LiteLLM
-  an `async_pre_call_hook` validating the tag against the user's or team's allowed customers).
+- Labels are client-side attribution. They can be omitted or chosen freely by anyone with a
+  valid sign-in (`strict` only stops mistakes); enforcing allowed values needs a gateway-side
+  policy (for LiteLLM an `async_pre_call_hook` validating the tags against the user's or team's
+  allowed values).
+- Label values and format results are validated before anything is sent (printable ASCII, no
+  `,`, no leading `!`/`&`, size limits); header names are fixed by the adapter. An invalid
+  configuration blocks requests instead of sending partial attribution.
 - Access tokens of LiteLLM's native SSO cannot be revoked; `logout` revokes the refresh grant,
   and existing access tokens expire on their own. If revocation fails (gateway down, rotated
   keys), `logout` still deletes the local credential and warns that the grant may stay valid
@@ -508,7 +620,7 @@ for one-off launches and overrides.
 | Real shells | the shell hooks in Git Bash and PowerShell | `tests/test_codex_opencode.py` |
 | Extension unit tests | conversion, streaming, caches, folder choice, relay server | `vscode-extension/test`, `vscode-extension/local/test` |
 | Real VS Code host | the extension in a downloaded VS Code with a fake CLI and gateway | `npm run test:host` |
-| Relay interop (Linux) | the Node relay answering the Python `forwarded` client over a Unix socket | `vscode-extension/test/interop.test.ts`, CI |
+| Relay interop (Linux, macOS) | the Node relay answering the Python `forwarded` client over a Unix socket | `vscode-extension/test/interop.test.ts`, CI |
 
 Tests that run `setup` point every tool's configuration at temporary folders
 (`tests/isolation.py`), so they never touch a developer's real configuration.
@@ -542,17 +654,18 @@ Settings the gateway needs that no client change can replace; check them before 
 ### Attribution (LiteLLM)
 
 - **Tag routing** (`router_settings.enable_tag_filtering`, also settable per key/team
-  `router_settings` or `model_info`; default off): when on, a customer tag that matches no
+  `router_settings` or `model_info`; default off): when on, a label tag that matches no
   deployment fails every request with HTTP 401 ("Not allowed to access model due to tags
   configuration"), which tools take for an expired sign-in. Either keep it off, or give every
   deployment the `default` tag (`litellm_params.tags: [default]`) or set
-  `model_info.allow_fail_open: true`. Customer names starting with `!` or `&` are refused
-  because tag routing reads them as exclude/require directives.
+  `model_info.allow_fail_open: true`. Label values and tags starting with `!` or `&` are
+  refused because tag routing reads them as exclude/require directives, and a tag `default` is
+  refused because tag routing sends untagged requests to it.
 - **`general_settings.reject_clientside_metadata_tags`** must be off (default). When on, LiteLLM
   copies the `x-litellm-tags` header into `metadata.tags` on `/v1/chat/completions` and rejects
   it with HTTP 400, so OpenCode and Copilot Chat fail while Claude Code and Codex keep working.
 - **`litellm_settings.forward_client_headers_to_llm_api`** should stay off (default): when on,
-  every `x-` header, including the customer tag and the repository in
+  every `x-` header, including the label tags and the labels and repository in
   `x-litellm-spend-logs-metadata`, is forwarded to the upstream provider.
 - **`litellm_settings.disable_add_user_agent_to_request_tags: true`** is recommended: otherwise
   LiteLLM adds `User-Agent: ...` tags to every request's spend (the picker filters them, spend
@@ -561,6 +674,6 @@ Settings the gateway needs that no client change can replace; check them before 
   key only from that header and ignores the `Authorization` header every tool sends. Developers
   must not keep `x-litellm-api-key` in `ANTHROPIC_CUSTOM_HEADERS` (LiteLLM prefers it over the
   SSO token); the Claude integration refuses any `*api-key` header there.
-- **Customer catalogue**: `/tag/list` is almost always empty for SSO users (only proxy admins
-  see tags, and then all of the gateway's). Publish the customers in the central rules
-  (`customers`) so the picker works, or have developers pass `--customer`.
+- **Label catalogue**: `/tag/list` is almost always empty for SSO users (only proxy admins
+  see tags, and then all of the gateway's). Publish each label's `values` in the central rules
+  document so the picker offers them, or have developers type a value or pass `--label KEY=VALUE`.

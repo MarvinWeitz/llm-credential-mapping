@@ -33,7 +33,7 @@ exports.run = async function run() {
     assert.equal(found[0].vendor, "vkm");
   });
   const model = found.find((entry) => entry.id === "alias");
-  await check("a chat request streams text with the credential and the customer", async () => {
+  await check("a chat request streams text with the credential and the labels", async () => {
     const response = await model.sendRequest([vscode.LanguageModelChatMessage.User("Say OK")], {}, new vscode.CancellationTokenSource().token);
     const parts = await collect(response);
     assert.equal(parts.map((part) => part.value).join(""), "HOST_OK");
@@ -51,8 +51,10 @@ exports.run = async function run() {
     assert.equal(call.name, "list_files");
     assert.deepEqual(call.input, { path: "." });
   });
-  await check("the extension is active", async () => {
+  await check("the extension is active and offers its label command", async () => {
     assert.ok(vscode.extensions.getExtension("cbs-consulting.vkm").isActive);
+    const commands = await vscode.commands.getCommands(true);
+    assert.ok(commands.includes("vkm.showLabels") && !commands.includes("vkm.showCustomer"));
   });
   require("node:fs").writeFileSync(process.env.VKM_TEST_RESULTS, results.join("\n") + "\n");
   if (results.some((line) => line.startsWith("FAIL"))) throw new Error(results.join("\n"));

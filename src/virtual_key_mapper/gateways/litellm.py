@@ -1,9 +1,9 @@
-import json
 import re
+from typing import Callable
 
 from ..adapters import Api, Credential
-from ..customers import Attribution, Tag, validate_customer
 from ..errors import CredentialError
+from ..labels import JSON, LIST, MAX_ENTRY, Choice, LabelConfig, Output, validate_value
 from ..profiles import Profile
 from ..transport import JsonTransport
 
@@ -11,20 +11,31 @@ TAG_HEADER = "x-litellm-tags"
 # LiteLLM stores this JSON with each spend log entry (litellm_pre_call_utils, spend_logs_metadata).
 SPEND_METADATA_HEADER = "x-litellm-spend-logs-metadata"
 # Tags LiteLLM adds by itself (litellm_logging._get_user_agent_tags); extra_spend_tag_headers must stay
-# empty (docs/architecture.md, Gateway requirements), so other "Name: value" tags remain valid customers.
+# empty (docs/architecture.md, Gateway requirements), so other "Name: value" tags remain valid.
 _AUTOMATIC_TAG = re.compile(r"User-Agent: ", re.IGNORECASE)
+# The tag LiteLLM's tag routing sends untagged requests to.
+_ROUTING_TAG = "default"
 
 
-def _is_customer(name: object) -> bool:
-    """A valid customer name that is not one of the tags LiteLLM adds by itself."""
-    try:
-        validate_customer(name)
-    except CredentialError:
-        return False
-    return not _AUTOMATIC_TAG.match(name)
+def _reserved(tag: str) -> bool:
+    return bool(_AUTOMATIC_TAG.match(tag)) or tag == _ROUTING_TAG
 
 
-def list_tags(profile: Profile, token: str, *, transport: JsonTransport | None = None) -> list[Tag]:
+OUTPUTS = (
+    Output("tags", LIST, TAG_HEADER, lambda keys: tuple(f"{key}:${{{key}}}" for key in keys), _reserved),
+    Output("metadata", JSON, SPEND_METADATA_HEADER),
+)
+
+
+def _is_tag(name: object) -> bool:
+    """A tag vkm could have sent: valid wire text and not one LiteLLM gives another meaning to."""
+    return (
+        isinstance(name, str) and 0 < len(name) <= MAX_ENTRY and name == name.strip() and "," not in name
+        and name[0] not in "!&" and all(32 <= ord(char) <= 126 for char in name) and not _reserved(name)
+    )
+
+
+def list_tags(profile: Profile, token: str, *, transport: JsonTransport | None = None) -> list[Choice]:
     """Return sorted visible tags from this gateway; scope is server-defined and errors never become an empty catalogue."""
     try:
         rows = (transport or JsonTransport()).get_list(
@@ -33,21 +44,21 @@ def list_tags(profile: Profile, token: str, *, transport: JsonTransport | None =
     except CredentialError as error:
         raise CredentialError(
             f"Cannot read the LiteLLM tag catalogue: {error} "
-            "Ask the gateway administrator for tag-list access, or use --customer with an approved tag."
+            "Ask the gateway administrator for tag-list access, or use --label KEY=VALUE with an approved value."
         ) from None
-    tags: dict[str, Tag] = {}
+    tags: dict[str, Choice] = {}
     for row in rows:
-        # /tag/list returns spend tags, not customers: skip rows that cannot be one instead of failing the list.
+        # /tag/list returns all spend tags: skip rows vkm could not have sent instead of failing the list.
         if not isinstance(row, dict):
             continue
         name, description = row.get("name"), row.get("description")
-        if _is_customer(name) and name not in tags and (description is None or isinstance(description, str)):
-            tags[name] = Tag(name, description)
+        if _is_tag(name) and name not in tags and (description is None or isinstance(description, str)):
+            tags[name] = Choice(name, description=description)
     return [tag for _, tag in sorted(tags.items())]
 
 
 class LiteLLMGateway:
-    """A LiteLLM proxy: Anthropic and OpenAI APIs on one origin, customers as request tags."""
+    """A LiteLLM proxy: Anthropic and OpenAI APIs on one origin, labels as request tags and spend-log metadata."""
 
     def __init__(self, profile: Profile) -> None:
         self.profile = profile
@@ -59,18 +70,23 @@ class LiteLLMGateway:
             return self.profile.gateway + "/v1"
         raise CredentialError(f"The LiteLLM gateway does not offer the {api} API.")
 
-    def attribution_headers(self, attribution: Attribution) -> dict[str, str]:
-        """The customer as a request tag, plus where it came from as spend-log metadata for later re-attribution."""
-        metadata = {"customer_source": attribution.source}
-        if attribution.repository is not None:
-            metadata["repository"] = attribution.repository
-        return {
-            TAG_HEADER: attribution.customer,
-            SPEND_METADATA_HEADER: json.dumps(metadata, separators=(",", ":"), sort_keys=True),
-        }
+    @staticmethod
+    def outputs() -> tuple[Output, ...]:
+        return OUTPUTS
 
-    def attribution_header_names(self) -> tuple[str, ...]:
-        return (TAG_HEADER, SPEND_METADATA_HEADER)
-
-    def visible_customers(self, credential: Credential) -> list[Tag] | None:
-        return list_tags(self.profile, credential.secret)
+    def catalogue(self, key: str, credential: Callable[[], Credential], config: LabelConfig) -> list[Choice] | None:
+        """Values for ``key`` from /tag/list, through each tags entry of the form PREFIX${key}SUFFIX; else no sign-in."""
+        inversions = config.inversions("tags", key)
+        if not inversions:
+            return None
+        found: dict[str, Choice] = {}
+        for tag in list_tags(self.profile, credential().secret):
+            for prefix, suffix in inversions:
+                if len(tag.id) > len(prefix) + len(suffix) and tag.id.startswith(prefix) and tag.id.endswith(suffix):
+                    value = tag.id[len(prefix):len(tag.id) - len(suffix)]
+                    try:
+                        validate_value(value, key)
+                    except CredentialError:
+                        continue
+                    found.setdefault(value, Choice(value, description=tag.description))
+        return [choice for _, choice in sorted(found.items())]

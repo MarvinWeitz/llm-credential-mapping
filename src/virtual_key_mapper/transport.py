@@ -105,7 +105,7 @@ class JsonTransport:
             raise CredentialError("Gateway JSON response exceeded the size limit.")
         try:
             value = json.loads(raw)
-        except (ValueError, UnicodeError):
+        except (ValueError, UnicodeError, RecursionError):
             raise CredentialError("Gateway returned invalid JSON.") from None
         if not isinstance(value, (dict, list)):
             raise CredentialError("Gateway returned an unexpected JSON structure.")
@@ -116,7 +116,7 @@ def _oauth_error(response: HTTPError, sent: list) -> tuple[str | None, str]:
     """The registered OAuth ``error`` code of an error body and a message suffix; nothing for other bodies."""
     try:
         value = json.loads(response.read(65536))
-    except (ValueError, UnicodeError, OSError, HTTPException):
+    except (ValueError, UnicodeError, RecursionError, OSError, HTTPException):
         return None, ""
     code = value.get("error") if isinstance(value, dict) else None
     if not isinstance(code, str) or code not in OAUTH_ERRORS:
