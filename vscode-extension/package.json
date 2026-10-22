@@ -1,7 +1,7 @@
 {
   "name": "vkm",
   "displayName": "Virtual Key Mapper for Copilot Chat",
-  "description": "Gateway models in Copilot Chat with your vkm sign-in and each workspace's customer.",
+  "description": "Gateway models in Copilot Chat with your vkm sign-in and each workspace's labels.",
   "version": "0.2.0",
   "publisher": "cbs-consulting",
   "icon": "images/icon.png",
@@ -33,8 +33,8 @@
     ],
     "commands": [
       {
-        "command": "vkm.showCustomer",
-        "title": "Show or choose the customer for Copilot Chat",
+        "command": "vkm.showLabels",
+        "title": "Show or assign labels",
         "category": "Virtual Key Mapper"
       },
       {
@@ -44,7 +44,7 @@
       },
       {
         "command": "vkm.refresh",
-        "title": "Refresh models and customer",
+        "title": "Refresh models and labels",
         "category": "Virtual Key Mapper"
       }
     ],

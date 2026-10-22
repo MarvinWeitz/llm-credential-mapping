@@ -6,7 +6,12 @@ extension on the local machine, which answers with the local CLI (and its OS vau
 access tokens reach the remote side; the refresh grant never leaves the local vault.
 
 Protocol: one JSON line per connection, ``{"version": 1, "operation": "token"|"profile", "profile": NAME}``,
-answered by ``{"ok": true, "result": {...}}`` or ``{"ok": false, "error": "..."}``.
+answered by ``{"ok": true, "result": {...}}`` or ``{"ok": false, "error": "..."}``. A "token" result is
+``{access_token, expires_at, profile, user}``; this module asks only for tokens. The extension asks for
+"profile" to create the remote profile: ``{name, gateway, endpoints, rules, labels, outputs}``, where
+``labels`` and ``outputs`` are the local profile's own definitions (``Profile.definitions()``), not the
+merged ones; the remote CLI fetches the central label rules itself. Labels never travel with tokens: they
+are resolved in the remote window by the remote CLI.
 """
 
 import json
@@ -95,7 +100,7 @@ def request(operation: str, host_profile: str | None, path: str,
             raise CredentialError("The connection to your local sign-in failed; retry.") from None
     try:
         answer = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise CredentialError("Your local sign-in sent an unreadable answer; update both VS Code extensions.") from None
     if not isinstance(answer, dict) or answer.get("ok") not in (True, False):
         raise CredentialError("Your local sign-in sent an unexpected answer; update both VS Code extensions.")

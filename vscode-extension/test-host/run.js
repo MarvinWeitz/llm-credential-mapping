@@ -64,11 +64,12 @@ async function main() {
   assert.equal(chats.length, 2, JSON.stringify(requests.map((request) => request.url)));
   for (const chat of chats) {
     assert.equal(chat.headers.authorization, "Bearer host-token");
-    assert.equal(chat.headers["x-test-customer"], "customer:host");
+    assert.equal(chat.headers["x-test-tags"], "customer:host");
+    assert.equal(chat.headers["x-test-metadata"], '{"labels":{"customer":"host"}}');
     assert.equal(chat.body.stream, true);
   }
   assert.equal(chats[1].body.tools[0].function.name, "list_files");
-  console.log("ok gateway saw the credential, the customer headers and the tools");
+  console.log("ok gateway saw the credential, the label headers and the tools");
   fs.rmSync(root, { recursive: true, force: true });
 }
 

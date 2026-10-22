@@ -7,9 +7,7 @@ from .adapters import Auth, Gateway, Integration
 from .auth import forwarded, litellm_sso
 from .errors import CredentialError
 from .gateways.litellm import LiteLLMGateway
-from .integrations.claude import Claude
-from .integrations.codex import Codex
-from .integrations.opencode import OpenCode
+from .labels import Output
 from .profiles import Profile, ProfileStore
 from .storage import SecretStore
 
@@ -30,14 +28,23 @@ AUTH: dict[str, AuthKind] = {
     "litellm-sso": AuthKind(litellm_sso.LiteLLMSSO, litellm_sso.settings, frozenset({"litellm"})),
     "forwarded": AuthKind(forwarded.Forwarded, forwarded.settings),
 }
+# A gateway kind is its adapter class; ``outputs()`` is static, so profiles validate without building one.
 GATEWAYS: dict[str, Callable[[Profile], Gateway]] = {
     "litellm": LiteLLMGateway,
 }
-INTEGRATIONS: dict[str, Integration] = {
-    "claude": Claude(),
-    "codex": Codex(),
-    "opencode": OpenCode(),
-}
+
+
+def __getattr__(name: str) -> dict[str, Integration]:
+    """``INTEGRATIONS``, loaded on first use: validating a profile does not import every tool integration."""
+    if name != "INTEGRATIONS":
+        raise AttributeError(name)
+    from .integrations.claude import Claude
+    from .integrations.codex import Codex
+    from .integrations.opencode import OpenCode
+
+    integrations = {"claude": Claude(), "codex": Codex(), "opencode": OpenCode()}
+    globals()["INTEGRATIONS"] = integrations
+    return integrations
 
 
 def validate_profile(gateway_type: str, auth_type: str, settings: dict) -> dict:
@@ -58,3 +65,10 @@ def auth_for(profile: Profile, store: ProfileStore, secrets: Callable[[], Secret
 
 def gateway_for(profile: Profile) -> Gateway:
     return GATEWAYS[profile.gateway_type](profile)
+
+
+def gateway_outputs(gateway_type: str) -> tuple[Output, ...]:
+    """The outputs a gateway kind can fill (``Gateway.outputs``), without a profile."""
+    if gateway_type not in GATEWAYS:
+        raise CredentialError(f"Unknown gateway type; choose one of: {', '.join(sorted(GATEWAYS))}.")
+    return tuple(GATEWAYS[gateway_type].outputs())

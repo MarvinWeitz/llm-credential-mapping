@@ -21,14 +21,28 @@ test("profile requests return the nonsecret description, using the first allowed
     return JSON.stringify({ name: "work", gateway: { type: "litellm", url: "https://g.example" }, auth: { type: "litellm-sso", team_id: "t" }, endpoints: {} });
   }, ["work", "other"]);
   assert.deepEqual(calls, [["profile", "show", "work", "--json"]]);
-  assert.deepEqual(result, { ok: true, result: { name: "work", gateway: { type: "litellm", url: "https://g.example" }, endpoints: {}, rules: null } });
+  assert.deepEqual(result, {
+    ok: true, result: { name: "work", gateway: { type: "litellm", url: "https://g.example" }, endpoints: {}, rules: null, labels: [], outputs: {} },
+  });
 });
 
-test("profile requests pass on the central customer rules, which the container profile needs too", async () => {
-  const rules = "https://g.example/customer-rules.json";
+test("profile requests pass on the central label rules and the profile's own labels and outputs", async () => {
+  const rules = "https://g.example/label-rules.json";
+  const labels = [{ key: "project", required: true, description: "-starts with a dash", values: [{ id: "web", name: "Web" }] }];
+  const outputs = { tags: { format: ["${customer}", "${customer}:${project}"] }, metadata: { enabled: false } };
+  const result = await answer({ operation: "profile", profile: "" }, async () => JSON.stringify({
+    name: "work", gateway: { type: "litellm", url: "https://g.example" }, auth: { type: "litellm-sso", team_id: "t" },
+    endpoints: {}, rules, labels, outputs, effective: { labels: [{ key: "customer" }] },
+  }), []);
+  assert.deepEqual(result, {
+    ok: true, result: { name: "work", gateway: { type: "litellm", url: "https://g.example" }, endpoints: {}, rules, labels, outputs },
+  });
+});
+
+test("labels and outputs of another shape are passed on as none", async () => {
   const result = await answer({ operation: "profile", profile: "" }, async () =>
-    JSON.stringify({ name: "work", gateway: { type: "litellm", url: "https://g.example" }, endpoints: {}, rules }), []);
-  assert.equal(result.ok && (result.result as { rules: unknown }).rules, rules);
+    JSON.stringify({ name: "work", gateway: {}, endpoints: {}, labels: { key: "x" }, outputs: ["tags"] }), []);
+  assert.deepEqual(result.ok && [(result.result as any).labels, (result.result as any).outputs], [[], {}]);
 });
 
 test("only the allowed local profiles are relayed, by default only the local default one", async () => {

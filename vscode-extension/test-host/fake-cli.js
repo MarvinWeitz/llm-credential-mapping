@@ -10,11 +10,18 @@ if (args[0] === "profile" && args[1] === "show") {
 } else if (args[0] === "token") {
   console.log(JSON.stringify({ access_token: "host-token", expires_at: null, profile: "test", user: "tester" }));
 } else if (args[0] === "repo" && args[1] === "show") {
+  // The shape of `vkm repo show --json`, which exits 0 also while required labels are missing.
   const directory = args[args.indexOf("--directory") + 1];
-  if (/unmapped/.test(directory)) fail(`No customer is assigned to folder ${directory}. Nothing was sent untagged.`);
+  const missing = /unmapped/.test(directory);
   console.log(JSON.stringify({
-    customer: "customer:host", source: "file", detail: "test", repository: null,
-    headers: { "x-test-customer": "customer:host", "x-test-source": "file" },
+    labels: [{
+      key: "customer", value: missing ? null : "host", name: missing ? null : "Host", source: missing ? null : "file",
+      detail: missing ? null : `${directory}/.vkm`, required: true, description: "Who the work is billed to",
+    }],
+    missing: missing ? ["customer"] : [], ignored: [], repository: null, complete: !missing,
+    headers: missing ? {} : { "x-test-tags": "customer:host", "x-test-metadata": '{"labels":{"customer":"host"}}' },
+    message: missing ? `Required labels have no value: customer for folder ${directory}. Nothing was sent.` : null,
+    notices: [],
   }));
 } else {
   fail(`unexpected arguments ${args.join(" ")}`);

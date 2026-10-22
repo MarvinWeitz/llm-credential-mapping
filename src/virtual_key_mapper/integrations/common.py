@@ -3,32 +3,52 @@ import re
 import shlex
 import shutil
 import subprocess
-from typing import Sequence
+from typing import Mapping, MutableMapping, Sequence
 
 from ..adapters import IntegrationContext
-from ..customers import Attribution
 from ..errors import CredentialError
+from ..labels import LAUNCH_VARIABLE, Attribution, launch_marker, parse_launch_marker
 
 TOKEN_VARIABLE = "VKM_TOKEN"
-# The customer a launcher chose for its child. Not VKM_CUSTOMER: that one is the user's explicit override,
-# and the resolver must not mistake every launched tool for an explicit choice.
-CUSTOMER_VARIABLE = "VKM_LAUNCH_CUSTOMER"
+# Set with the header variables by the shell hook and 'run codex': the session's attribution was resolved.
+ATTRIBUTION_VARIABLE = "VKM_ATTRIBUTION"
+HEADER_PREFIX = "VKM_HEADER_"
+
+
+def set_launch_marker(env: MutableMapping[str, str], attribution: Attribution | None) -> None:
+    """Record the launch's --label values (VKM_LAUNCH_LABELS) for the child; drop an inherited marker otherwise.
+
+    Only explicit labels: tools that resolve per directory (the Claude guard, the OpenCode plugin) pass
+    them back with 'repo show --launch', and everything else still comes from the directory.
+    """
+    explicit = {} if attribution is None else {
+        label.key: label.value for label in attribution.labels if label.source == "explicit"
+    }
+    if explicit:
+        env[LAUNCH_VARIABLE] = launch_marker(explicit)
+    else:
+        env.pop(LAUNCH_VARIABLE, None)
+
+
+def launch_labels(environ: Mapping[str, str]) -> dict[str, str | None]:
+    """The --label values of the launch that started this process, to resolve as explicit; {} if none or malformed."""
+    return parse_launch_marker(environ.get(LAUNCH_VARIABLE))
 
 
 def child_environment(context: IntegrationContext, attribution: Attribution | None) -> dict[str, str]:
-    """Copy this process's environment for one child and add its credential and customer; the parent is unchanged."""
+    """Copy this process's environment for one child with its credential and launch marker; the parent is unchanged."""
     env = os.environ.copy()
     env[TOKEN_VARIABLE] = context.token
-    if attribution is not None:
-        env[CUSTOMER_VARIABLE] = attribution.customer
+    set_launch_marker(env, attribution)
     return env
 
 
 def attribution_headers(context: IntegrationContext, attribution: Attribution | None) -> dict[str, str]:
-    """The gateway's headers for this customer; names and values must be safe in any tool's header configuration."""
-    if attribution is None:
-        return {}
-    headers = context.gateway.attribution_headers(attribution)
+    """The gateway's headers for these labels; names and values must be safe in any tool's header configuration.
+
+    Raises (MissingLabelsError) while required labels have no value, so nothing is configured without them.
+    """
+    headers = context.headers(attribution)
     for name, value in headers.items():
         if not re.fullmatch(r"[A-Za-z0-9-]+", name) or any(not 32 <= ord(char) <= 126 for char in value):
             raise CredentialError("The gateway adapter produced an invalid attribution header.")
@@ -54,7 +74,30 @@ def shell_command(argv: Sequence[str]) -> str:
 
 def header_variable(name: str) -> str:
     """A fixed environment variable for one attribution header, for tools that read header values from the environment."""
-    return "VKM_HEADER_" + re.sub(r"[^A-Z0-9]", "_", name.upper())
+    return HEADER_PREFIX + re.sub(r"[^A-Z0-9]", "_", name.upper())
+
+
+def header_environment(context: IntegrationContext, attribution: Attribution | None) -> dict[str, str | None]:
+    """Header variables for tools that read headers from the environment (Codex): a value, or None to unset.
+
+    Every header the adapter can send is listed, so an omitted one never keeps another folder's value.
+    ATTRIBUTION_VARIABLE is set only with an attribution; without one everything is unset.
+    """
+    values: dict[str, str | None] = {header_variable(name): None for name in context.labels.header_names()}
+    headers = attribution_headers(context, attribution)
+    for name, value in headers.items():
+        values[header_variable(name)] = value
+    values[ATTRIBUTION_VARIABLE] = "1" if attribution is not None else None
+    return values
+
+
+def require_attribution_environment(environ: Mapping[str, str]) -> None:
+    """For ``token --require-attribution-env``: no resolved attribution in this session, no credential."""
+    if environ.get(ATTRIBUTION_VARIABLE) != "1":
+        raise CredentialError(
+            f"No labels for this session ({ATTRIBUTION_VARIABLE} not set). Add the hook from "
+            "'vkm shell-init SHELL' to your shell profile, or start the tool with 'vkm run'."
+        )
 
 
 def run(name: str, command: list[str], env: dict[str, str]) -> int:

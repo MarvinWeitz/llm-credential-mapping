@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { serve } from "../src/agent";
+import { remoteProfileArgs } from "../src/cli";
 
 const python = process.env.VKM_TEST_PYTHON ?? "python3";
 const available = process.platform !== "win32"
@@ -34,9 +35,15 @@ test("the CLI's forwarded sign-in gets its token from the relay", { skip: !avail
       execFile(python, ["-m", "virtual_key_mapper", "--home", home, ...args], { env },
         (error, stdout, stderr) => (error ? reject(new Error(stderr)) : resolve(stdout)));
     });
-    await cli("profile", "add", "container", "--gateway", "https://gateway.example", "--auth", "forwarded", "--host-profile", "work");
+    // The profile as the extension creates it from the local one: one call, with the local profile's own definitions.
+    const labels = [{ key: "customer", required: true, description: "-Who pays", values: [{ id: "acme", name: "Acme" }], strict: true }];
+    const outputs = { tags: { format: ["${customer}"] } };
+    const local = { name: "work", gateway: { type: "litellm", url: "https://gateway.example" }, rules: null, labels, outputs };
+    await cli(...remoteProfileArgs(local).args);
     assert.equal(await cli("token"), "relayed-token\n");
     assert.deepEqual(seen, [{ operation: "token", profile: "work" }]);
+    const shown = JSON.parse(await cli("profile", "show", "--json"));
+    assert.deepEqual([shown.labels, shown.outputs, shown.auth], [labels, outputs, { type: "forwarded", host_profile: "work" }]);
   } finally {
     server.close();
     execFileSync("rm", ["-rf", directory]);

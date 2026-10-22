@@ -15,8 +15,9 @@ from virtual_key_mapper.adapters import Credential, IntegrationContext
 from virtual_key_mapper.cli import main
 from virtual_key_mapper.errors import CredentialError
 from virtual_key_mapper.integrations.codex import Codex, config_path as codex_config
-from virtual_key_mapper.integrations.common import header_variable
+from virtual_key_mapper.integrations.common import ATTRIBUTION_VARIABLE, header_variable
 from virtual_key_mapper.integrations.opencode import OpenCode, PLACEHOLDER_KEY, config_path as opencode_config
+from virtual_key_mapper.labels import LabelDefinition, OutputOverride
 from virtual_key_mapper.profiles import Profile, ProfileStore
 from virtual_key_mapper.registry import gateway_for
 from virtual_key_mapper.shells import SHELLS, assignments, hook, without_daemon
@@ -32,7 +33,10 @@ class ToolTestCase(unittest.TestCase):
         self.root = isolate_tool_configuration(self)
         self.home = self.root / "credentials"
         self.home.mkdir()
-        self.profile = Profile("unit", "https://gateway.example", {"team_id": "t"})
+        self.profile = Profile(
+            "unit", "https://gateway.example", {"team_id": "t"},
+            labels=(LabelDefinition("customer", required=True), LabelDefinition("project")),
+        )
         self.context = IntegrationContext(self.profile, gateway_for(self.profile), "secret", self.home)
 
 
@@ -55,6 +59,13 @@ class CodexSetupTests(ToolTestCase):
         self.assertEqual(path.read_text(encoding="utf-8").count("vkm tables"), 2)
         Codex().remove(self.context)
         self.assertEqual(path.read_text(encoding="utf-8"), original)
+
+    def test_setup_registers_headers_that_are_switched_off(self):
+        # config.toml is written once: a later change to the outputs must not need a new setup.
+        profile = Profile("unit", "https://gateway.example", {"team_id": "t"}, outputs={"metadata": OutputOverride(None, False)})
+        Codex().setup(IntegrationContext(profile, gateway_for(profile), "secret", self.home))
+        provider = tomllib.loads(codex_config().read_text(encoding="utf-8"))["model_providers"]["vkm"]
+        self.assertEqual(provider["env_http_headers"], {"x-litellm-tags": TAG, "x-litellm-spend-logs-metadata": METADATA})
 
     def test_setup_refuses_another_provider_and_keeps_an_existing_model(self):
         path = codex_config()
@@ -113,6 +124,8 @@ class OpenCodeSetupTests(ToolTestCase):
         plugin = self.home / "opencode" / "vkm-unit.js"
         self.assertEqual(config["plugin"][1], plugin.as_uri())
         self.assertIn('"profile": "unit"', plugin.read_text(encoding="utf-8"))
+        self.assertIn('"headers": ["x-litellm-tags", "x-litellm-spend-logs-metadata"]', plugin.read_text(encoding="utf-8"))
+        self.assertIn('"repo", "show", "--json", "--launch"', plugin.read_text(encoding="utf-8"))
         self.assertNotIn("secret", plugin.read_text(encoding="utf-8"))
         self.setup_opencode(listed=["alias"])
         self.assertEqual(len(json.loads(path.read_text(encoding="utf-8"))["plugin"]), 2)
@@ -137,6 +150,71 @@ class OpenCodeSetupTests(ToolTestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), "{")
 
 
+PLUGIN_CLI = """
+import json, os, sys
+args = sys.argv[1:]
+if "token" in args:
+    print(json.dumps({"access_token": "fresh", "expires_at": None}))
+else:
+    with open(os.environ["VKM_TEST_CALLS"], "a") as calls:
+        calls.write(json.dumps(args) + "\\n")
+    print(os.environ["VKM_TEST_SHOWN"])
+"""
+
+PLUGIN_HARNESS = """
+const { Vkm } = await import(process.argv[1]);
+const hooks = await Vkm({ directory: "/work" });
+const output = { headers: JSON.parse(process.argv[2]) };
+try {
+  await hooks["chat.headers"]({ model: { providerID: "vkm" }, provider: { options: { baseURL: process.argv[3] } } }, output);
+  process.stdout.write(JSON.stringify(output.headers));
+} catch (error) {
+  process.stdout.write("ERROR " + error.message);
+}
+"""
+
+
+class OpenCodePluginTests(ToolTestCase):
+    """The generated plugin itself, under Node, with a stand-in CLI."""
+
+    def call(self, shown, headers=None):
+        node = shutil.which("node")
+        if node is None:
+            unavailable(self, "opencode", "node is not installed")
+        stub = self.root / "cli.py"
+        stub.write_text(PLUGIN_CLI, encoding="utf-8")
+        context = IntegrationContext(self.profile, gateway_for(self.profile), "", self.home, cli=(sys.executable, str(stub)))
+        plugin = OpenCode().plugin(context)
+        calls = self.root / "calls.txt"
+        result = subprocess.run(
+            [node, "--input-type=module", "-e", PLUGIN_HARNESS, plugin.as_uri(), json.dumps(headers or {}),
+             "https://gateway.example/v1"],
+            capture_output=True, text=True, timeout=60, check=False,
+            env={**os.environ, "VKM_TEST_SHOWN": json.dumps(shown), "VKM_TEST_CALLS": str(calls)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout, [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+
+    def test_complete_labels_replace_every_attribution_header(self):
+        shown = {"complete": True, "headers": {"x-litellm-tags": "customer:acme"}, "message": None}
+        stdout, calls = self.call(shown, {"X-LiteLLM-Tags": "stale", "X-LiteLLM-Spend-Logs-Metadata": "{}", "X-Trace": "t"})
+        self.assertEqual(json.loads(stdout), {"X-Trace": "t", "x-litellm-tags": "customer:acme", "Authorization": "Bearer fresh"})
+        self.assertEqual([call[2:] for call in calls], [["repo", "show", "--json", "--launch", "--profile", "unit", "--directory", "/work"]])
+
+    def test_incomplete_labels_block_the_request(self):
+        message = "Required labels have no value: customer for folder /work. Nothing was sent."
+        for shown in (
+            {"complete": False, "headers": {}, "message": message},
+            {"headers": {"x-litellm-tags": "customer:acme"}},
+            {"complete": True, "headers": None},
+        ):
+            with self.subTest(shown=shown):
+                stdout, _ = self.call(shown)
+                self.assertTrue(stdout.startswith("ERROR vkm: "), stdout)
+                self.assertNotIn("fresh", stdout)
+        self.assertIn(message, self.call({"complete": False, "headers": {}, "message": message})[0])
+
+
 class CliTests(ToolTestCase):
     def setUp(self):
         super().setUp()
@@ -148,36 +226,66 @@ class CliTests(ToolTestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), patch.dict(os.environ, environ or {}), \
                 patch("virtual_key_mapper.cli.find_checkout", return_value=None), \
-                patch("virtual_key_mapper.customers.Path.home", return_value=self.root), \
+                patch("virtual_key_mapper.resolve.Path.home", return_value=self.root), \
                 patch("virtual_key_mapper.cli.NativeKeyring"), \
                 patch("virtual_key_mapper.cli.auth_for") as auth:
             auth.return_value.credential.return_value = Credential("token-secret")
             result = main(["--home", str(self.home), *args])
         return result, stdout.getvalue(), stderr.getvalue(), auth
 
-    def test_token_for_environment_driven_tools_requires_the_customer_variables(self):
-        for name in (TAG, METADATA):
+    def test_token_for_environment_driven_tools_requires_the_attribution_variable(self):
+        for name in (TAG, METADATA, ATTRIBUTION_VARIABLE):
             os.environ.pop(name, None)
-        result, stdout, stderr, auth = self.call("token", "--require-attribution-env")
+        result, stdout, stderr, auth = self.call("token", "--require-attribution-env", environ={TAG: "customer:acme"})
         self.assertEqual((result, stdout), (1, ""))
         self.assertIn("shell-init", stderr)
         auth.return_value.credential.assert_not_called()
-        result, stdout, _, _ = self.call("token", "--require-attribution-env", environ={TAG: "customer:A", METADATA: "{}"})
+        # Omitted headers (an optional label without a value, an output switched off) do not refuse.
+        result, stdout, _, _ = self.call("token", "--require-attribution-env", environ={ATTRIBUTION_VARIABLE: "1"})
         self.assertEqual((result, stdout), (0, "token-secret\n"))
 
     def test_repo_show_env_sets_or_unsets_the_header_variables(self):
+        unset = [f"unset {TAG}", f"unset {METADATA}", f"unset {ATTRIBUTION_VARIABLE}"]
         result, stdout, stderr, _ = self.call("repo", "show", "--env", "bash", "--directory", str(self.folder))
-        self.assertEqual((result, stderr), (0, ""))
-        self.assertEqual(stdout.splitlines(), [f"unset {TAG}", f"unset {METADATA}"])
-        (self.folder / ".vkm").write_text("customer = \"customer:A\"\n", encoding="utf-8")
+        self.assertEqual(result, 0)
+        self.assertEqual(stdout.splitlines(), unset)  # The required customer has no value: nothing is set.
+        (self.folder / ".vkm").write_text('[labels]\ncustomer = "acme"\nproject = "web"\n', encoding="utf-8")
         _, stdout, _, _ = self.call("repo", "show", "--env", "pwsh", "--directory", str(self.folder))
-        self.assertIn(f"$env:{TAG} = 'customer:A'", stdout)
-        self.assertIn(f"$env:{METADATA} = '{{\"customer_source\":\"file\"}}'", stdout)
-        (self.folder / ".vkm").write_text("customer = 'a,b'\n", encoding="utf-8")
+        self.assertIn(f"$env:{TAG} = 'customer:acme,project:web'", stdout)
+        self.assertIn(
+            f'$env:{METADATA} = \'{{"labels":{{"customer":"acme","project":"web"}},"sources":{{"customer":"file","project":"file"}}}}\'',
+            stdout,
+        )
+        self.assertIn(f"$env:{ATTRIBUTION_VARIABLE} = '1'", stdout)
+        self.assertNotIn("VKM_LABEL_", stdout)
+        self.assertNotIn("VKM_LAUNCH_LABELS", stdout)
+        (self.folder / ".vkm").write_text('[labels]\ncustomer = "acme"\n', encoding="utf-8")
+        _, stdout, _, _ = self.call("repo", "show", "--env", "bash", "--directory", str(self.folder))
+        self.assertIn(f"export {TAG}=customer:acme", stdout)
+        (self.folder / ".vkm").write_text("[labels]\ncustomer = 'a,b'\n", encoding="utf-8")
         result, stdout, stderr, _ = self.call("repo", "show", "--env", "fish", "--directory", str(self.folder))
         self.assertEqual(result, 0)
         self.assertIn(f"set -e {TAG}", stdout)
+        self.assertIn(f"set -e {ATTRIBUTION_VARIABLE}", stdout)
         self.assertIn(".vkm", stderr)
+
+    def test_repo_show_env_unsets_everything_when_the_labels_cannot_be_resolved(self):
+        stale = {TAG: "customer:stale", "VKM_HEADER_X_OLD": "x", ATTRIBUTION_VARIABLE: "1"}
+        expected = [f"unset {name}" for name in (TAG, METADATA, "VKM_HEADER_X_OLD", ATTRIBUTION_VARIABLE)]
+        with patch("virtual_key_mapper.cli.resolve_labels", side_effect=RuntimeError("boom")):
+            result, stdout, stderr, _ = self.call("repo", "show", "--env", "bash", "--directory", str(self.folder), environ=stale)
+        self.assertEqual((result, stdout.splitlines()), (0, expected))
+        self.assertIn("could not be resolved", stderr)
+        # A profile that cannot be loaded (renamed, or a corrupt profiles.json) still unsets what the environment has.
+        for args, broken in ((["--profile", "renamed"], None), ([], "{")):
+            if broken is not None:
+                (self.home / "profiles.json").write_text(broken, encoding="utf-8")
+            with self.subTest(args=args):
+                result, stdout, _, _ = self.call(
+                    "repo", "show", "--env", "bash", "--directory", str(self.folder), *args, environ=stale,
+                )
+                self.assertEqual(result, 0)
+                self.assertEqual(stdout.splitlines(), [f"unset {name}" for name in (TAG, "VKM_HEADER_X_OLD", ATTRIBUTION_VARIABLE)])
 
     def test_terminal_command_loads_the_hook_without_a_script_file(self):
         # For machines whose execution policy blocks profiles: -Command is not a script file.
@@ -204,6 +312,7 @@ class CliTests(ToolTestCase):
                 self.assertEqual(result, 0)
                 self.assertIn("repo", stdout)
                 self.assertIn("unit", stdout)
+                self.assertIn(ATTRIBUTION_VARIABLE, stdout)  # Unset before vkm runs, so a failing vkm cannot leave it set.
 
 
 class ShellTests(unittest.TestCase):
@@ -285,6 +394,23 @@ class ShellTests(unittest.TestCase):
                 with self.subTest(shell=name):
                     output = self.run_shell(name, without_daemon(name) + "\ncodex exec hi", path)
                     self.assertEqual(output.split(), ["--no-daemon", "exec", "hi"])
+
+    def test_hooks_unset_the_attribution_variable_when_the_command_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory).resolve()
+            for name, cd, printer in (
+                ("bash", f"cd {json.dumps(folder.as_posix())} && __vkm_hook", 'printf "%s" "${VKM_TEST_B-unset}"'),
+                ("zsh", f"cd {json.dumps(folder.as_posix())}", 'printf "%s" "${VKM_TEST_B-unset}"'),
+                ("fish", f"cd {json.dumps(folder.as_posix())}", "set -q VKM_TEST_B; and printf set; or printf unset"),
+                (
+                    "pwsh", f"Set-Location -LiteralPath '{folder}'; prompt | Out-Null",
+                    '[Console]::Write($(if ($env:VKM_TEST_B) { "set" } else { "unset" }))',
+                ),
+            ):
+                with self.subTest(shell=name):
+                    argv = [sys.executable, "-c", "raise SystemExit(1)"]
+                    output = self.run_shell(name, hook(name, argv, ("VKM_TEST_B",)) + "\n" + cd + "\n" + printer)
+                    self.assertEqual(output.strip(), "unset")
 
     def test_pwsh_hook_survives_loading_the_profile_twice(self):
         # '. $PROFILE' after an edit must not make the wrapper call itself.

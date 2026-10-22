@@ -60,6 +60,7 @@ class ForwardedTests(unittest.TestCase):
         for answer, expected in (
             ({"ok": False, "error": "No login for 'work'; run 'vkm login --profile work'."}, "No login"),
             (b"not json\n", "unreadable"),
+            (b"[" * 100000 + b"\n", "unreadable"),  # Too deep for the parser: still a clear error.
             ({"ok": True}, "unexpected"),
             ({"ok": True, "result": {"access_token": "with space"}}, "invalid token"),
             ({"ok": True, "result": {"access_token": "t", "expires_at": "soon"}}, "invalid token"),
@@ -129,6 +130,12 @@ class ForwardedTests(unittest.TestCase):
                 forwarded.settings(values)
 
 
+DEFINITIONS = {
+    "labels": [{"key": "customer", "required": True, "values": [{"id": "acme", "name": "Acme"}], "strict": True}],
+    "outputs": {"tags": {"format": ["${customer}"]}},
+}
+
+
 class ForwardedCliTests(unittest.TestCase):
     def test_a_container_profile_works_without_an_os_vault(self):
         with tempfile.TemporaryDirectory() as home:
@@ -138,9 +145,10 @@ class ForwardedCliTests(unittest.TestCase):
                     patch("virtual_key_mapper.cli.NativeKeyring", side_effect=AssertionError("no vault here")), \
                     patch.object(forwarded, "_connect", agent.connect), \
                     patch.dict(os.environ, {"VKM_AGENT": "/tmp/agent.sock"}):
+                # As the VS Code extension creates it: the local profile's own definitions in the same call.
                 self.assertEqual(main([
                     "--home", home, "profile", "add", "container", "--gateway", "https://gateway.example",
-                    "--auth", "forwarded", "--host-profile", "work",
+                    "--auth", "forwarded", "--host-profile", "work", f"--definitions={json.dumps(DEFINITIONS)}",
                 ]), 0)
                 stdout.truncate(0)
                 stdout.seek(0)
@@ -148,4 +156,7 @@ class ForwardedCliTests(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "access-from-host\n")
             self.assertEqual(agent.paths, ["/tmp/agent.sock"])
             saved = json.loads((Path(home) / "profiles.json").read_text(encoding="utf-8"))
-            self.assertEqual(saved["profiles"]["container"]["auth"], {"type": "forwarded", "host_profile": "work"})
+            container = saved["profiles"]["container"]
+            self.assertEqual(container["auth"], {"type": "forwarded", "host_profile": "work"})
+            self.assertEqual((container["labels"], container["outputs"]), (DEFINITIONS["labels"], DEFINITIONS["outputs"]))
+            self.assertEqual(agent.requests, [{"version": 1, "operation": "token", "profile": "work"}], "labels never travel")

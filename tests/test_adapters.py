@@ -15,14 +15,18 @@ from urllib.request import url2pathname
 from virtual_key_mapper import registry
 from virtual_key_mapper.adapters import Api, Credential, IntegrationContext
 from virtual_key_mapper.cli import main
-from virtual_key_mapper.customers import Attribution
 from virtual_key_mapper.errors import CredentialError
 from virtual_key_mapper.integrations.common import header_variable, shell_command
+from virtual_key_mapper.labels import JSON, LIST, Attribution, Label, LabelDefinition, Output
 from virtual_key_mapper.profiles import Profile
 
 
+LABELS = (LabelDefinition("customer", required=True),)
+META = '{"labels":{"customer":"A"},"sources":{"customer":"explicit"}}'
+
+
 class FakeGateway:
-    """A gateway with its own paths and attribution headers and no customer catalogue."""
+    """A gateway with its own paths and outputs and no catalogue."""
 
     apis = {
         Api.ANTHROPIC_MESSAGES: "/anthropic",
@@ -38,13 +42,14 @@ class FakeGateway:
             raise CredentialError(f"The fake gateway does not offer the {api} API.")
         return self.profile.gateway + self.apis[api]
 
-    def attribution_headers(self, attribution):
-        return {"x-test-customer": attribution.customer, "x-test-source": attribution.source}
+    @staticmethod
+    def outputs():
+        return (
+            Output("customer", LIST, "x-test-customer", lambda keys: tuple(f"${{{key}}}" for key in keys[:1])),
+            Output("meta", JSON, "x-test-meta"),
+        )
 
-    def attribution_header_names(self):
-        return ("x-test-customer", "x-test-source")
-
-    def visible_customers(self, credential):
+    def catalogue(self, key, credential, config):
         return None
 
 
@@ -82,11 +87,11 @@ class FakeAdapterTests(unittest.TestCase):
         for adapter in adapters:
             adapter.start()
             self.addCleanup(adapter.stop)
-        self.profile = Profile("fake", "https://fake.example", {}, "fake", "fixed")
+        self.profile = Profile("fake", "https://fake.example", {}, "fake", "fixed", labels=LABELS)
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         self.context = IntegrationContext(self.profile, FakeGateway(self.profile), "fixed-secret", Path(home.name))
-        self.attribution = Attribution("customer:A", "explicit", "--customer")
+        self.attribution = Attribution((Label("customer", "A", "explicit", "--label"),))
 
     def command(self, agent, args=(), model="alias"):
         with patch.dict(os.environ, {}, clear=True):
@@ -96,13 +101,13 @@ class FakeAdapterTests(unittest.TestCase):
         args, _ = self.command("claude")
         env = json.loads(args[args.index("--settings") + 1])["env"]
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://fake.example/anthropic")
-        self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], "x-test-customer: customer:A\nx-test-source: explicit")
+        self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], f"x-test-customer: A\nx-test-meta: {META}")
 
     def test_codex_maps_every_attribution_header_to_its_variable(self):
         args, env = self.command("codex")
         provider = "model_providers.vkm."
         self.assertIn(provider + 'base_url="https://fake.example/openai/responses"', args)
-        for name, value in (("x-test-customer", "customer:A"), ("x-test-source", "explicit")):
+        for name, value in (("x-test-customer", "A"), ("x-test-meta", META)):
             self.assertIn(f'{provider}env_http_headers.{name}="{header_variable(name)}"', args)
             self.assertEqual(env[header_variable(name)], value)
 
@@ -144,7 +149,7 @@ class FakeAdapterTests(unittest.TestCase):
                     patch("virtual_key_mapper.integrations.common.subprocess.run", return_value=completed) as run:
                 self.assertEqual(call(
                     "profile", "add", "fake", "--gateway", "https://fake.example",
-                    "--gateway-type", "fake", "--auth", "fixed",
+                    "--gateway-type", "fake", "--auth", "fixed", "--label", "customer", "--required",
                 ), 0)
                 stdout.truncate(0)
                 stdout.seek(0)
@@ -152,17 +157,18 @@ class FakeAdapterTests(unittest.TestCase):
                 self.assertEqual(json.loads(stdout.getvalue()), {
                     "access_token": "fixed-secret", "expires_at": None, "profile": "fake", "user": None,
                 })
-                self.assertEqual(call("tags", "list"), 1)
-                self.assertIn("offer a customer catalogue", stderr.getvalue())
-                self.assertEqual(call("run", "--customer", "customer:A", "claude"), 0)
+                self.assertEqual(call("labels", "values", "customer"), 0)
+                self.assertIn("no catalogue", stderr.getvalue())
+                self.assertEqual(call("run", "--label", "customer=A", "claude"), 0)
             argv = run.call_args.args[0]
             settings = json.loads(argv[argv.index("--settings") + 1])
             self.assertEqual(settings["env"]["ANTHROPIC_BASE_URL"], "https://fake.example/anthropic")
-            self.assertIn("x-test-customer: customer:A", settings["env"]["ANTHROPIC_CUSTOM_HEADERS"])
+            self.assertIn("x-test-customer: A", settings["env"]["ANTHROPIC_CUSTOM_HEADERS"])
             self.assertIn(shell_command(["--home", str(Path(home).resolve())]), settings["apiKeyHelper"])
             self.assertNotIn("fixed-secret", json.dumps([argv, run.call_args.kwargs["env"]]))
             saved = json.loads((Path(home) / "profiles.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["profiles"]["fake"], {
                 "gateway": {"type": "fake", "url": "https://fake.example", "allow_http": False},
                 "auth": {"type": "fixed"},
+                "labels": [{"key": "customer", "required": True}],
             })

@@ -4,7 +4,7 @@
 
 # cbs Virtual Key Mapper
 
-**Short-lived keys from your company gateway, attributed to the right customer, for every tool you use.**
+**Short-lived keys from your company gateway, labelled with the repository you work in, for every tool you use.**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-3776AB?logo=python&logoColor=white)](pyproject.toml)
@@ -16,9 +16,10 @@
 ---
 
 `vkm` signs you in to your company's gateway once, with its single sign-on. From then on your
-tools get short-lived keys from it, and every request carries the **customer** of the
-repository you are working in. Spend is attributed per customer without anyone pasting API
-keys into config files, and nothing goes out without a customer.
+tools get short-lived keys from it, and every request carries the **labels** of the
+repository you are working in: key/value pairs such as `customer = "acme"` and
+`project = "webshop"`. Spend is attributed by label without anyone pasting API keys into
+config files, and nothing goes out while a required label has no value.
 
 `vkm` does not depend on a particular gateway or tool. Gateways, sign-in methods and tools
 are separate adapters ([docs/adapters.md](docs/adapters.md)), so new ones can be added
@@ -30,22 +31,22 @@ without touching the rest.
 
 | Gateway | Sign-in | What the gateway receives |
 | --- | --- | --- |
-| [LiteLLM](https://github.com/BerriAI/litellm) | Its native CLI single sign-on in the browser, with team choice. The refresh token stays in the OS vault. | The SSO user and team (from the token), the customer as the request tag `x-litellm-tags`, and `x-litellm-spend-logs-metadata` = `{"customer_source": "explicit\|local\|file\|rules", "repository": "github.com/org/repo"}` (repository only inside a Git checkout with an origin). |
+| [LiteLLM](https://github.com/BerriAI/litellm) | Its native CLI single sign-on in the browser, with team choice. The refresh token stays in the OS vault. | The SSO user and team (from the token), the labels as request tags `x-litellm-tags` (by default one `KEY:VALUE` tag per label, e.g. `customer:acme`), and `x-litellm-spend-logs-metadata` = `{"labels": {"customer": "acme"}, "sources": {"customer": "explicit\|env\|local\|file\|rules"}, "repository": "github.com/org/repo"}` (repository only inside a Git checkout with an origin). |
 | LiteLLM, from a VS Code dev container, SSH or WSL window | `forwarded`: the two VS Code extensions relay short-lived keys from the sign-in on your own computer; the refresh token never leaves it. | The same. |
 
 More gateways and sign-in methods are adapters ([docs/adapters.md](docs/adapters.md)).
 
 ### Tools
 
-| Tool | Connected with | Customer | Key renewal | In a folder without a customer |
+| Tool | Connected with | Labels | Key renewal | While a required label has no value |
 | --- | --- | --- | --- | --- |
 | Claude Code CLI | `vkm setup claude` | per repository, checked before each prompt | ✅ | the prompt is blocked |
 | Claude Code for VS Code | `vkm setup claude` + `"claudeCode.disableLoginPrompt": true` | per repository, checked before each prompt | ✅ | the prompt is blocked |
 | Codex CLI | `vkm setup codex` + the shell hook | of the folder where Codex starts | ✅ | no key is sent; the gateway refuses |
 | OpenCode v1 | `vkm setup opencode` | per request, of the folder OpenCode runs in | ✅ | the request is blocked |
 | OpenCode v2 | `vkm run opencode` (`setup` refuses v2) | fixed at launch | ❌ key from launch time; restart when it expires | as for `vkm run` |
-| GitHub Copilot Chat in VS Code | the Virtual Key Mapper extension | per workspace folder, shown in the status bar | ✅ | blocked, with an "Assign customer" button that runs `vkm repo bind` |
-| any of the above, one launch | `vkm run [--customer NAME] TOOL` | fixed at launch (or the one you give) | ✅ (OpenCode v2: ❌) | asks in a terminal and saves your choice; blocked without a terminal or outside Git |
+| GitHub Copilot Chat in VS Code | the Virtual Key Mapper extension | per workspace folder, shown in the status bar | ✅ | blocked, with an "Assign labels" button that runs `vkm repo bind` |
+| any of the above, one launch | `vkm run [--label KEY=VALUE]... TOOL` | fixed at launch (or the ones you give) | ✅ (OpenCode v2: ❌) | asks in a terminal for each missing label and saves the answers; blocked without a terminal or outside Git |
 | Codex for VS Code | not supported yet | | | |
 | Copilot inline completions | not possible: they always use GitHub's models | | | |
 
@@ -63,17 +64,21 @@ hand with the [manual checklist](docs/testing.md#manual-checklist).
 | Shell hooks | ✅ PowerShell 7, bash; ☑️ Windows PowerShell 5.1 and PCs that block scripts (`shell-init pwsh --terminal`) | ✅ bash, zsh, fish, PowerShell 7 | ✅ bash, zsh, fish, PowerShell 7 | as on Linux | as on Linux |
 | VS Code extensions | ✅ in a VS Code extension host | ✅ in an extension host, with the relay | ✅ in an extension host, with the relay | ✅ relay in a real dev container | ☑️ |
 
-### Choosing the customer
+### Choosing labels
 
-First match wins:
+Each label is resolved on its own, so `customer` can come from a central rule and `project`
+from a committed file. For each key the first source with a value wins:
 
 | Source | Who sets it | Applies to |
 | --- | --- | --- |
-| `vkm run --customer NAME` | you | that launch |
-| `VKM_CUSTOMER` | you | every process started with the variable set |
-| `vkm repo bind` | you | clones of that repository on this computer (same origin, or it as upstream), only for you |
-| a committed `.vkm` file (`vkm repo bind --shared` writes it at the repository root) | the team | that folder and everything below it, unless a nearer `.vkm` exists |
+| `vkm run --label KEY=VALUE` | you | that launch |
+| `VKM_LABEL_<KEY>` (e.g. `VKM_LABEL_CUSTOMER`) | you | every process started with the variable set |
+| `vkm repo bind --label KEY=VALUE` | you | clones of that repository on this computer (same origin, or it as upstream), only for you |
+| a committed `.vkm` file (`vkm repo bind --shared --label KEY=VALUE` writes it at the repository root) | the team | that folder and everything below it, unless a nearer `.vkm` exists |
 | central rules (a JSON file or URL in the profile) | your organisation | repositories matching a pattern, e.g. `github.com/acme-*/**` |
+
+Which labels exist and which are required is set by your organisation's central rules
+document or by your profile ([Labels](#-labels)).
 
 ## 🚀 Quick start
 
@@ -96,7 +101,9 @@ same arguments.
 
 ```bash
 # 1. Once per machine: a profile for your gateway and your business-unit team, then sign in.
-vkm profile add work --gateway https://llm.company.example --team-id YOUR_TEAM_ID
+#    If your organisation publishes its label definitions, pass --rules URL instead of --label.
+vkm profile add work --gateway https://llm.company.example --team-id YOUR_TEAM_ID \
+  --label customer --required --description "Who the work is billed to"
 vkm login          # browser sign-in; choose the same team there
 vkm status         # "state": "ready"
 
@@ -107,7 +114,7 @@ vkm setup opencode
 
 # 3. Once per repository (unless a central rule or a committed .vkm covers it):
 cd ~/src/some-repo
-vkm repo bind --customer customer-acme
+vkm repo bind --label customer=acme     # or plain 'vkm repo bind' to be asked
 vkm repo show
 ```
 
@@ -117,36 +124,127 @@ long pause or a change of team membership.
 The gateway must be served at its host root with LiteLLM's `PROXY_BASE_URL` set to that URL
 (see [Gateway requirements](docs/architecture.md#11-gateway-requirements)).
 
-## 🧭 Customers
+## 🧭 Labels
 
-The customer of a directory is chosen in this order (first match wins):
+A label is a key with a value, such as `customer = "acme"` or `project = "webshop"`. What a
+label means is up to your organisation; `vkm` knows the keys, which of them are required,
+where their values may come from and how the gateway receives them. The full reference is
+[docs/labels.md](docs/labels.md).
 
-1. `--customer NAME` (for `run`) or the environment variable `VKM_CUSTOMER`;
-2. your personal assignment: `vkm repo bind --customer NAME`, stored only for you
+### Definitions
+
+Labels are defined in your organisation's central rules document (`profile add --rules URL|PATH`
+or `profile update NAME --rules ...`) and, for keys the document does not define, in your profile:
+
+```bash
+vkm profile update work --label project --description "Project within the customer"
+vkm profile update work --label customer --required --value acme=Acme --value globex=Globex --strict
+vkm profile update work --no-label project
+vkm labels list            # the labels in effect, where each is defined, and notices
+```
+
+One label per call. `--required`: nothing is sent while it has no value. `--value ID[=NAME]`:
+the choices the picker offers; with `--strict` only those are accepted. `--source NAME`
+(repeatable) limits where values may come from. Keys are 1-32 lowercase letters, digits, `_`
+or `-`, starting with a letter. A profile label for a key the central document defines is
+refused (or, when the document cannot be read at the time, ignored with a notice): the central
+one applies. If no label is defined anywhere, requests carry only the repository, and `setup`,
+`run` and `repo show` say so.
+
+### Values
+
+For each defined key, the first source with a value wins:
+
+1. `--label KEY=VALUE` (for `run` and `repo show`);
+2. the environment variable `VKM_LABEL_<KEY>` (exactly: uppercase, `-` as `_`; empty counts as
+   unset; other `VKM_LABEL_*` names are ignored);
+3. your personal binding: `vkm repo bind --label KEY=VALUE`, stored only for you
    (`repositories.json` on this computer), keyed by the repository's `origin`/`upstream`
-   address, so every clone on this computer shares it;
-3. the nearest committed `.vkm` file (`customer = "NAME"`), written with
-   `repo bind --shared`; a file in a parent folder such as `~/src/acme/` covers all
-   repositories below it, and a nearer file wins. Inside your home folder the search stops
-   below home, so a file in home or above it never applies (`repo bind --shared` refuses to
-   write one there); for folders outside home, such as `/workspaces` in a dev container or
-   another drive on Windows, it goes up to the root of the drive;
-4. central rules of the profile (`profile add --rules URL|PATH` or `profile update NAME --rules ...`):
-   ```json
-   {"version": 1,
-    "customers": [{"id": "customer-acme", "name": "Acme"}],
-    "rules": [{"match": "github.com/acme-*/**", "customer": "customer-acme"}]}
+   address, so every clone on this computer shares it. It keeps keys you do not name; a
+   different value for a key already bound needs `--replace`. `repo unbind` removes the
+   binding, `repo unbind --label KEY` one key;
+4. the nearest committed `.vkm` file, written with `repo bind --shared --label KEY=VALUE`:
+   ```toml
+   # Labels for AI tool requests in this folder and below (vkm).
+   [labels]
+   customer = "acme"
+   project = "webshop"
    ```
-   `**` spans path segments, `*`/`?` stay within one; the first matching rule wins, tried
-   against `origin`, then `upstream`. Write the repository as `repo show` prints it
-   (lowercase, `%20` decoded to a space).
+   A file in a parent folder such as `~/src/acme/` covers all repositories below it, and the
+   nearest file wins as a whole (a nearer file without `project` does not fall through to a
+   parent's). Inside your home folder the search stops below home, so a file in home or above
+   it never applies (`repo bind --shared` refuses to write one there); for folders outside home,
+   such as `/workspaces` in a dev container or another drive on Windows, it goes up to the root
+   of the drive;
+5. a central rule (below).
 
-Nothing is sent without a customer: unassigned folders are blocked with an explanation.
-`repo show` tells you which customer applies and why; `repo list` / `repo unbind` manage your
-personal assignments. Customer tags and repository mappings are attribution, not access
-control: enforce allowed customers on the gateway if you need that.
-Gateway settings that break or leak attribution (tag routing, client-side tag rejection,
-header forwarding) and why the picker needs the rules' `customers` list are listed in
+`--label KEY=` on the command line, `""` in a `.vkm` and `null` in a rule mean "no value here,
+stop searching". `--label` refuses keys that no definition knows (typos); values for unknown keys
+from other sources are not sent, and `repo show` lists them. Values are 1-256 printable ASCII
+characters without `,`, surrounding spaces or a leading `!` or `&`.
+
+### The central rules document
+
+```json
+{
+  "version": "2.0",
+  "labels": [
+    {"key": "customer", "required": true, "description": "Who the work is billed to",
+     "values": [{"id": "acme", "name": "Acme"}, {"id": "globex", "name": "Globex"}]},
+    {"key": "project", "description": "Project within the customer"}
+  ],
+  "outputs": {"litellm": {"tags": {"format": ["${customer}", "${customer}:${project}"]}}},
+  "rules": [
+    {"match": "github.com/acme-*/**", "labels": {"customer": "acme"}},
+    {"match": "**", "labels": {"project": null}}
+  ]
+}
+```
+
+Rules are tried in order, each against `origin`, then `upstream`; each key takes its value from
+the first matching rule that sets it, so a catch-all below can still supply another label.
+`**` spans path segments, `*`/`?` stay within one. Write the repository as `repo show` prints it
+(lowercase, `%20` decoded to a space). `outputs` are grouped by gateway type, so one document
+can serve profiles on different gateways. A URL is cached for an hour; if a fetch fails or a
+newly published document is invalid, the last good copy is used.
+
+### Required labels
+
+A required label without a value blocks every request with a message starting
+`Required labels have no value:`, naming the keys and the ways to set them. `vkm run` and
+`vkm repo bind` in a terminal, and "Assign labels" in VS Code, ask for each missing one and save
+the answers as your personal binding. The picker offers the label's `values`, else the
+gateway's catalogue, else accepts any valid typed value without signing in (`vkm labels values KEY`
+shows which). `vkm repo bind` asks only for labels a personal binding (with `--shared`: a `.vkm`
+file) may set.
+`repo show` tells you each label's value and where it came from.
+
+### What the gateway receives
+
+For LiteLLM, by default:
+
+```text
+x-litellm-tags: customer:acme,project:webshop
+x-litellm-spend-logs-metadata: {"labels":{"customer":"acme","project":"webshop"},"repository":"github.com/acme-shop/web","sources":{"customer":"rules","project":"file"}}
+```
+
+The tags format can be changed in the central document (it wins) or in the profile;
+the metadata can be switched off:
+
+```bash
+vkm profile update work --output 'tags=${customer}' --output 'tags=${customer}:${project}'
+vkm profile update work --output-off metadata
+vkm profile update work --output-default tags
+```
+
+An entry that uses an optional label without a value is left out; `$$` is a literal `$`.
+Formats that could make one label's value look like another's are refused, as is any setup in
+which a required label reaches no output. The rules are in
+[docs/labels.md](docs/labels.md#3-outputs).
+
+Labels are attribution, not access control: enforce allowed values on the gateway if you need
+that. Gateway settings that break or leak attribution (tag routing, client-side tag rejection,
+header forwarding) and why the picker needs `values` in the central document are listed in
 [Gateway requirements](docs/architecture.md#11-gateway-requirements).
 
 ## 🧩 Tools
@@ -159,8 +257,9 @@ vkm setup claude [--model ALIAS] [--replace] [--remove]
 
 Writes `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`): an `apiKeyHelper` that runs
 `vkm token`, the gateway address, and a prompt hook. Before each prompt the hook
-looks up the customer, writes it to the repository's `.claude/settings.local.json` (excluded
-from Git) and asks you once to send the prompt again; prompts without a customer are blocked.
+resolves the labels, writes the resulting headers to the repository's `.claude/settings.local.json`
+(excluded from Git) and asks you once to send the prompt again; prompts are blocked while a
+required label has no value.
 For the VS Code extension also set `"claudeCode.disableLoginPrompt": true` in your VS Code
 user settings. `--remove` undoes exactly what setup wrote.
 
@@ -178,8 +277,8 @@ instead and paste its command line into Windows Terminal (Settings → your Powe
 Command line) or its snippet into your VS Code user settings. Check in a new terminal:
 `Get-Command codex` shows `Function`.
 
-Codex reads the customer from environment variables that the shell hook sets per directory.
-Without them, Codex gets no credential and the gateway refuses the request. The hook also makes
+Codex reads the label headers from environment variables that the shell hook sets per directory.
+Without them, or while a required label has no value, Codex gets no credential and the gateway refuses the request. The hook also makes
 `codex` start with `--no-daemon`: Codex's shared background daemon would keep the variables of the
 terminal that started it. If one is running from before, stop it once: `codex app-server daemon stop`.
 
@@ -191,16 +290,17 @@ vkm setup opencode [--model ALIAS] [--remove]
 
 Adds a provider with the gateway's models and a small plugin to
 `~/.config/opencode/opencode.json`; the plugin adds a fresh credential and the folder's
-customer to every request. OpenCode v2 is supported only through `vkm run opencode`.
+label headers to every request, and blocks requests while a required label has no value. OpenCode v2 is supported only through `vkm run opencode`.
 
 ### One-off launches
 
 ```bash
-vkm run [--customer NAME] [--model ALIAS] claude|codex|opencode [-- TOOL ARGUMENTS]
+vkm run [--label KEY=VALUE]... [--model ALIAS] claude|codex|opencode [-- TOOL ARGUMENTS]
 ```
 
-Starts the tool with child-only configuration, without changing your setup; `--customer`
-overrides the repository's customer for that process.
+Starts the tool with child-only configuration, without changing your setup; each `--label`
+sets that key for that process (`--label KEY=` for no value), the others resolve as usual. In a
+terminal it asks for missing required labels and saves the answers as your personal binding.
 
 ### GitHub Copilot Chat (VS Code)
 
@@ -213,7 +313,9 @@ code --install-extension vkm.vsix   # or Extensions → ··· → Install from 
 
 Set `vkm.command` in your VS Code user settings to how the CLI runs, e.g.
 `["/path/to/.venv/bin/python", "-m", "virtual_key_mapper"]`. Pick a "Virtual Key Mapper"
-model in Copilot Chat; the status bar shows the customer. If you use VS Code profiles,
+model in Copilot Chat; the status bar shows the folder's label values (`acme · webshop`),
+missing required labels in warning style, and `no labels` when none are defined; its tooltip
+lists each label with its description and source. If you use VS Code profiles,
 install the extension in the profile you work in. Inline completions and next-edit
 suggestions always use GitHub's models and are not attributed.
 
@@ -232,23 +334,26 @@ long-lived is stored inside it.
    and install `vscode-extension/vkm.vsix` (`npm run package` in `vscode-extension/`) into
    the container (Install from VSIX → Show Local). Reload the window.
 3. The extension creates a container profile that uses your local sign-in
-   (`vkm profile list` shows `forwarded`). Do not run `login` in the container.
+   (`vkm profile list` shows `forwarded`), with your local profile's own label definitions and
+   output overrides and its central rules URL. Do not run `login` in the container.
 
-All tools work in the container as described above. Personal `repo bind` assignments made
-inside a container live in the container.
+All tools work in the container as described above. Central rules given as a local file cannot
+be copied; the extension then warns that the organisation's label definitions are missing in the
+container (set them with `vkm profile update NAME --rules URL|PATH` there). Personal `repo bind`
+bindings made inside a container live in the container.
 
 ## 🗂️ Where things are stored
 
 | What | Where |
 | --- | --- |
-| Profiles, personal assignments, rules cache, tool state | `%LOCALAPPDATA%\virtual-key-mapper` or `~/.config/virtual-key-mapper` (`--home` or `VKM_HOME` to change) |
+| Profiles and their labels, personal label bindings, rules cache, tool state | `%LOCALAPPDATA%\virtual-key-mapper` or `~/.config/virtual-key-mapper` (`--home` or `VKM_HOME` to change) |
 | Sign-in (access and refresh token) | the OS credential vault only; never in files |
 | Claude / Codex / OpenCode configuration | each tool's own user configuration, changed only by `setup` |
 
 ## ⌨️ Commands
 
 `profile add|list|show|use|update`, `login`, `status`, `token [--json]`, `logout`,
-`repo show|bind|unbind|list`, `tags list`, `setup claude|codex|opencode`, `run`,
+`repo show|bind|unbind|list`, `labels list|values`, `setup claude|codex|opencode`, `run`,
 `shell-init`, and `claude guard` (the hook). `vkm COMMAND --help` explains each.
 
 ## 🛠️ Contributing

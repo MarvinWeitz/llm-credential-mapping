@@ -5,12 +5,12 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable, Mapping
 from urllib.parse import unquote, urlsplit
 
 from .errors import CredentialError
+from .labels import validate_key, validate_value
 from .profiles import ProfileStore, atomic_write_json, gateway_origin
-from .customers import validate_customer
 
 _SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}")
 _AZURE_SSH_HOSTS = ("ssh.dev.azure.com", "vs-ssh.visualstudio.com")
@@ -47,7 +47,7 @@ def repository_identity(remote: str, resolve_ssh_host: Callable[[str], str | Non
         not isinstance(remote, str) or not remote or remote != remote.strip()
         or any(char.isspace() or ord(char) < 32 for char in remote)
     ):
-        raise CredentialError("Git origin is invalid; configure an HTTP/SSH origin or use --customer.")
+        raise CredentialError("Git origin is invalid; configure an HTTP/SSH origin or use --label.")
     ssh = False
     if "://" in remote:
         try:
@@ -60,11 +60,11 @@ def repository_identity(remote: str, resolve_ssh_host: Callable[[str], str | Non
             parsed.port  # Reject invalid ports even though ports are not part of the identity.
             host, path, ssh = parsed.hostname, parsed.path, parsed.scheme == "ssh"
         except ValueError:
-            raise CredentialError("Git origin is invalid; configure an HTTP/SSH origin or use --customer.") from None
+            raise CredentialError("Git origin is invalid; configure an HTTP/SSH origin or use --label.") from None
     else:
         match = re.fullmatch(r"(?:[^/@:\s]+@)?(\[[^\]]+\]|[^/:\s]+):(.+)", remote)
         if match is None or re.match(r"^[A-Za-z]:[\\/]|\A/", remote):
-            raise CredentialError("Local Git origins are not supported for mapping; use --customer.")
+            raise CredentialError("Local Git origins are not supported for mapping; use --label.")
         host, path, ssh = match[1].strip("[]"), match[2], True
     if ssh and resolve_ssh_host is not None and _SSH_HOST.fullmatch(host):
         host = resolve_ssh_host(host) or host
@@ -79,7 +79,7 @@ def repository_identity(remote: str, resolve_ssh_host: Callable[[str], str | Non
         or any(part in ("", ".", "..") for part in path.split("/"))
         or any(ord(char) < 32 or ord(char) == 127 for char in host + path)
     ):
-        raise CredentialError("Git origin has an ambiguous repository path; use --customer.")
+        raise CredentialError("Git origin has an ambiguous repository path; use --label.")
     host, path = _azure_path(host, path)
     if not ssh and host not in _NO_SCM_PREFIX and path.startswith("scm/") and path.count("/") == 2:
         path = path[4:]  # Bitbucket Server: https://host/scm/project/repo is ssh://host/project/repo.
@@ -157,7 +157,7 @@ def find_checkout(
 
 
 class RepositoryStore:
-    """Per-developer customer overrides keyed by gateway and normalized repository identity."""
+    """Per-developer label bindings keyed by gateway and normalized repository identity (version 2)."""
 
     def __init__(self, profiles: ProfileStore) -> None:
         self.profiles = profiles
@@ -176,58 +176,86 @@ class RepositoryStore:
         ):
             raise CredentialError("Invalid repository binding identity.")
 
+    @staticmethod
+    def _validate_labels(labels: object) -> dict[str, str]:
+        if not isinstance(labels, Mapping) or not labels:
+            raise CredentialError("A label binding needs at least one label.")
+        return {validate_key(key): validate_value(value, key) for key, value in labels.items()}
+
     def _read(self) -> dict:
         if not self.path.exists():
-            return {"version": 1, "bindings": {}}
+            return {"version": 2, "bindings": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # RecursionError: nesting too deep.
             raise CredentialError("Cannot read repositories.json; repair the nonsecret configuration.") from None
         if (
-            not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1
-            or not isinstance(data.get("bindings"), dict)
+            not isinstance(data, dict) or set(data) != {"version", "bindings"}
+            or type(data["version"]) is not int or data["version"] != 2 or not isinstance(data["bindings"], dict)
         ):
             raise CredentialError("Unsupported or invalid repositories.json.")
         for key, entry in data["bindings"].items():
-            if not isinstance(entry, dict) or set(entry) != {"gateway", "repository", "customer"}:
+            if not isinstance(entry, dict) or set(entry) != {"gateway", "repository", "labels"}:
                 raise CredentialError("Invalid repository binding.")
             gateway, repository = entry["gateway"], entry["repository"]
             self._validate_identity(gateway, repository)
             if key != self._key(gateway, repository):
                 raise CredentialError("Invalid repository binding identity.")
-            validate_customer(entry["customer"])
+            self._validate_labels(entry["labels"])
         return data
 
-    def get(self, gateway: str, repository: str) -> str | None:
+    def get(self, gateway: str, repository: str) -> dict[str, str]:
+        """The labels bound to one repository; empty when it has no binding."""
         with self.profiles.locked("repositories"):
             entry = self._read()["bindings"].get(self._key(gateway, repository))
-            return entry["customer"] if entry is not None else None
+            return dict(entry["labels"]) if entry is not None else {}
 
-    def bind(self, gateway: str, repository: str, customer: str, *, replace: bool = False) -> None:
+    def bind(self, gateway: str, repository: str, labels: Mapping[str, str], *, replace: bool = False) -> dict[str, str]:
+        """Set the given keys and keep the others; a different value for a bound key needs ``replace``.
+
+        Without ``replace`` a session that bound a key concurrently is never overwritten silently.
+        Return the binding's labels after the change.
+        """
         self._validate_identity(gateway, repository)
-        validate_customer(customer)
+        labels = self._validate_labels(labels)
         with self.profiles.locked("repositories"):
             data = self._read()
             key = self._key(gateway, repository)
-            previous = data["bindings"].get(key)
-            if previous and previous["customer"] != customer and not replace:
+            current = dict(data["bindings"][key]["labels"]) if key in data["bindings"] else {}
+            changed = [name for name, value in labels.items() if current.get(name, value) != value]
+            if changed and not replace:
                 raise CredentialError(
-                    "Another session already bound this repository. "
-                    "Use --customer for one launch, or 'repo bind --customer TAG' to change its default."
+                    f"This repository already has a different value for: {', '.join(changed)}. "
+                    "Use --label for one launch, or 'repo bind --replace --label KEY=VALUE' to change it."
                 )
-            data["bindings"][key] = {"gateway": gateway, "repository": repository, "customer": customer}
+            current.update(labels)
+            data["bindings"][key] = {"gateway": gateway, "repository": repository, "labels": current}
             atomic_write_json(self.path, data)
+            return current
 
-    def unbind(self, gateway: str, repository: str) -> None:
+    def unbind(self, gateway: str, repository: str, keys: Iterable[str] | None = None) -> None:
+        """Remove the binding, or only ``keys``; removing the last key removes the binding."""
         with self.profiles.locked("repositories"):
             data = self._read()
             key = self._key(gateway, repository)
             if key not in data["bindings"]:
-                raise CredentialError("This repository has no local customer binding.")
+                raise CredentialError("This repository has no personal label binding.")
+            if keys is not None:
+                keys = list(dict.fromkeys(keys))
+                labels = data["bindings"][key]["labels"]
+                unbound = [name for name in keys if name not in labels]
+                if not keys or unbound:
+                    raise CredentialError(f"This repository has no personal binding for: {', '.join(unbound) or 'no key given'}.")
+                for name in keys:
+                    del labels[name]
+                if labels:
+                    atomic_write_json(self.path, data)
+                    return
             del data["bindings"][key]
             atomic_write_json(self.path, data)
 
-    def list(self, gateway: str) -> list[dict[str, str]]:
+    def list(self, gateway: str) -> list[dict]:
+        """Bindings for one gateway: ``{"gateway", "repository", "labels"}`` sorted by repository."""
         with self.profiles.locked("repositories"):
             return sorted(
                 (entry for entry in self._read()["bindings"].values() if entry["gateway"] == gateway),

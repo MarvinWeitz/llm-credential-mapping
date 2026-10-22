@@ -1,14 +1,17 @@
 """Codex configured once in its user config.toml, with a token command and environment-driven headers.
 
 Codex has no per-repository way to set provider headers (project config may not touch providers), so
-attribution header values come from environment variables, set per directory by ``shell-init`` or by
-``run codex``. The token command is called with ``--require-attribution-env`` and refuses without them.
+attribution header values come from environment variables (one per header, unset when the header is
+omitted), set per directory by ``shell-init`` or by ``run codex`` together with ``VKM_ATTRIBUTION=1``.
+The token command is called with ``--require-attribution-env`` and refuses without that variable.
 Codex then sends the request without a credential, which the gateway rejects: nothing goes through
-untagged. Codex reruns the command every ``refresh_interval_ms`` and once after a 401.
+without its labels. Setup lists every header the adapter can send, so later changes to the label
+definitions or outputs need no new setup. Codex reruns the command every ``refresh_interval_ms`` and
+once after a 401.
 
 Both must come from the session's own environment. Interactive Codex (0.162+) otherwise runs sessions
 in a shared background daemon that keeps the environment of the terminal that started it: requests
-then carry no customer, or another folder's. So ``run codex`` and the shell hook start Codex with
+then carry no labels, or another folder's. So ``run codex`` and the shell hook start Codex with
 ``--no-daemon``, and setup turns off ``features.daemon_auto_start``.
 """
 
@@ -20,10 +23,10 @@ from pathlib import Path
 from typing import Mapping
 
 from ..adapters import Api, IntegrationContext
-from ..customers import Attribution
 from ..errors import CredentialError
+from ..labels import Attribution
 from ..profiles import atomic_write_text
-from .common import CUSTOMER_VARIABLE, attribution_headers, header_variable, run
+from .common import header_environment, header_variable, run, set_launch_marker
 
 PROVIDER = "vkm"
 REQUIRE_ENV = "--require-attribution-env"
@@ -58,7 +61,7 @@ class Codex:
 
     def provider(self, context: IntegrationContext) -> dict:
         """The provider settings shared by setup (config.toml) and run (-c overrides)."""
-        headers = {name: header_variable(name) for name in context.gateway.attribution_header_names()}
+        headers = {name: header_variable(name) for name in context.labels.header_names()}
         for name in headers:
             if not re.fullmatch(r"[A-Za-z0-9-]+", name):
                 raise CredentialError("The gateway adapter produced an invalid attribution header name.")
@@ -80,10 +83,13 @@ class Codex:
         for name in _CLEARED:
             env.pop(name, None)
         # Header values come from the environment so they never reach argv; the token is never passed.
-        for name, value in attribution_headers(context, attribution).items():
-            env[header_variable(name)] = value
-        if attribution is not None:
-            env[CUSTOMER_VARIABLE] = attribution.customer
+        # Inherited ones (another folder's shell hook) are unset when this launch omits them.
+        for name, value in header_environment(context, attribution).items():
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
+        set_launch_marker(env, attribution)
         settings = {"model_provider": PROVIDER}
         for key, value in self.provider(context).items():
             if isinstance(value, dict):
@@ -114,14 +120,14 @@ class Codex:
         rest = _without_blocks(original or "")
         try:
             parsed = tomllib.loads(rest)
-        except tomllib.TOMLDecodeError:
+        except (tomllib.TOMLDecodeError, RecursionError):
             raise CredentialError(f"{path} is not valid TOML; fix it first, nothing was changed.") from None
         return original, rest, parsed
 
     def _write(self, path: Path, text: str, original: str | None) -> None:
         try:
             tomllib.loads(text)
-        except tomllib.TOMLDecodeError:
+        except (tomllib.TOMLDecodeError, RecursionError):
             raise CredentialError(f"Could not produce a valid {path}; nothing was changed.") from None
         try:
             current = path.read_text(encoding="utf-8") if path.exists() else None
@@ -151,7 +157,7 @@ class Codex:
         elif not isinstance(features, dict) or features.get("daemon_auto_start") is not False:
             notes.append(
                 f"Note: {path} has its own [features]; add daemon_auto_start = false there, otherwise a shared "
-                "Codex daemon can send requests with another folder's customer."
+                "Codex daemon can send requests with another folder's labels."
             )
         if model and "model" not in parsed:
             top.append(f"model = {json.dumps(model)}")
@@ -165,9 +171,10 @@ class Codex:
         self._write(path, text, original)
         return [
             f"Configured {path} for profile '{context.profile.name}'. Codex renews the credential itself.",
-            "Codex reads the customer from the environment: add the hook printed by "
+            "Codex reads the labels from the environment: add the hook printed by "
             "'vkm shell-init bash|zsh|fish|pwsh' to your shell profile, or start Codex with "
-            "'vkm run codex'. Without a customer, Codex gets no credential and the gateway refuses the request. "
+            "'vkm run codex'. Without them (or while required labels are missing), Codex gets no credential "
+            "and the gateway refuses the request. "
             "Where PowerShell may not run scripts (no profile), 'vkm shell-init pwsh --terminal' prints a "
             "terminal command line that loads the hook instead.",
             "If a Codex daemon is already running, stop it once: 'codex app-server daemon stop'.",

@@ -10,16 +10,32 @@ from unittest.mock import patch
 
 from virtual_key_mapper.adapters import Credential, IntegrationContext
 from virtual_key_mapper.cli import main
-from virtual_key_mapper.customers import Attribution
 from virtual_key_mapper.errors import CredentialError
 from virtual_key_mapper.integrations.claude import Claude, settings_path
-from virtual_key_mapper.integrations.common import CUSTOMER_VARIABLE, shell_command
+from virtual_key_mapper.integrations.common import shell_command
+from virtual_key_mapper.labels import (
+    LAUNCH_VARIABLE, MISSING_PHRASE, Attribution, Label, LabelDefinition, OutputOverride,
+)
 from virtual_key_mapper.profiles import Profile, ProfileStore
 from virtual_key_mapper.registry import gateway_for
+from virtual_key_mapper.repositories import Checkout
 from isolation import isolate_tool_configuration
 
-ATTRIBUTION = Attribution("customer:A", "file", "/repo/.vkm", "github.com/acme/web")
-HEADERS = 'x-litellm-tags: customer:A\nx-litellm-spend-logs-metadata: {"customer_source":"file","repository":"github.com/acme/web"}'
+LABELS = (LabelDefinition("customer", required=True), LabelDefinition("project"))
+
+
+def attribution(customer="acme", project="webshop", source="file", detail="/repo/.vkm"):
+    labels = (Label("customer", customer, source if customer else None, detail if customer else None),
+              Label("project", project, source if project else None, detail if project else None))
+    return Attribution(labels, () if customer else ("customer",), repository="github.com/acme/web")
+
+
+ATTRIBUTION = attribution()
+METADATA = (
+    '{"labels":{"customer":"acme","project":"webshop"},"repository":"github.com/acme/web",'
+    '"sources":{"customer":"file","project":"file"}}'
+)
+HEADERS = f"x-litellm-tags: customer:acme,project:webshop\nx-litellm-spend-logs-metadata: {METADATA}"
 
 
 class ClaudeTestCase(unittest.TestCase):
@@ -32,11 +48,11 @@ class ClaudeTestCase(unittest.TestCase):
         self.home = self.root / "credentials"
         self.home.mkdir()
         for name in (
-            "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "VKM_CUSTOMER",
-            CUSTOMER_VARIABLE, "CLAUDE_PROJECT_DIR",
+            "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "VKM_LABEL_CUSTOMER",
+            "VKM_LABEL_PROJECT", LAUNCH_VARIABLE, "CLAUDE_PROJECT_DIR",
         ):
             os.environ.pop(name, None)
-        self.profile = Profile("unit", "https://gateway.example", {"team_id": "t"})
+        self.profile = Profile("unit", "https://gateway.example", {"team_id": "t"}, labels=LABELS)
         self.context = IntegrationContext(self.profile, gateway_for(self.profile), "", self.home)
         self.claude = Claude()
         self.settings = settings_path()
@@ -153,6 +169,24 @@ class ShellCommandTests(unittest.TestCase):
                 shell_command(["python", unsafe])
 
 
+class CommandTests(ClaudeTestCase):
+    def test_an_omitted_header_does_not_survive_from_the_parent(self):
+        profile = Profile(
+            "unit", "https://gateway.example", {"team_id": "t"}, labels=LABELS,
+            outputs={"metadata": OutputOverride(None, False)},
+        )
+        context = IntegrationContext(profile, gateway_for(profile), "", self.home)
+        inherited = "X-Trace: t\nx-litellm-spend-logs-metadata: {}\nx-litellm-tags: customer:old"
+        with patch.dict(os.environ, {"ANTHROPIC_CUSTOM_HEADERS": inherited}):
+            command, _ = self.claude.command(context, attribution(project=None), [], None)
+        settings = json.loads(command[2])
+        self.assertEqual(settings["env"]["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: t\nx-litellm-tags: customer:acme")
+
+    def test_missing_required_labels_launch_nothing(self):
+        with self.assertRaisesRegex(CredentialError, MISSING_PHRASE):
+            self.claude.command(self.context, attribution(customer=None), [], None)
+
+
 class GuardTests(ClaudeTestCase):
     def setUp(self):
         super().setUp()
@@ -160,29 +194,58 @@ class GuardTests(ClaudeTestCase):
         self.sub = self.repo / "sub"
         self.sub.mkdir(parents=True)
         subprocess.run(["git", "init", "--quiet", str(self.repo)], check=True, capture_output=True)
+        self.checkout = Checkout(self.repo, "github.com/acme/web", None)
         self.local = self.claude.local_settings(self.sub, self.repo)
 
-    def guard(self, attribution=ATTRIBUTION, headers=None, **environ):
+    def guard(self, attribution=ATTRIBUTION, headers=None, context=None, **environ):
         if headers is not None:
             environ["ANTHROPIC_CUSTOM_HEADERS"] = headers
-        return self.claude.guard(self.context, self.sub, self.repo, attribution, "UNMAPPED", environ)
+        return self.claude.guard(context or self.context, self.sub, self.checkout, attribution, environ)
 
     def test_local_settings_follow_claudes_lookup(self):
         expected = (self.sub if os.name == "nt" else self.repo) / ".claude" / "settings.local.json"
         self.assertEqual(self.local, expected)
         self.assertEqual(self.claude.local_settings(self.sub, None), self.sub / ".claude" / "settings.local.json")
 
-    def test_unmapped_prompts_are_blocked_without_writing(self):
-        self.assertEqual(self.guard(None), "UNMAPPED")
+    def test_missing_required_labels_block_and_name_the_keys_without_writing(self):
+        reason = self.guard(attribution(customer=None))
+        self.assertTrue(reason.startswith(MISSING_PHRASE), reason)
+        self.assertIn("customer for repository github.com/acme/web", reason)
         self.assertFalse(self.local.exists())
 
-    def test_first_prompt_assigns_the_customer_and_blocks_once(self):
+    def test_first_prompt_assigns_the_labels_and_blocks_once(self):
         reason = self.guard()
-        self.assertIn("customer:A", reason)
+        self.assertIn('customer="acme", project="webshop"', reason)
+        self.assertIn("customer: file /repo/.vkm", reason)
         self.assertIn("Send the prompt again", reason)
         self.assertEqual(self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"], HEADERS)
         self.assertIsNone(self.guard(headers=HEADERS))
         self.assertIn("has not loaded", self.guard())
+
+    def test_an_optional_label_without_a_value_drops_its_tag_and_still_matches(self):
+        self.guard(attribution(project=None))
+        headers = self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        self.assertIn("x-litellm-tags: customer:acme\n", headers)
+        self.assertIsNone(self.guard(attribution(project=None), headers))
+
+    def test_an_absent_header_equals_an_omitted_one(self):
+        profile = Profile(
+            "unit", "https://gateway.example", {"team_id": "t"}, labels=LABELS,
+            outputs={"metadata": OutputOverride(None, False)},
+        )
+        context = IntegrationContext(profile, gateway_for(profile), "", self.home)
+        self.assertIsNone(self.guard(headers="x-litellm-tags: customer:acme,project:webshop", context=context))
+        # A stale metadata header the configuration no longer sends is not equal.
+        self.assertIn("Send the prompt again", self.guard(headers=HEADERS, context=context))
+
+    def test_no_label_definitions_send_only_the_repository(self):
+        profile = Profile("unit", "https://gateway.example", {"team_id": "t"})
+        context = IntegrationContext(profile, gateway_for(profile), "", self.home)
+        empty = Attribution(repository="github.com/acme/web")
+        self.assertIn("No label values are assigned", self.guard(empty, context=context))
+        headers = self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        self.assertEqual(headers, 'x-litellm-spend-logs-metadata: {"labels":{},"repository":"github.com/acme/web","sources":{}}')
+        self.assertIsNone(self.guard(empty, headers, context=context))
 
     def test_a_symlinked_local_settings_file_is_replaced_not_followed(self):
         # A cloned repository controls this path; following the link would let it pick the file we write.
@@ -207,35 +270,30 @@ class GuardTests(ClaudeTestCase):
 
     def test_a_changed_assignment_is_rewritten_and_blocks_once(self):
         self.guard()
-        other = Attribution("customer:B", "local", "repo bind", "github.com/acme/web")
+        other = attribution("globex", source="local", detail="repo bind for github.com/acme/web")
         reason = self.guard(other, HEADERS)
-        self.assertIn("customer:B", reason)
-        self.assertIn("x-litellm-tags: customer:B", self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
+        self.assertIn('customer="globex"', reason)
+        self.assertIn("x-litellm-tags: customer:globex,project:webshop", self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
 
-    def test_headers_from_run_claude_are_a_deliberate_override(self):
-        override = {"headers": "x-litellm-tags: customer:override", CUSTOMER_VARIABLE: "customer:override"}
-        self.assertIsNone(self.guard(**override))
-        self.assertIsNone(self.guard(None, **override))
-        self.assertFalse(self.local.exists())
-
-    def test_an_inherited_override_does_not_cover_other_headers(self):
-        # Started from a terminal that `run codex` opened: the variable is inherited, the headers are not its.
-        stale = {"headers": "x-litellm-tags: customer:old", CUSTOMER_VARIABLE: "customer:codex"}
-        self.assertIn("Send the prompt again", self.guard(**stale))
+    def test_one_differing_label_is_not_a_match(self):
+        self.guard()
+        reason = self.guard(attribution(project="other"), HEADERS)
+        self.assertIn("Send the prompt again", reason)
 
     def test_headers_from_elsewhere_are_replaced(self):
         self.assertIn("Send the prompt again", self.guard(headers="x-litellm-tags: customer:other"))
-        self.assertIn("x-litellm-tags: customer:A", self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
-        self.assertEqual(self.guard(None, headers="x-litellm-tags: customer:other"), "UNMAPPED")
+        self.assertIn("x-litellm-tags: customer:acme", self.read(self.local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
+        reason = self.guard(attribution(customer=None), headers="x-litellm-tags: customer:other")
+        self.assertTrue(reason.startswith(MISSING_PHRASE))
 
-    def test_stale_headers_keep_unmapped_prompts_blocked(self):
+    def test_stale_headers_keep_prompts_with_missing_labels_blocked(self):
         # Claude keeps ANTHROPIC_CUSTOM_HEADERS in its environment after the local file stops setting it.
         self.guard()
-        self.assertEqual(self.guard(None, HEADERS), "UNMAPPED")
-        self.assertEqual(self.guard(None, HEADERS), "UNMAPPED")
+        self.assertTrue(self.guard(attribution(customer=None), HEADERS).startswith(MISSING_PHRASE))
+        self.assertTrue(self.guard(attribution(customer=None), HEADERS).startswith(MISSING_PHRASE))
+        self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", self.read(self.local).get("env", {}))
         self.local.unlink()
-        other = Attribution("customer:B", "local", "repo bind", "github.com/acme/web")
-        self.assertIn("customer:B", self.guard(other, HEADERS))
+        self.assertIn('customer="globex"', self.guard(attribution("globex"), HEADERS))
 
     def test_unrelated_local_settings_and_headers_are_kept(self):
         self.local.parent.mkdir(parents=True)
@@ -247,8 +305,14 @@ class GuardTests(ClaudeTestCase):
         self.assertEqual(data["permissions"], {"allow": ["Bash(ls)"]})
         self.assertEqual(data["env"]["A"], "1")
         self.assertEqual(data["env"]["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: t\n" + HEADERS)
-        self.guard(None, HEADERS)
+        self.guard(attribution(customer=None), HEADERS)
         self.assertEqual(self.read(self.local)["env"], {"ANTHROPIC_CUSTOM_HEADERS": "X-Trace: t", "A": "1"})
+
+    def test_refresh_with_missing_labels_removes_the_headers(self):
+        self.guard()
+        self.assertTrue(self.claude.refresh_local(self.context, self.local, attribution(customer=None), self.repo))
+        self.assertNotIn("env", self.read(self.local))
+        self.assertFalse(self.claude.refresh_local(self.context, self.local, ATTRIBUTION, self.repo))
 
 
 class CliTests(ClaudeTestCase):
@@ -277,33 +341,63 @@ class CliTests(ClaudeTestCase):
         self.assertEqual(result, 0)
         return json.loads(stdout)["reason"] if stdout else None
 
+    def bind(self, *labels, replace=False):
+        args = ["repo", "bind", "--directory", str(self.repo), *(["--replace"] if replace else [])]
+        result, _, stderr = self.call(*args, *(arg for label in labels for arg in ("--label", label)))
+        self.assertEqual(result, 0, stderr)
+        return stderr
+
     def test_guard_assigns_from_the_resolver_and_follows_rebinds(self):
         self.assertIn("repo bind", self.guard())
-        self.assertEqual(self.call("repo", "bind", "--directory", str(self.repo), "--customer", "customer:A")[0], 0)
-        self.assertIn("customer:A", self.guard())
+        self.bind("customer=acme")
+        self.assertIn('customer="acme"', self.guard())
         local = self.claude.local_settings(self.repo, self.repo)
         headers = self.read(local)["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         self.assertIsNone(self.guard({"ANTHROPIC_CUSTOM_HEADERS": headers}))
-        result, _, stderr = self.call("repo", "bind", "--directory", str(self.repo), "--customer", "customer:B")
-        self.assertEqual(result, 0)
-        self.assertIn("Updated", stderr)
-        self.assertIn("x-litellm-tags: customer:B", self.read(local)["env"]["ANTHROPIC_CUSTOM_HEADERS"])
+        self.assertIn("Updated", self.bind("customer=globex", "project=webshop", replace=True))
+        self.assertIn(
+            "x-litellm-tags: customer:globex,project:webshop", self.read(local)["env"]["ANTHROPIC_CUSTOM_HEADERS"],
+        )
+
+    def test_the_launch_marker_counts_as_explicit_labels(self):
+        self.bind("customer=acme")
+        local = self.claude.local_settings(self.repo, self.repo)
+        self.guard()  # Another session in the folder wrote the bound labels.
+        written = self.read(local)
+        headers = (
+            "x-litellm-tags: customer:globex\nx-litellm-spend-logs-metadata: "
+            '{"labels":{"customer":"globex"},"repository":"github.com/acme/web","sources":{"customer":"explicit"}}'
+        )
+        marker = {LAUNCH_VARIABLE: json.dumps({"customer": "globex"})}
+        self.assertIn('customer="globex"', self.guard(marker))
+        self.assertIsNone(self.guard({**marker, "ANTHROPIC_CUSTOM_HEADERS": headers}))
+        # Launch-only labels never reach the local settings file every session in the folder reads.
+        self.assertEqual(self.read(local), written)
+        local.unlink()
+        self.assertIsNotNone(self.guard(marker))
+        self.assertIsNotNone(self.guard({LAUNCH_VARIABLE: json.dumps({"customer": "globex", "project": None})}))
+        self.assertFalse(local.exists())
+        # The marker never allows headers that are not its own, and a malformed one counts as absent.
+        self.assertIsNotNone(self.guard({**marker, "ANTHROPIC_CUSTOM_HEADERS": "x-litellm-tags: customer:globex"}))
+        for broken in ("{", "[]", '{"customer": "a,b"}', '{"Customer": "x"}'):
+            with self.subTest(marker=broken):
+                self.assertIn('customer="acme"', self.guard({LAUNCH_VARIABLE: broken, "ANTHROPIC_CUSTOM_HEADERS": headers}))
 
     def test_guard_uses_the_directory_claude_started_in(self):
         # After the model runs 'cd sub', the payload's cwd moves but Claude still reads the starting folder's settings.
-        self.assertEqual(self.call("repo", "bind", "--directory", str(self.repo), "--customer", "customer:A")[0], 0)
+        self.bind("customer=acme")
         nested = self.repo / "sub"
         subprocess.run(["git", "init", "--quiet", str(nested)], check=True, capture_output=True)
         result, stdout, _ = self.call(
             "claude", "guard", stdin=json.dumps({"cwd": str(nested)}), environ={"CLAUDE_PROJECT_DIR": str(self.repo)},
         )
         self.assertEqual(result, 0)
-        self.assertIn("customer:A", json.loads(stdout)["reason"])
+        self.assertIn('customer="acme"', json.loads(stdout)["reason"])
         self.assertTrue(self.claude.local_settings(self.repo, self.repo).is_file())
         self.assertFalse((nested / ".claude").exists())
 
     def test_guard_fails_closed(self):
-        (self.repo / ".vkm").write_text("customer = 'a,b'", encoding="utf-8")
+        (self.repo / ".vkm").write_text("[labels]\ncustomer = 'a,b'\n", encoding="utf-8")
         self.assertIn(".vkm", self.guard())
         with patch("virtual_key_mapper.cli.find_checkout", side_effect=RuntimeError("boom")):
             self.assertIn("could not check", self.guard())

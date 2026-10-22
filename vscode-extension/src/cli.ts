@@ -1,5 +1,5 @@
 // Calls the vkm CLI. Its JSON outputs are the extension's only source of credentials, endpoints and
-// attribution headers, so nothing here knows a gateway's paths or header names.
+// label headers, so nothing here knows a gateway's paths, header names or label formats.
 import { execFile } from "node:child_process";
 
 export interface CliToken {
@@ -14,17 +14,40 @@ export interface CliProfile {
   endpoints: Record<string, string>;
 }
 
-export interface CliAttribution {
-  customer: string;
-  source: string;
-  detail: string;
-  repository: string | null;
-  headers: Record<string, string>;
+/** One defined label of a folder, in definition order; `value` is null when it has none. */
+export interface CliLabel {
+  key: string;
+  value: string | null;
+  name: string | null;
+  source: string | null;
+  detail: string | null;
+  required: boolean;
+  description: string | null;
 }
 
-/** A failed CLI call; `message` is the CLI's own error text (it never contains credentials). */
+/** `vkm repo show --json`: `headers` may be sent only when `complete`; otherwise `message` says why not. */
+export interface CliLabels {
+  labels: CliLabel[];
+  missing: string[];
+  ignored: Array<{ key: string; value: string | null; source: string; detail: string; reason: string }>;
+  repository: string | null;
+  complete: boolean;
+  headers: Record<string, string>;
+  message: string | null;
+  notices: string[];
+}
+
+/** The CLI's fixed start of the error for required labels without a value. */
+export const MISSING_PHRASE = "Required labels have no value:";
+
+/**
+ * A failed CLI call; `message` is the CLI's own error text (it never contains credentials). `directory` is the
+ * folder whose labels are missing, when known.
+ */
 export class CliError extends Error {
-  constructor(message: string, readonly needsLogin: boolean, readonly unassigned: boolean) {
+  constructor(
+    message: string, readonly needsLogin: boolean, readonly missingLabels: boolean, readonly directory?: string,
+  ) {
     super(message);
   }
 }
@@ -42,7 +65,7 @@ export function runner(command: readonly string[]): Runner {
           const message = notFound
             ? `Cannot run ${command[0]}; set vkm.command to the vkm CLI.`
             : String(stderr || error.message).replace(/^Error: /, "").trim();
-          reject(new CliError(message, /\blogin\b/.test(message), /No customer is assigned/.test(message)));
+          reject(new CliError(message, /\blogin\b/.test(message), message.includes(MISSING_PHRASE)));
         });
     });
 }
@@ -68,37 +91,79 @@ export async function profile(run: Runner, profileName: string): Promise<CliProf
   return parse<CliProfile>(await run(["profile", "show", ...(profileName ? [profileName] : []), "--json"]), "profile");
 }
 
-export async function attribution(run: Runner, profileName: string, directory: string): Promise<CliAttribution> {
-  return parse<CliAttribution>(
-    await run(["repo", "show", "--json", "--directory", directory, ...option(profileName)]), "customer",
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A folder's labels; an answer of another shape fails, so headers are never sent from a misread answer. */
+export async function labels(run: Runner, profileName: string, directory: string): Promise<CliLabels> {
+  const value = parse<CliLabels>(
+    await run(["repo", "show", "--json", "--directory", directory, ...option(profileName)]), "labels",
   );
+  if (
+    !isObject(value) || !Array.isArray(value.labels) || !value.labels.every(isObject) || !Array.isArray(value.missing)
+    || typeof value.complete !== "boolean" || !isObject(value.headers)
+  ) {
+    throw new CliError("vkm returned unreadable labels; update the CLI.", false, false);
+  }
+  return value;
 }
 
+/** What the companion passes on from `vkm profile show --json`; `labels` and `outputs` are the profile's own. */
 export interface LocalProfile {
   name: string;
   gateway: { type: string; url: string };
   rules?: string | null;
+  labels?: unknown[];
+  outputs?: Record<string, unknown>;
+}
+
+/** The keys of a format's `${KEY}` placeholders (a string or a list of strings); `$$` is a literal `$`. */
+function placeholders(format: unknown): string[] {
+  const entries = Array.isArray(format) ? format : [format];
+  return entries.flatMap((entry) => (typeof entry === "string"
+    ? [...entry.matchAll(/\$\$|\$\{([^}]*)\}/g)].flatMap((match) => (match[1] === undefined ? [] : [match[1]]))
+    : []));
 }
 
 /**
- * Arguments to create the container's profile from the local one, signing in through the relay. Central rules are
- * copied when they are a URL; a local file path does not exist in the container, so it is returned to warn about.
+ * Arguments to create the container's profile from the local one in one call, signing in through the relay, with
+ * the local profile's own label definitions and outputs. Central rules are copied when they are a URL; a local file
+ * path does not exist in the container, so it is returned to warn about. Without those rules, an output override
+ * using a label only they define would make `profile add` fail: such overrides are left out (the gateway's default
+ * applies) and named in `droppedOutputs`.
  */
-export function remoteProfileArgs(local: LocalProfile): { args: string[]; skippedRules: string | null } {
+export function remoteProfileArgs(
+  local: LocalProfile,
+): { args: string[]; skippedRules: string | null; droppedOutputs: string[] } {
   const insecure = local.gateway.url.startsWith("http:");
   const rules = typeof local.rules === "string" ? local.rules : null;
   const url = rules !== null && (rules.startsWith("https://") || (insecure && rules.startsWith("http://")));
+  const skippedRules = rules !== null && !url ? rules : null;
+  const definitions: Record<string, unknown> = {};
+  if (Array.isArray(local.labels) && local.labels.length) definitions.labels = local.labels;
+  const droppedOutputs: string[] = [];
+  if (isObject(local.outputs)) {
+    const own = new Set((local.labels ?? []).flatMap((label) => (isObject(label) && typeof label.key === "string" ? [label.key] : [])));
+    const outputs = Object.fromEntries(Object.entries(local.outputs).filter(([name, override]) => {
+      const keep = skippedRules === null || !isObject(override) || placeholders(override.format).every((key) => own.has(key));
+      if (!keep) droppedOutputs.push(name);
+      return keep;
+    }));
+    if (Object.keys(outputs).length) definitions.outputs = outputs;
+  }
   return {
     args: [
       "profile", "add", local.name, "--gateway", local.gateway.url, "--gateway-type", local.gateway.type,
       "--auth", "forwarded", "--host-profile", local.name,
       ...(insecure ? ["--allow-insecure-localhost"] : []),
       ...(url ? ["--rules", rules] : []),
+      ...(Object.keys(definitions).length ? [`--definitions=${JSON.stringify(definitions)}`] : []),
     ],
-    skippedRules: rules !== null && !url ? rules : null,
+    skippedRules,
+    droppedOutputs,
   };
 }
 
-/** Arguments to sign in or assign a customer interactively in a terminal. */
+/** Arguments to sign in, or to answer for each missing required label, interactively in a terminal. */
 export const loginArgs = (profileName: string) => ["login", ...option(profileName)];
 export const bindArgs = (profileName: string, directory: string) => ["repo", "bind", "--directory", directory, ...option(profileName)];

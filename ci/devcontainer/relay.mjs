@@ -22,5 +22,8 @@ await serve(socketPath, askLocal);
 console.log(`relay listening on ${socketPath}`);
 
 const local = await askLocal({ operation: "profile", profile: "" });
-execFileSync("python", ["-m", "virtual_key_mapper", ...remoteProfileArgs(local).args], { stdio: "inherit" });
+const { args, skippedRules, droppedOutputs } = remoteProfileArgs(local);
+if (skippedRules) console.log(`relay: the central label rules ${skippedRules} are a local file and were not copied`);
+if (droppedOutputs.length) console.log(`relay: left out the output overrides ${droppedOutputs.join(", ")}, which use those rules' labels`);
+execFileSync("python", ["-m", "virtual_key_mapper", ...args], { stdio: "inherit" });
 console.log(`relay: created profile '${local.name}' from the local one`);

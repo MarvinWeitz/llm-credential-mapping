@@ -1,7 +1,7 @@
-// Registers the gateway models for Copilot Chat and shows which customer this window's requests use.
+// Registers the gateway models for Copilot Chat and shows which labels this window's requests carry.
 import * as vscode from "vscode";
 import { AGENT_VARIABLE, agentPath, Busy, serve, stillServing, type AgentRequest } from "./agent";
-import { AttributionCache, choose, type Choice } from "./attribution";
+import { choose, escapeIcons, LabelCache, summary, tooltip, type Choice } from "./labels";
 import * as cli from "./cli";
 import { TokenCache } from "./credentials";
 import { GatewayError } from "./gateway";
@@ -9,6 +9,7 @@ import { Provider, VENDOR, type Services } from "./provider";
 
 const CHOSEN_FOLDER = "vkm.chosenFolder";
 const LOGIN_TERMINAL = "vkm login";
+const BIND_TERMINAL = "vkm repo bind";
 /** Commands of the companion extension "Virtual Key Mapper: local sign-in", which runs on the local machine. */
 const LOCAL_REQUEST = "vkm.local.request";
 const LOCAL_SIGN_IN = "vkm.local.signIn";
@@ -74,26 +75,36 @@ async function ensureRemoteProfile(
       return;
     }
   }
+  let local: cli.LocalProfile | undefined;
   try {
-    const local = await askLocal({ operation: "profile", profile: profileName }) as cli.LocalProfile;
-    const { args, skippedRules } = cli.remoteProfileArgs(local);
+    local = await askLocal({ operation: "profile", profile: profileName }) as cli.LocalProfile;
+    const { args, skippedRules, droppedOutputs } = cli.remoteProfileArgs(local);
+    if (skippedRules) {
+      // Without the central document, its required labels and output formats do not apply here.
+      const dropped = droppedOutputs.length
+        ? ` Its output overrides ${droppedOutputs.join(", ")} use those labels and were left out (the gateway's defaults apply).`
+        : "";
+      const warning = `Profile '${local.name}' here lacks its central label rules: ${skippedRules} is a local file, so the `
+        + "organisation's label definitions are missing in this container." + dropped + " Set them with "
+        + `'vkm profile update ${local.name} --rules URL_OR_PATH'.`;
+      output.appendLine(warning);
+      void vscode.window.showWarningMessage(`vkm: ${warning}`);
+    }
     await run(args);
     output.appendLine(`Created profile '${local.name}' here; it uses the sign-in of your local machine.`);
-    if (skippedRules) {
-      output.appendLine(`Its central customer rules (${skippedRules}) are a local file; set them here with `
-        + `'vkm profile update ${local.name} --rules URL_OR_PATH'.`);
-    }
     onCreated(); // The first model listing ran without a profile and found nothing.
   } catch (error) {
-    output.appendLine(`Could not create a profile from the local one: ${(error as Error).message}`);
+    const message = `Could not create a profile from the local one${local ? ` ('${local.name}')` : ""}: ${(error as Error).message}`;
+    output.appendLine(message);
+    void vscode.window.showWarningMessage(`vkm: ${message}`);
   }
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Virtual Key Mapper");
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  status.command = "vkm.showCustomer";
-  status.name = "Virtual Key Mapper customer";
+  status.command = "vkm.showLabels";
+  status.name = "Virtual Key Mapper labels";
   let lastError = "";
 
   const settings = () => vscode.workspace.getConfiguration("vkm");
@@ -105,19 +116,23 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.createTerminal({ name, shellPath: executable, shellArgs: [...prefix, ...args] }).show();
   };
 
+  const warn = (warning: boolean) =>
+    (status.backgroundColor = warning ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined);
   const showChoice = (choice: Choice) => {
     if (choice.kind === "folder") {
-      status.text = `$(tag) ${choice.attribution.customer}`;
-      status.tooltip = `Copilot Chat requests with vkm models use customer ${choice.attribution.customer}\n`
-        + `${choice.attribution.source}: ${choice.attribution.detail}\nFolder: ${choice.folder}`;
-      status.backgroundColor = undefined;
+      const shown = summary(choice.labels);
+      status.text = `$(${shown.warning ? "warning" : "tag"}) ${shown.text}`;
+      status.tooltip = tooltip(choice.labels, choice.folder);
+      warn(shown.warning);
     } else {
-      status.text = choice.kind === "none" ? "$(tag) no folder" : "$(warning) choose customer";
-      status.tooltip = "vkm: no customer for this window; click to choose";
-      status.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      status.text = choice.kind === "none" ? "$(tag) no folder" : "$(warning) choose folder";
+      status.tooltip = choice.kind === "none" ? "vkm: open a folder to use its labels"
+        : "vkm: the workspace folders have different labels; click to choose";
+      warn(choice.kind === "choose");
     }
     status.show();
   };
+  const bind = (directory: string) => terminal(BIND_TERMINAL, cli.bindArgs(profileName(), directory));
 
   const showError = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -126,11 +141,14 @@ export function activate(context: vscode.ExtensionContext): void {
     lastError = message;
     // A 401 here survived the retry with a fresh token: the gateway no longer accepts this sign-in.
     const needsLogin = (error instanceof cli.CliError && error.needsLogin) || (error instanceof GatewayError && error.status === 401);
-    const actions = needsLogin ? ["Sign in"]
-      : error instanceof cli.CliError && error.unassigned ? ["Assign customer"] : [];
+    const missing = error instanceof cli.CliError && error.missingLabels ? error : undefined;
+    const actions = needsLogin ? ["Sign in"] : missing ? ["Assign labels"] : [];
     void vscode.window.showWarningMessage(`vkm: ${message}`, ...actions).then((action) => {
       if (action === "Sign in") vscode.commands.executeCommand("vkm.signIn");
-      if (action === "Assign customer") vscode.commands.executeCommand("vkm.showCustomer");
+      if (action === "Assign labels") {
+        if (missing?.directory) bind(missing.directory);
+        else vscode.commands.executeCommand("vkm.showLabels");
+      }
     });
   };
 
@@ -140,7 +158,7 @@ export function activate(context: vscode.ExtensionContext): void {
     return {
       run, profileName: name,
       tokens: new TokenCache(() => cli.token(run, name)),
-      customers: new AttributionCache((folder) => cli.attribution(run, name, folder)),
+      labels: new LabelCache((folder) => cli.labels(run, name, folder)),
       chosenFolder: () => context.workspaceState.get<string>(CHOSEN_FOLDER),
       onChoice: showChoice,
       onError: showError,
@@ -154,11 +172,11 @@ export function activate(context: vscode.ExtensionContext): void {
     const document = vscode.window.activeTextEditor?.document.uri;
     const active = document ? vscode.workspace.getWorkspaceFolder(document)?.uri.fsPath : undefined;
     try {
-      showChoice(await choose(folders, active, current.chosenFolder(), current.customers));
+      showChoice(await choose(folders, active, current.chosenFolder(), current.labels));
     } catch (error) {
-      status.text = "$(warning) no customer";
+      status.text = "$(warning) labels";
       status.tooltip = error instanceof Error ? error.message : String(error);
-      status.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      warn(true);
       status.show();
     }
   };
@@ -176,8 +194,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshStatus()),
     vscode.window.onDidChangeActiveTextEditor(() => void refreshStatus()),
     vscode.commands.registerCommand("vkm.refresh", reset),
-    // After a sign-in, list the models again: a listing without a sign-in found none.
-    vscode.window.onDidCloseTerminal((closed) => closed.name === LOGIN_TERMINAL && reset()),
+    vscode.window.onDidCloseTerminal((closed) => {
+      if (closed.name === LOGIN_TERMINAL) reset(); // List the models again: a listing without a sign-in found none.
+      if (closed.name === BIND_TERMINAL) {
+        current.labels.clear(); // The new binding applies at once, not after the cache expires.
+        lastError = "";
+        void refreshStatus();
+      }
+    }),
     vscode.commands.registerCommand("vkm.signIn", async () => {
       if (!vscode.env.remoteName) return terminal(LOGIN_TERMINAL, cli.loginArgs(profileName()));
       try {
@@ -187,24 +211,29 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage(LOCAL_MISSING);
       }
     }),
-    vscode.commands.registerCommand("vkm.showCustomer", async () => {
+    vscode.commands.registerCommand("vkm.showLabels", async () => {
       const folders = vscode.workspace.workspaceFolders ?? [];
-      current.customers.clear();
+      current.labels.clear();
       const items = await Promise.all(folders.map(async (folder) => {
         try {
-          const attribution = await current.customers.get(folder.uri.fsPath);
-          return { label: folder.name, description: attribution.customer, detail: `${attribution.source}: ${attribution.detail}`, folder };
+          const labels = await current.labels.get(folder.uri.fsPath);
+          const sources = labels.labels.filter((label) => label.source).map((label) => `${label.key}: ${label.source}`);
+          return {
+            label: escapeIcons(folder.name), description: summary(labels).text, folder, assign: !labels.complete,
+            detail: escapeIcons(labels.complete ? sources.join(", ") : `Assign labels: ${labels.message ?? ""}`),
+          };
         } catch (error) {
-          return { label: folder.name, description: "no customer", detail: error instanceof Error ? error.message : String(error), folder };
+          const detail = escapeIcons(error instanceof Error ? error.message : String(error));
+          return { label: escapeIcons(folder.name), description: "labels", detail, folder, assign: true };
         }
       }));
       const picked = await vscode.window.showQuickPick(items, {
-        title: "Customer for Copilot Chat requests in this window",
-        placeHolder: "Choose the folder whose customer applies when no editor is active",
+        title: "Labels for Copilot Chat requests in this window",
+        placeHolder: "Choose the folder whose labels apply when no editor is active",
       });
       if (!picked) return;
-      if (picked.description === "no customer") {
-        terminal("vkm repo bind", cli.bindArgs(profileName(), picked.folder.uri.fsPath));
+      if (picked.assign) {
+        bind(picked.folder.uri.fsPath);
         return;
       }
       await context.workspaceState.update(CHOSEN_FOLDER, picked.folder.uri.fsPath);

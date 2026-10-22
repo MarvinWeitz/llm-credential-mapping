@@ -40,15 +40,15 @@ test("models are listed with the credential", async () => {
   await assert.rejects(listModels(endpoint, "stale"), (error: unknown) => error instanceof GatewayError && error.status === 401);
 });
 
-test("chat requests carry the credential and attribution headers and stream text", async () => {
+test("chat requests carry the credential and label headers and stream text", async () => {
   const events: StreamEvent[] = [];
-  await streamChat(endpoint, "good", { "x-test-customer": "acme", authorization: "spoofed" },
+  await streamChat(endpoint, "good", { "x-test-tags": "customer:acme", authorization: "spoofed" },
     { model: "a", messages: [{ role: "user", content: "Hi" }] }, (event) => events.push(event));
   assert.deepEqual(events, [{ kind: "text", text: "Hi" }]);
   const last = requests[requests.length - 1];
   assert.equal(last.url, "/v1/chat/completions");
   assert.equal(last.headers.authorization, "Bearer good");
-  assert.equal(last.headers["x-test-customer"], "acme");
+  assert.equal(last.headers["x-test-tags"], "customer:acme");
   assert.equal(last.body.stream, true);
   assert.equal(last.body.model, "a");
 });
