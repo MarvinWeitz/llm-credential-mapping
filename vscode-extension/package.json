@@ -2,10 +2,9 @@
   "name": "vkm",
   "displayName": "Virtual Key Mapper for Copilot Chat",
   "description": "Gateway models in Copilot Chat with your vkm sign-in and each workspace's labels.",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "publisher": "cbs-consulting",
   "icon": "images/icon.png",
-  "private": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -97,6 +96,7 @@
     "@types/vscode": "1.104.0",
     "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "3.6.0",
+    "ovsx": "1.2.0",
     "typescript": "5.9.2"
   }
 }

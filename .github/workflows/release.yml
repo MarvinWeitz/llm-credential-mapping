@@ -1,0 +1,145 @@
+name: Release
+# Publishes a tested commit: the CLI on PyPI, both VS Code extensions on the Visual Studio Marketplace
+# and Open VSX, and a GitHub release with the version's CHANGELOG.md entry. Started by hand from the
+# Actions tab; nothing is published until a maintainer approves the "release" environment.
+#
+# PyPI accepts the upload because this workflow is the project's trusted publisher (pypi.org ->
+# virtual-key-mapper -> Publishing: owner cbs-consulting, repository virtual-key-mapper, workflow
+# release.yml, environment release), so no PyPI token is stored here. The extensions need the
+# repository secrets VSCE_PAT (Azure DevOps token, scope Marketplace: Manage, publisher
+# cbs-consulting) and OVSX_PAT (Open VSX token, namespace cbs-consulting).
+#
+# The workflow can be run again; whatever was already published for this version is skipped.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to release
+        default: main
+      dry_run:
+        description: Only run the checks and the build, publish nothing
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+      version: ${{ steps.check.outputs.version }}
+      pypi_done: ${{ steps.check.outputs.pypi_done }}
+      tag_exists: ${{ steps.check.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - run: python -m pip install -e .
+      - run: python -m unittest discover -s tests
+      - run: npm ci && npm test
+        working-directory: vscode-extension
+      - run: npm test
+        working-directory: vscode-extension/local
+      - name: Build the package and the extensions (as the publish job will)
+        run: |
+          python -m pip install build==1.6.1 && python -m build
+          (cd vscode-extension && npm run package && cd local && npm run package)
+      - name: Check that this commit may be released
+        id: check
+        run: |
+          SHA=$(git rev-parse HEAD)
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Candidate: $SHA (virtual-key-mapper $VERSION)"
+          # The tests check that the package and both extensions carry the same version.
+          if ! grep -Eq "^## $VERSION - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no entry '## $VERSION - YYYY-MM-DD'. Rename 'Unreleased' to it before releasing."
+            exit 1
+          fi
+          if curl -sf -o /dev/null "https://pypi.org/pypi/virtual-key-mapper/$VERSION/json"; then
+            echo "$VERSION is already on PyPI; it is not uploaded again."
+            echo "pypi_done=true" >> "$GITHUB_OUTPUT"
+          fi
+          TAGGED=$(git ls-remote --tags origin "refs/tags/v$VERSION^{}" "refs/tags/v$VERSION" | tail -1 | cut -f1)
+          if [ -n "$TAGGED" ] && [ "$TAGGED" != "$SHA" ]; then
+            echo "::error::The tag v$VERSION already points at another commit ($TAGGED). Raise the version."
+            exit 1
+          fi
+          if [ -n "$TAGGED" ]; then echo "tag_exists=true" >> "$GITHUB_OUTPUT"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "::notice::Dry run passed. $VERSION could be released; nothing was published."
+          fi
+
+  publish:
+    needs: check
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write # the GitHub release
+      id-token: write # PyPI trusted publishing
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Build the package
+        run: python -m pip install build==1.6.1 && python -m build
+      - name: Package the extensions
+        run: npm ci && npm run package && (cd local && npm run package)
+        working-directory: vscode-extension
+      - name: Publish to PyPI
+        if: ${{ needs.check.outputs.pypi_done != 'true' }}
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      - name: Publish the extensions to the Visual Studio Marketplace
+        working-directory: vscode-extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          for package in vkm.vsix local/vkm-local.vsix; do
+            id=cbs-consulting.$(basename "$package" .vsix)
+            # Not found (first release) prints nothing, which counts as not published yet.
+            if npx vsce show "$id" --json 2>/dev/null | python3 -c 'import json, os, sys; data = sys.stdin.read(); sys.exit(0 if data and any(v["version"] == os.environ["VERSION"] for v in json.loads(data)["versions"]) else 1)'; then
+              echo "$id $VERSION is already on the Marketplace."
+            else
+              npx vsce publish --packagePath "$package"
+            fi
+          done
+      - name: Publish the extensions to Open VSX
+        working-directory: vscode-extension
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          for package in vkm.vsix local/vkm-local.vsix; do
+            name=$(basename "$package" .vsix)
+            if curl -sf -o /dev/null "https://open-vsx.org/api/cbs-consulting/$name/$VERSION"; then
+              echo "cbs-consulting.$name $VERSION is already on Open VSX."
+            else
+              npx ovsx publish "$package"
+            fi
+          done
+      - name: Publish the GitHub release
+        if: ${{ needs.check.outputs.tag_exists != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          awk -v v="$VERSION" '$1 == "##" { if (found) exit; found = ($2 == v); next } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$SHA" --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" dist/* vscode-extension/vkm.vsix vscode-extension/local/vkm-local.vsix

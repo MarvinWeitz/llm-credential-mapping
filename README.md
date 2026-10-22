@@ -1,11 +1,13 @@
 <div align="center">
 
-<img src=".github/assets/logo.svg" alt="" width="120" />
+<img src="https://raw.githubusercontent.com/cbs-consulting/virtual-key-mapper/main/.github/assets/logo.svg" alt="" width="120" />
 
 # cbs Virtual Key Mapper
 
 **Short-lived keys from your company gateway, labelled with the repository you work in, for every tool you use.**
 
+[![PyPI](https://img.shields.io/pypi/v/virtual-key-mapper?logo=pypi&logoColor=white)](https://pypi.org/project/virtual-key-mapper/)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/cbs-consulting.vkm?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-0F4C5C)](#-what-works-where)
@@ -85,9 +87,10 @@ document or by your profile ([Labels](#-labels)).
 Needs Python 3.11 or newer and an OS credential vault.
 
 ```bash
-uv tool install git+https://github.com/cbs-consulting/virtual-key-mapper    # or: pipx install git+https://...
+uv tool install virtual-key-mapper      # or: pipx install virtual-key-mapper
 ```
 
+Update later with `uv tool upgrade virtual-key-mapper` (or `pipx upgrade virtual-key-mapper`).
 From a checkout instead:
 
 ```bash
@@ -304,11 +307,12 @@ terminal it asks for missing required labels and saves the answers as your perso
 
 ### GitHub Copilot Chat (VS Code)
 
-Build and install the extension (`vscode-extension/`, see its README):
+Install **Virtual Key Mapper for Copilot Chat** (`cbs-consulting.vkm`) from the Extensions view,
+the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm)
+or [Open VSX](https://open-vsx.org/extension/cbs-consulting/vkm) (Cursor, VSCodium):
 
 ```bash
-cd vscode-extension && npm ci && npm run package
-code --install-extension vkm.vsix   # or Extensions → ··· → Install from VSIX
+code --install-extension cbs-consulting.vkm
 ```
 
 Set `vkm.command` in your VS Code user settings to how the CLI runs, e.g.
@@ -324,15 +328,13 @@ suggestions always use GitHub's models and are not attributed.
 The container gets short-lived tokens from the sign-in on your own computer; nothing
 long-lived is stored inside it.
 
-1. Local VS Code: build the companion (`cd vscode-extension && npm ci && cd local && npm run package`)
-   and install `vscode-extension/local/vkm-local.vsix`
-   ("Virtual Key Mapper: local sign-in") and set `vkm.localCommand` in your user
+1. Local VS Code: install **Virtual Key Mapper: local sign-in** (`cbs-consulting.vkm-local`) and set `vkm.localCommand` in your user
    settings to the local CLI command. Containers get tokens only for your local default
    profile; list others in `vkm.localProfiles` (user settings) to allow them.
 2. In the container: install the CLI, e.g.
-   `uv tool install --python 3.12 "git+https://github.com/cbs-consulting/virtual-key-mapper@BRANCH_OR_COMMIT"`
-   and install `vscode-extension/vkm.vsix` (`npm run package` in `vscode-extension/`) into
-   the container (Install from VSIX → Show Local). Reload the window.
+   `uv tool install --python 3.12 virtual-key-mapper`, and install `cbs-consulting.vkm` into the
+   container (VS Code offers "Install in Dev Container"; or list it under
+   `customizations.vscode.extensions` in `devcontainer.json`). Reload the window.
 3. The extension creates a container profile that uses your local sign-in
    (`vkm profile list` shows `forwarded`), with your local profile's own label definitions and
    output overrides and its central rules URL. Do not run `login` in the container.
@@ -355,6 +357,30 @@ bindings made inside a container live in the container.
 `profile add|list|show|use|update`, `login`, `status`, `token [--json]`, `logout`,
 `repo show|bind|unbind|list`, `labels list|values`, `setup claude|codex|opencode`, `run`,
 `shell-init`, and `claude guard` (the hook). `vkm COMMAND --help` explains each.
+
+## 📌 Releases
+
+| What | Where | Name |
+| --- | --- | --- |
+| CLI | [PyPI](https://pypi.org/project/virtual-key-mapper/) | `virtual-key-mapper` (command `vkm`) |
+| Copilot Chat extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm), [Open VSX](https://open-vsx.org/extension/cbs-consulting/vkm) | `cbs-consulting.vkm` |
+| Local sign-in extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm-local), [Open VSX](https://open-vsx.org/extension/cbs-consulting/vkm-local) | `cbs-consulting.vkm-local` |
+
+All three share one version. Releases are made by the "Release" workflow in the Actions tab, which
+
+1. runs the Python and extension tests on the commit to release and builds everything,
+2. requires a `## VERSION - DATE` entry in [`CHANGELOG.md`](CHANGELOG.md),
+3. waits for a maintainer to approve the `release` environment,
+4. publishes the package to PyPI (trusted publishing: no token in the repository), both
+   extensions to the Marketplace and Open VSX, and the GitHub release `vVERSION` with the
+   changelog entry as notes and the built files attached.
+
+Every change goes into the "Unreleased" section of `CHANGELOG.md` in its pull request; the
+"Changelog entry" check fails otherwise, unless the pull request has the label "no changelog".
+To prepare a release, set the same version in `pyproject.toml`, `src/virtual_key_mapper/__init__.py`
+and both `package.json` files (`npm install` in `vscode-extension/` updates the lockfile), and
+rename "Unreleased" to `VERSION - DATE`; the tests check that they agree. The workflow can be run
+again and skips what is already published; its "dry run" option only checks and builds.
 
 ## 🛠️ Contributing
 

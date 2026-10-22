@@ -1,0 +1,27 @@
+name: Changelog
+# Every pull request adds a line to the "Unreleased" section of CHANGELOG.md. Pull requests
+# that change nothing a user notices (chores, CI, typos) get the label "no changelog"
+# instead. Adding or removing the label runs the check again.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  changelog:
+    name: Changelog entry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that CHANGELOG.md is changed
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'no changelog') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename' | grep -qx CHANGELOG.md; then
+            echo "CHANGELOG.md is changed."
+          else
+            echo "::error::Add a line under \"Unreleased\" in CHANGELOG.md, or give the pull request the label \"no changelog\" if it changes nothing a user notices."
+            exit 1
+          fi
