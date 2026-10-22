@@ -156,3 +156,18 @@ jobs:
       - if: runner.os == 'Linux'
         run: npm run package
         working-directory: vscode-extension/local
+
+  test-summary:
+    # The single check that branch protection requires, so the rule does not have to list every
+    # job and platform above. always() makes it run, and fail, when one of them fails; a skipped
+    # required check would count as passing.
+    name: Test features
+    needs: [test, live, vault, devcontainer, vscode-extension]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for result in ${{ needs.test.result }} ${{ needs.live.result }} ${{ needs.vault.result }} \
+              ${{ needs.devcontainer.result }} ${{ needs.vscode-extension.result }}; do
+            test "$result" = "success"
+          done
