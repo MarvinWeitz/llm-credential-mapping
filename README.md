@@ -391,6 +391,9 @@ again and skips what is already published; its "dry run" option only checks and 
 
 ## 🛠️ Contributing
 
+Pull requests need two checks: **Test features** (all CI jobs on Windows, macOS and Linux) and
+**Changelog entry**.
+
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 cd vscode-extension && npm test && npm run test:host     # extension unit tests; real VS Code host
