@@ -12,6 +12,8 @@ the date.
   `VKM_*`. The VS Code extensions are `cbs-consulting.vkm` (Copilot Chat) and
   `cbs-consulting.vkm-local` (local sign-in for dev containers, SSH and WSL).
 - Licensed under the Apache License 2.0.
+- Published on PyPI (`virtual-key-mapper`), the Visual Studio Marketplace and Open VSX
+  (`cbs-consulting.vkm`, `cbs-consulting.vkm-local`) by a release workflow with one shared version.
 - Labels: requests carry key/value labels such as
   `customer = "acme"` and `project = "webshop"`, defined in the central rules document
   (version `"2.0"`) or the profile, with required labels, allowed values and per-label
