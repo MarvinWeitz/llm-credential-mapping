@@ -308,8 +308,10 @@ terminal it asks for missing required labels and saves the answers as your perso
 ### GitHub Copilot Chat (VS Code)
 
 Install **Virtual Key Mapper for Copilot Chat** (`cbs-consulting.vkm`) from the Extensions view,
-the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm)
-or [Open VSX](https://open-vsx.org/extension/cbs-consulting/vkm) (Cursor, VSCodium):
+the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm).
+For editors without the Marketplace (Cursor, VSCodium), install `vkm.vsix` from the
+[latest release](https://github.com/cbs-consulting/virtual-key-mapper/releases/latest)
+(Extensions → ··· → Install from VSIX):
 
 ```bash
 code --install-extension cbs-consulting.vkm
@@ -363,17 +365,22 @@ bindings made inside a container live in the container.
 | What | Where | Name |
 | --- | --- | --- |
 | CLI | [PyPI](https://pypi.org/project/virtual-key-mapper/) | `virtual-key-mapper` (command `vkm`) |
-| Copilot Chat extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm), [Open VSX](https://open-vsx.org/extension/cbs-consulting/vkm) | `cbs-consulting.vkm` |
-| Local sign-in extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm-local), [Open VSX](https://open-vsx.org/extension/cbs-consulting/vkm-local) | `cbs-consulting.vkm-local` |
+| Copilot Chat extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm), `vkm.vsix` on each [GitHub release](https://github.com/cbs-consulting/virtual-key-mapper/releases) | `cbs-consulting.vkm` |
+| Local sign-in extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm-local), `vkm-local.vsix` on each GitHub release | `cbs-consulting.vkm-local` |
 
 All three share one version. Releases are made by the "Release" workflow in the Actions tab, which
 
 1. runs the Python and extension tests on the commit to release and builds everything,
 2. requires a `## VERSION - DATE` entry in [`CHANGELOG.md`](CHANGELOG.md),
 3. waits for a maintainer to approve the `release` environment,
-4. publishes the package to PyPI (trusted publishing: no token in the repository), both
-   extensions to the Marketplace and Open VSX, and the GitHub release `vVERSION` with the
-   changelog entry as notes and the built files attached.
+4. publishes the package to PyPI (trusted publishing: no token in the repository) and the
+   GitHub release `vVERSION` with the changelog entry as notes and the built files attached.
+
+The extensions are then uploaded to the Visual Studio Marketplace by hand, so no store token is
+stored anywhere: download `vkm.vsix` and `vkm-local.vsix` from the release, open
+[marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage) → publisher
+`cbs-consulting`, and choose **⋯ → Update** for each extension (the first time: **New extension →
+Visual Studio Code**). The Marketplace accepts a package only for the publisher named inside it.
 
 Every change goes into the "Unreleased" section of `CHANGELOG.md` in its pull request; the
 "Changelog entry" check fails otherwise, unless the pull request has the label "no changelog".

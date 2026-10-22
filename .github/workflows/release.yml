@@ -1,13 +1,12 @@
 name: Release
-# Publishes a tested commit: the CLI on PyPI, both VS Code extensions on the Visual Studio Marketplace
-# and Open VSX, and a GitHub release with the version's CHANGELOG.md entry. Started by hand from the
+# Publishes a tested commit: the CLI on PyPI and a GitHub release with the version's CHANGELOG.md
+# entry and both VS Code extensions (.vsix) attached. Started by hand from the
 # Actions tab; nothing is published until a maintainer approves the "release" environment.
 #
 # PyPI accepts the upload because this workflow is the project's trusted publisher (pypi.org ->
 # virtual-key-mapper -> Publishing: owner cbs-consulting, repository virtual-key-mapper, workflow
-# release.yml, environment release), so no PyPI token is stored here. The extensions need the
-# repository secrets VSCE_PAT (Azure DevOps token, scope Marketplace: Manage, publisher
-# cbs-consulting) and OVSX_PAT (Open VSX token, namespace cbs-consulting).
+# release.yml, environment release), so no PyPI token is stored here. The extensions are uploaded to
+# the Visual Studio Marketplace by hand from the release (README, Releases): no store token either.
 #
 # The workflow can be run again; whatever was already published for this version is skipped.
 on:
@@ -107,33 +106,6 @@ jobs:
       - name: Publish to PyPI
         if: ${{ needs.check.outputs.pypi_done != 'true' }}
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-      - name: Publish the extensions to the Visual Studio Marketplace
-        working-directory: vscode-extension
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: |
-          for package in vkm.vsix local/vkm-local.vsix; do
-            id=cbs-consulting.$(basename "$package" .vsix)
-            # Not found (first release) prints nothing, which counts as not published yet.
-            if npx vsce show "$id" --json 2>/dev/null | python3 -c 'import json, os, sys; data = sys.stdin.read(); sys.exit(0 if data and any(v["version"] == os.environ["VERSION"] for v in json.loads(data)["versions"]) else 1)'; then
-              echo "$id $VERSION is already on the Marketplace."
-            else
-              npx vsce publish --packagePath "$package"
-            fi
-          done
-      - name: Publish the extensions to Open VSX
-        working-directory: vscode-extension
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: |
-          for package in vkm.vsix local/vkm-local.vsix; do
-            name=$(basename "$package" .vsix)
-            if curl -sf -o /dev/null "https://open-vsx.org/api/cbs-consulting/$name/$VERSION"; then
-              echo "cbs-consulting.$name $VERSION is already on Open VSX."
-            else
-              npx ovsx publish "$package"
-            fi
-          done
       - name: Publish the GitHub release
         if: ${{ needs.check.outputs.tag_exists != 'true' }}
         env:
@@ -143,3 +115,6 @@ jobs:
           awk -v v="$VERSION" '$1 == "##" { if (found) exit; found = ($2 == v); next } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
           gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$SHA" --title "v$VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" dist/* vscode-extension/vkm.vsix vscode-extension/local/vkm-local.vsix
+      - name: Remind to upload the extensions
+        run: |
+          echo "::notice::Upload vkm.vsix and vkm-local.vsix from https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION to the Visual Studio Marketplace: marketplace.visualstudio.com/manage -> cbs-consulting -> ... -> Update (README, Releases)."
