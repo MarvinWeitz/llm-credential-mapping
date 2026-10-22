@@ -5,7 +5,7 @@ the two VS Code extensions), newest first. Add your change under "Unreleased" in
 pull request. To release, raise the version and rename "Unreleased" to that version and
 the date.
 
-## Unreleased
+## 0.1.0 - 2026-10-22
 
 - First public version, under the name Virtual Key Mapper: the command is `vkm`, the
   package `virtual-key-mapper`, the repository file `.vkm` and the environment variables
