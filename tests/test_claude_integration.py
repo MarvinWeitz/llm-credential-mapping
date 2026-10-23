@@ -11,7 +11,7 @@ from unittest.mock import patch
 from virtual_key_mapper.adapters import Credential, IntegrationContext
 from virtual_key_mapper.cli import main
 from virtual_key_mapper.errors import CredentialError
-from virtual_key_mapper.integrations.claude import Claude, settings_path
+from virtual_key_mapper.integrations.claude import DISCOVERY, Claude, settings_path
 from virtual_key_mapper.integrations.common import shell_command
 from virtual_key_mapper.labels import (
     LAUNCH_VARIABLE, MISSING_PHRASE, Attribution, Label, LabelDefinition, OutputOverride,
@@ -72,7 +72,7 @@ class SetupTests(ClaudeTestCase):
         self.claude.setup(self.context, "alias")
         data = self.read()
         self.assertEqual(data["theme"], "dark")
-        self.assertEqual(data["env"], {"OTHER": "1", "ANTHROPIC_BASE_URL": "https://gateway.example"})
+        self.assertEqual(data["env"], {"OTHER": "1", "ANTHROPIC_BASE_URL": "https://gateway.example", DISCOVERY: "1"})
         self.assertEqual(data["model"], "alias")
         self.assertIn(shell_command(["virtual_key_mapper", "--home", str(self.home), "token", "--profile", "unit"]), data["apiKeyHelper"])
         commands = [hook["command"] for entry in data["hooks"]["UserPromptSubmit"] for hook in entry["hooks"]]
@@ -141,6 +141,17 @@ class SetupTests(ClaudeTestCase):
         self.claude.remove(self.context)
         self.assertEqual(self.read(), own)
 
+    def test_setup_lists_the_gateways_models_unless_the_user_chose_otherwise(self):
+        self.config.mkdir()
+        for own, expected in ((None, {"theme": "dark"}), ("0", {"theme": "dark", "env": {DISCOVERY: "0"}})):
+            with self.subTest(own=own):
+                self.settings.write_text(json.dumps(expected), encoding="utf-8")
+                self.claude.setup(self.context)
+                self.claude.setup(self.context)  # A second run keeps ownership of the "1" it wrote.
+                self.assertEqual(self.read()["env"][DISCOVERY], own or "1")
+                self.claude.remove(self.context)
+                self.assertEqual(self.read(), expected)
+
     def test_rerunning_setup_without_a_model_keeps_ownership_of_ours(self):
         self.config.mkdir()
         self.settings.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
@@ -181,6 +192,14 @@ class CommandTests(ClaudeTestCase):
             command, _ = self.claude.command(context, attribution(project=None), [], None)
         settings = json.loads(command[2])
         self.assertEqual(settings["env"]["ANTHROPIC_CUSTOM_HEADERS"], "X-Trace: t\nx-litellm-tags: customer:acme")
+
+    def test_a_launch_lists_the_gateways_models_unless_the_environment_decides(self):
+        command, _ = self.claude.command(self.context, ATTRIBUTION, [], None)
+        self.assertEqual(json.loads(command[2])["env"][DISCOVERY], "1")
+        with patch.dict(os.environ, {DISCOVERY: "0"}):
+            command, env = self.claude.command(self.context, ATTRIBUTION, [], None)
+        self.assertNotIn(DISCOVERY, json.loads(command[2])["env"])
+        self.assertEqual(env[DISCOVERY], "0")
 
     def test_missing_required_labels_launch_nothing(self):
         with self.assertRaisesRegex(CredentialError, MISSING_PHRASE):

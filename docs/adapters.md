@@ -48,6 +48,8 @@ OUTPUTS = (
 - `catalogue` may use `config.inversions(output_name, key)`, the `(prefix, suffix)` pairs of entries
   `PREFIX${KEY}SUFFIX`, to read values back from what the gateway stored (LiteLLM: `/tag/list`).
 
+List its requests and label headers in [network.md](network.md#per-gateway).
+
 Register it: `GATEWAYS = {"litellm": LiteLLMGateway, "<kind>": MyGateway}`. Header names must
 be letters, digits and `-`; values printable ASCII. Nothing else changes: the integrations,
 the shell hooks, the OpenCode plugin and the VS Code extension take headers and URLs from

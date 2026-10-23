@@ -111,7 +111,7 @@ vkm login          # browser sign-in; choose the same team there
 vkm status         # "state": "ready"
 
 # 2. Once per machine: connect your tools.
-vkm setup claude --model YOUR_CLAUDE_ALIAS
+vkm setup claude --model YOUR_CLAUDE_ALIAS   # start model; /model lists all gateway models
 vkm setup codex --model YOUR_CODEX_ALIAS
 vkm setup opencode
 
@@ -259,7 +259,9 @@ vkm setup claude [--model ALIAS] [--replace] [--remove]
 ```
 
 Writes `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`): an `apiKeyHelper` that runs
-`vkm token`, the gateway address, and a prompt hook. Before each prompt the hook
+`vkm token`, the gateway address, gateway model discovery and a prompt hook. `/model` (also in the
+VS Code extension) then lists the models your gateway offers you; `--model` only picks the one new
+sessions start on. Before each prompt the hook
 resolves the labels, writes the resulting headers to the repository's `.claude/settings.local.json`
 (excluded from Git) and asks you once to send the prompt again; prompts are blocked while a
 required label has no value.
@@ -353,6 +355,14 @@ bindings made inside a container live in the container.
 | Profiles and their labels, personal label bindings, rules cache, tool state | `%LOCALAPPDATA%\virtual-key-mapper` or `~/.config/virtual-key-mapper` (`--home` or `VKM_HOME` to change) |
 | Sign-in (access and refresh token) | the OS credential vault only; never in files |
 | Claude / Codex / OpenCode configuration | each tool's own user configuration, changed only by `setup` |
+
+## 🌐 Network access
+
+Outbound HTTPS to the gateway (sign-in, renewal and every model request), plus the central rules
+URL if a profile has one; the browser also reaches your identity provider during `login`.
+Nothing listens on the network. The paths and label headers depend on the gateway; for each
+supported gateway, the headers a proxy must pass, certificates and installation hosts:
+[docs/network.md](docs/network.md).
 
 ## ⌨️ Commands
 
