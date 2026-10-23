@@ -330,7 +330,7 @@ suggestions always use GitHub's models and are not attributed.
 The container gets short-lived tokens from the sign-in on your own computer; nothing
 long-lived is stored inside it.
 
-1. Local VS Code: install **Virtual Key Mapper: local sign-in** (`cbs-consulting.vkm-local`) and set `vkm.localCommand` in your user
+1. Local VS Code: install **Virtual Key Mapper: local sign-in** (`cbs-consulting.vkm-host`) and set `vkm.localCommand` in your user
    settings to the local CLI command. Containers get tokens only for your local default
    profile; list others in `vkm.localProfiles` (user settings) to allow them.
 2. In the container: install the CLI, e.g.
@@ -366,7 +366,7 @@ bindings made inside a container live in the container.
 | --- | --- | --- |
 | CLI | [PyPI](https://pypi.org/project/virtual-key-mapper/) | `virtual-key-mapper` (command `vkm`) |
 | Copilot Chat extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm), `vkm.vsix` on each [GitHub release](https://github.com/cbs-consulting/virtual-key-mapper/releases) | `cbs-consulting.vkm` |
-| Local sign-in extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm-local), `vkm-local.vsix` on each GitHub release | `cbs-consulting.vkm-local` |
+| Local sign-in extension | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=cbs-consulting.vkm-host), `vkm-host.vsix` on each GitHub release | `cbs-consulting.vkm-host` |
 
 All three share one version. Releases are made by the "Release" workflow in the Actions tab, which
 
@@ -377,7 +377,7 @@ All three share one version. Releases are made by the "Release" workflow in the 
    GitHub release `vVERSION` with the changelog entry as notes and the built files attached.
 
 The extensions are then uploaded to the Visual Studio Marketplace by hand, so no store token is
-stored anywhere: download `vkm.vsix` and `vkm-local.vsix` from the release, open
+stored anywhere: download `vkm.vsix` and `vkm-host.vsix` from the release, open
 [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage) → publisher
 `cbs-consulting`, and choose **⋯ → Update** for each extension (the first time: **New extension →
 Visual Studio Code**). The Marketplace accepts a package only for the publisher named inside it.
