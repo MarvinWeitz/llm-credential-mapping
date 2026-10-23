@@ -11,6 +11,8 @@ the date.
   Code's gateway model discovery, so `/model` in the CLI and the VS Code extension shows the models
   your key may use, as Copilot Chat does. `--model` is optional and only sets the starting model;
   `setup claude --remove` turns discovery off again unless you set it yourself.
+- [docs/network.md](docs/network.md) lists what the CLI, the extensions and the tools connect to,
+  for firewall, proxy and TLS inspection rules.
 
 ## 0.1.2 - 2026-10-23
 

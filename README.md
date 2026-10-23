@@ -356,6 +356,13 @@ bindings made inside a container live in the container.
 | Sign-in (access and refresh token) | the OS credential vault only; never in files |
 | Claude / Codex / OpenCode configuration | each tool's own user configuration, changed only by `setup` |
 
+## 🌐 Network access
+
+Outbound HTTPS to the gateway (sign-in, renewal and every model request), plus the central rules
+URL if a profile has one; the browser also reaches your identity provider during `login`.
+Nothing listens on the network. Requests, headers that must pass a proxy, certificates and
+installation hosts: [docs/network.md](docs/network.md).
+
 ## ⌨️ Commands
 
 `profile add|list|show|use|update`, `login`, `status`, `token [--json]`, `logout`,
