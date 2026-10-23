@@ -5,6 +5,13 @@ the two VS Code extensions), newest first. Add your change under "Unreleased" in
 pull request. To release, raise the version and rename "Unreleased" to that version and
 the date.
 
+## 0.1.1 - 2026-10-23
+
+- The local sign-in extension is now `cbs-consulting.vkm-host` (file `vkm-host.vsix`): the
+  Marketplace no longer lists `cbs-consulting.vkm-local` and does not accept its name again.
+  Uninstall `vkm-local` and install `vkm-host`; the settings (`vkm.localCommand`,
+  `vkm.localProfiles`) stay the same.
+
 ## 0.1.0 - 2026-10-22
 
 - First public version, under the name Virtual Key Mapper: the command is `vkm`, the

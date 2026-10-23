@@ -114,7 +114,7 @@ jobs:
         run: |
           awk -v v="$VERSION" '$1 == "##" { if (found) exit; found = ($2 == v); next } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
           gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$SHA" --title "v$VERSION" \
-            --notes-file "$RUNNER_TEMP/notes.md" dist/* vscode-extension/vkm.vsix vscode-extension/local/vkm-local.vsix
+            --notes-file "$RUNNER_TEMP/notes.md" dist/* vscode-extension/vkm.vsix vscode-extension/local/vkm-host.vsix
       - name: Remind to upload the extensions
         run: |
-          echo "::notice::Upload vkm.vsix and vkm-local.vsix from https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION to the Visual Studio Marketplace: marketplace.visualstudio.com/manage -> cbs-consulting -> ... -> Update (README, Releases)."
+          echo "::notice::Upload vkm.vsix and vkm-host.vsix from https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION to the Visual Studio Marketplace: marketplace.visualstudio.com/manage -> cbs-consulting -> ... -> Update (README, Releases)."
