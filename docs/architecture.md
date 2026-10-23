@@ -444,6 +444,9 @@ VS Code extension. `setup claude` writes into the user settings:
   Claude runs it on its cache interval (5 minutes) and after a 401, so long sessions renew.
   `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` would take precedence, so setup warns about them.
 - `env.ANTHROPIC_BASE_URL`: the gateway's Anthropic endpoint; optionally `model`.
+- `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`: at each start Claude asks the gateway's
+  `/v1/models` with the helper's token and adds the models the key may use to `/model`. A value
+  the user set (such as `0`) is kept; `vkm run claude` sets it too unless the environment does.
 - A `UserPromptSubmit` hook: `vkm claude guard --profile P`.
 
 Claude has no way to compute request headers per request; the only source is

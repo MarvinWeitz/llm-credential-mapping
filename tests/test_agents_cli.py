@@ -85,7 +85,7 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "old")
         self.assertEqual((args[:2], args[3:]), (["claude", "--settings"], ["--resume"]))
         settings = claude_settings(args)
-        self.assertEqual(settings["env"], {"ANTHROPIC_BASE_URL": self.profile.gateway})
+        self.assertEqual(settings["env"], {"ANTHROPIC_BASE_URL": self.profile.gateway, "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"})
         self.assertEqual(settings["model"], "alias")
         self.assertTrue(settings["apiKeyHelper"].endswith(shell_command(["--home", str(HOME), "token", "--profile", "a"])))
         for name in inherited:

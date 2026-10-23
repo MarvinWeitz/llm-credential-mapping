@@ -111,7 +111,7 @@ vkm login          # browser sign-in; choose the same team there
 vkm status         # "state": "ready"
 
 # 2. Once per machine: connect your tools.
-vkm setup claude --model YOUR_CLAUDE_ALIAS
+vkm setup claude --model YOUR_CLAUDE_ALIAS   # start model; /model lists all gateway models
 vkm setup codex --model YOUR_CODEX_ALIAS
 vkm setup opencode
 
@@ -259,7 +259,9 @@ vkm setup claude [--model ALIAS] [--replace] [--remove]
 ```
 
 Writes `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`): an `apiKeyHelper` that runs
-`vkm token`, the gateway address, and a prompt hook. Before each prompt the hook
+`vkm token`, the gateway address, gateway model discovery and a prompt hook. `/model` (also in the
+VS Code extension) then lists the models your gateway offers you; `--model` only picks the one new
+sessions start on. Before each prompt the hook
 resolves the labels, writes the resulting headers to the repository's `.claude/settings.local.json`
 (excluded from Git) and asks you once to send the prompt again; prompts are blocked while a
 required label has no value.

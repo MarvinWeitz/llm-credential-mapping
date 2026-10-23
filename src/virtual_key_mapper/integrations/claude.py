@@ -1,8 +1,9 @@
 """Claude Code (CLI and the official VS Code extension) configured through its own settings files.
 
 User level (``setup claude``): ``apiKeyHelper`` runs ``vkm token``, so Claude renews the
-credential itself; ``env.ANTHROPIC_BASE_URL`` points at the gateway; a ``UserPromptSubmit`` hook runs
-``vkm claude guard`` before every prompt.
+credential itself; ``env.ANTHROPIC_BASE_URL`` points at the gateway, and
+``env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`` lets ``/model`` list the gateway's models; a
+``UserPromptSubmit`` hook runs ``vkm claude guard`` before every prompt.
 
 Per repository: the guard writes the gateway's attribution headers to ``.claude/settings.local.json``
 (``env.ANTHROPIC_CUSTOM_HEADERS``), which Claude reloads live, and blocks prompts that would be sent
@@ -27,6 +28,8 @@ from .common import attribution_headers, run, set_launch_marker, shell_command
 
 LOCAL_SETTINGS = Path(".claude") / "settings.local.json"
 _MARKER = "virtual_key_mapper"
+# Claude Code then lists the gateway's models (GET /v1/models with the helper's token) in /model.
+DISCOVERY = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
 _CLEARED = (
     "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
@@ -164,6 +167,8 @@ class Claude:
             env.get("ANTHROPIC_CUSTOM_HEADERS", ""), attribution_headers(context, attribution),
             set(context.labels.header_names()),
         )
+        if DISCOVERY not in env:
+            settings["env"][DISCOVERY] = "1"
         if headers or "ANTHROPIC_CUSTOM_HEADERS" in env:
             settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] = headers
         if model:
@@ -209,7 +214,8 @@ class Claude:
             raise CredentialError(f"{path} has invalid hooks; nothing was changed.")
         notes = [
             f"Configured {path} for profile '{context.profile.name}'. New Claude sessions renew credentials "
-            "themselves and get the labels of each repository; running sessions pick it up on the next prompt.",
+            "themselves and get the labels of each repository; running sessions pick it up on the next prompt. "
+            "/model lists the gateway's models from the next start.",
             'For the VS Code extension, add to your VS Code user settings: {"claudeCode.disableLoginPrompt": true}',
         ]
         # Record only values this setup owns, so remove never deletes the user's own (identical) ones.
@@ -217,6 +223,10 @@ class Claude:
         owns_url = env.get("ANTHROPIC_BASE_URL") != base_url or previous.get("base_url") == base_url
         data["apiKeyHelper"] = self.helper(context)
         env["ANTHROPIC_BASE_URL"] = base_url
+        # A value of the user's own (such as "0") stays; ours is the "1" this or an earlier setup wrote.
+        owns_discovery = DISCOVERY not in env or (previous.get("discovery") is True and env[DISCOVERY] == "1")
+        if owns_discovery:
+            env[DISCOVERY] = "1"
         if model and data.get("model") in (None, previous.get("model")):
             data["model"] = model
         elif model:
@@ -231,7 +241,7 @@ class Claude:
         _write_json(path, data, original, follow_symlinks=True)
         state = {
             "version": 1, "settings": str(path), "profile": context.profile.name,
-            "base_url": base_url if owns_url else None, "model": model,
+            "base_url": base_url if owns_url else None, "model": model, "discovery": owns_discovery,
         }
         atomic_write_text(self._state(context), json.dumps(state, indent=2) + "\n")
         for name in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
@@ -253,6 +263,8 @@ class Claude:
             env.get("ANTHROPIC_BASE_URL") == state.get("base_url") or (helper_was_ours and not state)
         ):
             del env["ANTHROPIC_BASE_URL"]
+        if state.get("discovery") is True and env.get(DISCOVERY) == "1":
+            del env[DISCOVERY]
         if state.get("model") and data.get("model") == state.get("model"):
             del data["model"]
         hooks = data.get("hooks")
