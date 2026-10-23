@@ -330,7 +330,7 @@ suggestions always use GitHub's models and are not attributed.
 The container gets short-lived tokens from the sign-in on your own computer; nothing
 long-lived is stored inside it.
 
-1. Local VS Code: install **Virtual Key Mapper: local sign-in** (`cbs-consulting.vkm-host`) and set `vkm.localCommand` in your user
+1. Local VS Code: install **Virtual Key Mapper: host sign-in** (`cbs-consulting.vkm-host`) and set `vkm.localCommand` in your user
    settings to the local CLI command. Containers get tokens only for your local default
    profile; list others in `vkm.localProfiles` (user settings) to allow them.
 2. In the container: install the CLI, e.g.
