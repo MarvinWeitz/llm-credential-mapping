@@ -356,7 +356,7 @@ relay needs code on both sides:
 | Extension | Kind | Runs | Responsibility |
 | --- | --- | --- | --- |
 | Virtual Key Mapper for Copilot Chat | workspace (default) | in the container | Copilot models; in remote windows serves the socket and relays requests |
-| Virtual Key Mapper: local sign-in | `extensionKind: ["ui"]` | on the local machine | answers relay requests with the local CLI and vault; local sign-in |
+| Virtual Key Mapper: host sign-in | `extensionKind: ["ui"]` | on the local machine | answers relay requests with the local CLI and vault; local sign-in |
 
 ### Request flow
 

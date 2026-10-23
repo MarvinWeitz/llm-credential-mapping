@@ -10,10 +10,10 @@ import { Provider, VENDOR, type Services } from "./provider";
 const CHOSEN_FOLDER = "vkm.chosenFolder";
 const LOGIN_TERMINAL = "vkm login";
 const BIND_TERMINAL = "vkm repo bind";
-/** Commands of the companion extension "Virtual Key Mapper: local sign-in", which runs on the local machine. */
+/** Commands of the companion extension "Virtual Key Mapper: host sign-in", which runs on the local machine. */
 const LOCAL_REQUEST = "vkm.local.request";
 const LOCAL_SIGN_IN = "vkm.local.signIn";
-const LOCAL_MISSING = "Install the extension 'Virtual Key Mapper: local sign-in' in your local VS Code; "
+const LOCAL_MISSING = "Install the extension 'Virtual Key Mapper: host sign-in' (cbs-consulting.vkm-host) in your local VS Code; "
   + "it relays your local sign-in into this window.";
 
 /** Ask the companion extension on the local machine; its answer is {ok, result} or {ok: false, error}. */

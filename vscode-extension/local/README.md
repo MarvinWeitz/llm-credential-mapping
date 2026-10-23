@@ -1,4 +1,4 @@
-# Virtual Key Mapper: local sign-in
+# Virtual Key Mapper: host sign-in
 
 Install this in your **local** VS Code (it always runs on your own computer, also for dev
 container and SSH windows). It lets the Virtual Key Mapper extension in a remote window use the

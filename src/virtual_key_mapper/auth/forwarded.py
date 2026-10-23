@@ -84,7 +84,7 @@ def request(operation: str, host_profile: str | None, path: str,
             raise
         raise CredentialError(
             "No connection to the sign-in on your local machine. Open this folder in VS Code with the "
-            "'Virtual Key Mapper' extension in this container and 'Virtual Key Mapper: local sign-in' in your local VS Code."
+            "'Virtual Key Mapper' extension in this container and 'Virtual Key Mapper: host sign-in' (cbs-consulting.vkm-host) in your local VS Code."
         ) from None
     with connection:
         try:

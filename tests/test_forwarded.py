@@ -76,7 +76,7 @@ class ForwardedTests(unittest.TestCase):
         auth = forwarded.Forwarded(self.profile, None, connect=refused)
         with self.assertRaises(CredentialError) as error:
             auth.credential()
-        self.assertIn("local sign-in", str(error.exception))
+        self.assertIn("cbs-consulting.vkm-host", str(error.exception))
         self.assertEqual(auth.status()["state"], "unavailable")
 
     def test_sign_in_and_out_happen_on_the_local_machine(self):
