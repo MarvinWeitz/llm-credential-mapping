@@ -360,8 +360,9 @@ bindings made inside a container live in the container.
 
 Outbound HTTPS to the gateway (sign-in, renewal and every model request), plus the central rules
 URL if a profile has one; the browser also reaches your identity provider during `login`.
-Nothing listens on the network. Requests, headers that must pass a proxy, certificates and
-installation hosts: [docs/network.md](docs/network.md).
+Nothing listens on the network. The paths and label headers depend on the gateway; for each
+supported gateway, the headers a proxy must pass, certificates and installation hosts:
+[docs/network.md](docs/network.md).
 
 ## ⌨️ Commands
 

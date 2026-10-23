@@ -10,22 +10,35 @@ relay stay on the machine.
 | From | To | Why |
 | --- | --- | --- |
 | Developer machines (and dev containers, SSH and WSL hosts) | the gateway origin, e.g. `https://llm.company.example` (HTTPS, usually port 443) | sign-in, renewal and every model request |
-| Developer browsers | the gateway origin and your identity provider (the SSO login page the gateway redirects to) | the browser part of `vkm login` |
+| Developer browsers | the gateway origin and your identity provider (the SSO login page the gateway redirects to) | the browser part of `vkm login`, for sign-ins that use the browser (LiteLLM SSO) |
 | Developer machines | the central rules URL, if a profile has `--rules https://…` | the organisation's label definitions; cached, so a short outage does not block work |
 | Developer machines, for installing and updating | see [Installation](#installation) | |
 
 In forwarded mode (dev containers, SSH, WSL) the local machine signs in and renews; the
 container still sends its model requests to the gateway itself, so it needs the gateway too.
+The forwarded sign-in itself adds no network access.
 
 The gateway must answer at the configured origin directly: vkm refuses redirects (also
 `http://` to `https://`), so the credential never goes to another address. Claude Code's model
 list does the same.
 
-## The gateway requests in detail
+This table holds for every gateway. Which paths on the gateway are used, which headers carry
+the labels and how the sign-in works depend on the gateway and sign-in kind of the profile
+(`vkm profile show`); the next section lists them for each one vkm supports.
 
-For reference: a rule for the whole gateway origin covers all of them, and tool updates may add
-requests under `/v1`. The sign-in endpoints come from the gateway's discovery document and must
-be on the gateway origin as well.
+## Per gateway
+
+A rule for the whole gateway origin covers all requests of a gateway; the paths are for
+reference, and tool updates may add requests below the same base URLs.
+
+The tools always speak their own standard API (Anthropic Messages, OpenAI Responses, OpenAI
+Chat Completions) below the base URL the gateway gives vkm, so what differs per gateway is
+that base URL, the sign-in and the label headers.
+
+### LiteLLM (gateway `litellm`, sign-in `litellm-sso`)
+
+Base URLs: the gateway root for Claude Code, `/v1` for Codex, OpenCode and Copilot Chat. The
+sign-in endpoints come from the gateway's discovery document and must be on the gateway origin.
 
 | Request | Sent by | When |
 | --- | --- | --- |
@@ -40,10 +53,16 @@ be on the gateway origin as well.
 | `POST /v1/responses` | Codex | every request |
 | `POST /v1/chat/completions` | OpenCode, Copilot Chat extension | every request |
 
-For the requests to reach the gateway intact, a proxy or TLS inspection must pass these
-request headers unchanged: `Authorization`, `x-api-key`, `x-litellm-tags`,
-`x-litellm-spend-logs-metadata`, `anthropic-version`, `anthropic-beta`. Streamed responses
-(`text/event-stream`) must not be buffered.
+A proxy or TLS inspection must pass these request headers unchanged: `Authorization`,
+`x-api-key`, `x-litellm-tags`, `x-litellm-spend-logs-metadata` (the labels),
+`anthropic-version`, `anthropic-beta`. Streamed responses (`text/event-stream`) must not be
+buffered.
+
+### Other gateways
+
+Each further gateway or sign-in kind is an adapter ([adapters.md](adapters.md)) and adds its
+own section here. The general table above stays the same: outbound HTTPS to that gateway's
+origin, and for a browser sign-in its identity provider.
 
 ## Proxies and certificates
 
